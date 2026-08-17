@@ -1,0 +1,32 @@
+# Telegram client.
+#
+# IMPORTANT: install "kurigram", NOT "pyrogram".
+# Mainline pyrogram (the original delivrance/pyrogram package) has not
+# been updated since Telegram added colored inline keyboard buttons
+# (Bot API 9.4, the `style`/`icon_custom_emoji_id` fields used in
+# buttons/claim_buttons.py and app.py). Passing style="success" /
+# style="danger" to pyrogram's own InlineKeyboardButton raises
+# `TypeError: unexpected keyword argument 'style'`.
+#
+# Kurigram is an actively maintained drop-in fork that keeps the exact
+# same `import pyrogram` namespace (every file in this project already
+# does `from pyrogram import ...` / `from pyrogram.types import ...`
+# and needs ZERO changes), but adds support for the newer Bot API
+# features including button styles. If pyrogram is already installed,
+# remove it first so the two don't conflict:
+#   pip uninstall pyrogram -y
+#   pip install -r requirements.txt
+kurigram>=2.2.9
+TgCrypto>=1.2.5
+
+# Database
+asyncpg>=0.29.0
+
+# Card image rendering (services/player_card.py)
+Pillow>=10.0.0
+
+# Stadium photo lookup for /play's MATCH READY card (services/search.py).
+# Uses "duckduckgo-search-api" (import name "ddg", class "Duckduckgo") -
+# only for finding an image URL; Telegram itself fetches the URL when
+# sending the photo, so no image-downloading library is needed here.
+duckduckgo-search-api>=0.1.5
