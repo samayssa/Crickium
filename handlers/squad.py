@@ -51,8 +51,13 @@ async def squad_command(message):
         "",
         "<blockquote>",
     ]
-    total = min(len(squad), 25)
-    for i, player in enumerate(squad[:25], start=1):
+    xi = await load_current_xi(user_id) or []
+    xi_ids = {int(p.get("player_id") or 0) for p in xi}
+    ordered_squad = list(xi) + [p for p in squad if int(p.get("player_id") or 0) not in xi_ids]
+    ordered_squad = ordered_squad[:25]
+
+    total = len(ordered_squad)
+    for i, player in enumerate(ordered_squad, start=1):
         name = html.escape(str(player.get("name") or "Player"))
         level = max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
         flag = flag_for(player.get("country"))
@@ -62,7 +67,6 @@ async def squad_command(message):
         lines.append(f"{prefix} {i}. {name} • {level} {flag} {icon}{cap}")
     lines += ["</blockquote>", ""]
 
-    xi = await load_current_xi(user_id) or []
     xi_count = min(len(xi), 11)
     sub_count = max(0, len(squad) - xi_count)
     lines += [
