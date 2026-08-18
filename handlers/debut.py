@@ -93,6 +93,13 @@ async def debut_command(message):
     user_id = from_user.get("id")
     first_name = from_user.get("first_name") or "Player"
 
+    if str((message.get("chat") or {}).get("type") or "").strip().lower() != "private":
+        await app.send_message(
+            chat_id,
+            "⚠️ To make a debut in CRICKIUM, please send this command in the bot DM.",
+        )
+        return
+
     print(f"[debut] Command invoked by user_id={user_id} username=@{from_user.get('username')}")
 
     await execute(
