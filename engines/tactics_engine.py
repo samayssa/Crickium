@@ -181,14 +181,14 @@ def _apply_pitch_edge(weights: dict, pitch: str, batsman_balls_faced: int, bowle
     elif balls <= 15:
         _apply(weights, {
             0: 1.06, 1: 1.04, 2: 1.02, 3: 0.98,
-            4: 0.90, 6: 0.82, "W": 1.08,
+            4: 0.92, 6: 0.84, "W": 1.04,
         })
     elif balls <= 30:
-        _apply(weights, {0: 1.02, 4: 0.96, 6: 0.92, "W": 1.05})
+        _apply(weights, {0: 1.01, 4: 0.97, 6: 0.94, "W": 1.02})
     elif balls <= 45:
-        _apply(weights, {0: 1.01, 4: 0.98, 6: 0.95, "W": 1.03})
+        _apply(weights, {0: 1.00, 4: 0.99, 6: 0.97, "W": 1.01})
     else:
-        _apply(weights, {0: 1.00, 4: 0.99, 6: 0.97, "W": 1.02})
+        _apply(weights, {0: 1.00, 4: 0.995, 6: 0.985, "W": 1.005})
     return True
 
 
@@ -238,18 +238,23 @@ def phase_key(over_number: int) -> str:
 # either way should be clearly felt, not a rounding error.
 LEVEL_DIFF_BUCKETS = (
     (-100, -30, "bowler_dominant_large"),
-    (-29, -10, "bowler_dominant"),
-    (-9, 9, "even"),
-    (10, 29, "batter_dominant"),
+    (-29, -11, "bowler_dominant"),
+    (-10, -7, "bowler_dominant_gap"),
+    (-6, 6, "even"),
+    (7, 10, "batter_dominant_gap"),
+    (11, 29, "batter_dominant"),
     (30, 100, "batter_dominant_large"),
 )
 
 LEVEL_DIFF_MATRIX: dict = {
-    "bowler_dominant_large": {0: 1.25, 1: 0.90, "W": 1.60, 4: 0.60, 6: 0.50},
-    "bowler_dominant": {0: 1.12, 1: 0.95, "W": 1.30, 4: 0.80, 6: 0.75},
+    "bowler_dominant_large": {0: 1.22, 1: 0.92, "W": 1.45, 4: 0.68, 6: 0.58},
+    "bowler_dominant": {0: 1.10, 1: 0.96, "W": 1.28, 4: 0.82, 6: 0.78},
+    # 7-10 levels is a meaningful advantage, but deliberately not a free wicket.
+    "bowler_dominant_gap": {0: 1.06, 1: 0.98, "W": 1.16, 4: 0.90, 6: 0.86},
     "even": {0: 1.00, 1: 1.00, "W": 1.00, 4: 1.00, 6: 1.00},
-    "batter_dominant": {0: 0.88, 1: 1.05, "W": 0.75, 4: 1.20, 6: 1.25},
-    "batter_dominant_large": {0: 0.75, 1: 1.10, "W": 0.55, 4: 1.40, 6: 1.50},
+    "batter_dominant_gap": {0: 0.94, 1: 1.03, "W": 0.88, 4: 1.10, 6: 1.14},
+    "batter_dominant": {0: 0.86, 1: 1.06, "W": 0.72, 4: 1.22, 6: 1.28},
+    "batter_dominant_large": {0: 0.76, 1: 1.10, "W": 0.54, 4: 1.38, 6: 1.48},
 }
 
 
@@ -301,6 +306,116 @@ def _apply(weights: dict, modifiers: dict) -> None:
         weights[key] = weights.get(key, 0.0) * mult
 
 
+def _dampen_level_advantage(weights: dict, batter_level: int, bowler_level: int, balls_faced: int) -> None:
+    """Progressively soften level mismatch once the batter has settled.
+
+    0-15 balls: full level effect.
+    16-30: 65% of the mismatch remains.
+    31-45: 40% remains.
+    45+: 20% remains.
+    """
+    balls = max(0, int(balls_faced or 0))
+    if balls <= 15:
+        return
+    factor = 0.65 if balls <= 30 else (0.40 if balls <= 45 else 0.20)
+    diff = int(batter_level or 0) - int(bowler_level or 0)
+    bucket = level_bucket(batter_level, bowler_level)
+    base = LEVEL_DIFF_MATRIX[bucket]
+    for key, multiplier in base.items():
+        if key not in weights:
+            continue
+        softened = 1.0 + (float(multiplier) - 1.0) * factor
+        weights[key] = max(0.0, float(weights[key]) / max(0.01, float(multiplier)) * softened)
+
+
+def _redistribute_excess(weights: dict, source_key: Any, cap_probability: float, preferred: tuple[Any, ...]) -> None:
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    source = max(0.0, float(weights.get(source_key, 0.0)))
+    if total <= 0 or source <= 0:
+        return
+    current = source / total
+    if current <= cap_probability:
+        return
+    desired = total * max(0.0, min(1.0, cap_probability))
+    excess = source - desired
+    weights[source_key] = desired
+    targets = [k for k in preferred if k in weights and k != source_key and weights.get(k, 0.0) > 0]
+    if not targets:
+        targets = [k for k in weights if k != source_key and weights.get(k, 0.0) > 0]
+    target_total = sum(max(0.0, float(weights[k])) for k in targets)
+    if target_total <= 0:
+        return
+    for key in targets:
+        weights[key] += excess * (max(0.0, float(weights[key])) / target_total)
+
+
+def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_level: int,
+                        confidence: float, balls_faced: int, wickets_this_over: int) -> None:
+    """Small final probability guardrails. This does not alter the game flow.
+
+    It stops fresh batters from spraying boundaries immediately, and keeps
+    wicket clusters rare while preserving a real advantage when the matchup
+    is genuinely one-sided.
+    """
+    pitch_name = str(pitch or "even").strip().lower()
+    diff = int(bowler_level or 0) - int(batter_level or 0)
+
+    # Wicket probability per delivery. A 7-10 level bowler edge is meaningful
+    # but still only a rare path to a second/third wicket in the same over.
+    if wickets_this_over >= 3:
+        wicket_cap = 0.0
+    elif wickets_this_over == 2:
+        wicket_cap = 0.018 if diff >= 7 else 0.010
+    elif wickets_this_over == 1:
+        wicket_cap = 0.055 if diff >= 7 else 0.038
+    else:
+        if pitch in {"flat", "hard"}:
+            wicket_cap = 0.042 if diff >= 7 else 0.030
+        elif pitch in {"green", "dusty", "dry", "slow", "bouncy"}:
+            wicket_cap = 0.080 if diff >= 7 else 0.060
+        else:
+            wicket_cap = 0.060 if diff >= 7 else 0.045
+
+    # Confidence reduces how much raw level mismatch should matter.
+    if balls_faced >= 45:
+        wicket_cap *= 0.85
+    elif balls_faced >= 30:
+        wicket_cap *= 0.90
+    elif balls_faced >= 15:
+        wicket_cap *= 0.95
+    _redistribute_excess(weights, "W", wicket_cap, (0, 1, 2, 4, 6))
+
+    # Fresh batters are not allowed to access death-over style boundary mass
+    # immediately. As they settle, the cap opens progressively.
+    if balls_faced <= 5:
+        boundary_cap = 0.22 if pitch in {"green", "dusty", "dry", "slow", "bouncy"} else 0.27
+    elif balls_faced <= 15:
+        boundary_cap = 0.29 if pitch in {"green", "dusty", "dry", "slow", "bouncy"} else 0.34
+    elif balls_faced <= 30:
+        boundary_cap = 0.39
+    elif balls_faced <= 45:
+        boundary_cap = 0.46
+    else:
+        boundary_cap = 0.52
+
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    boundary_mass = max(0.0, float(weights.get(4, 0.0))) + max(0.0, float(weights.get(6, 0.0)))
+    current_boundary = (boundary_mass / total) if total > 0 else 0.0
+    if current_boundary > boundary_cap and boundary_mass > 0 and total > 0:
+        desired_boundary = total * boundary_cap
+        scale_boundary = desired_boundary / boundary_mass
+        old_boundary = boundary_mass
+        weights[4] = max(0.0, float(weights.get(4, 0.0))) * scale_boundary
+        weights[6] = max(0.0, float(weights.get(6, 0.0))) * scale_boundary
+        excess = old_boundary - desired_boundary
+        normal_keys = [0, 1, 2, 3, "WD", "NB", "LB", "BY"]
+        normal_total = sum(max(0.0, float(weights.get(k, 0.0))) for k in normal_keys)
+        if normal_total > 0:
+            for key in normal_keys:
+                share = max(0.0, float(weights.get(key, 0.0))) / normal_total
+                weights[key] = max(0.0, float(weights.get(key, 0.0))) + excess * share
+
+
 def resolve_weights(
     bowler_tactic: str,
     batter_mindset: str,
@@ -310,6 +425,7 @@ def resolve_weights(
     bowler_level: int,
     confidence: float,
     batsman_balls_faced: int = 0,
+    wickets_this_over: int = 0,
     bowler_style: str | None = None,
     bowler_role: str | None = None,
 ) -> dict:
@@ -335,9 +451,18 @@ def resolve_weights(
         zone_mult["W"] = VARIATION_COUNTER_WICKET_MULT
     _apply(weights, zone_mult)
 
+    # Once a batter has seen the attack for a while, raw level mismatch
+    # matters less than actual execution and confidence.
+    _dampen_level_advantage(weights, batter_level, bowler_level, batsman_balls_faced)
+
     if pitch_match:
         _cap_early_pitch_wicket_risk(weights, batsman_balls_faced)
         _cap_early_pitch_boundary_pressure(weights, batsman_balls_faced)
+
+    _apply_realism_caps(
+        weights, pitch, batter_level, bowler_level, confidence,
+        batsman_balls_faced, int(wickets_this_over or 0),
+    )
 
     return {key: max(0.0, value) for key, value in weights.items()}
 
@@ -374,12 +499,14 @@ def _cap_early_pitch_boundary_pressure(weights: dict, batsman_balls_faced: int) 
 
 def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: int,
              batter_level: int, bowler_level: int, confidence: float,
-             batsman_balls_faced: int = 0, bowler_style: str | None = None,
-             bowler_role: str | None = None):
+             batsman_balls_faced: int = 0, wickets_this_over: int = 0,
+             bowler_style: str | None = None, bowler_role: str | None = None):
     """Returns one sampled outcome code from OUTCOMES."""
     weights = resolve_weights(
         bowler_tactic, batter_mindset, pitch, over_number, batter_level, bowler_level, confidence,
-        batsman_balls_faced=batsman_balls_faced, bowler_style=bowler_style, bowler_role=bowler_role,
+        batsman_balls_faced=batsman_balls_faced,
+        wickets_this_over=wickets_this_over,
+        bowler_style=bowler_style, bowler_role=bowler_role,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
     return random.choices(OUTCOMES, weights=values, k=1)[0]
