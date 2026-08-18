@@ -67,6 +67,7 @@ class BallContext:
     bowler_name: str | None = None
     bowler_tactic: str = "swinging"
     confidence: float = 0.0
+    wickets_this_over: int = 0
 
 
 @dataclass(slots=True)
