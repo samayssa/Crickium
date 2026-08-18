@@ -2,6 +2,7 @@ from __future__ import annotations
 
 print("play/challenge.py loaded")
 
+import asyncio
 import html
 
 from handlers.registry import register, register_callback
@@ -14,6 +15,7 @@ from database.play_repo import (
 from utils.mentions import mention_html
 from buttons.play_buttons import challenge_keyboard
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
+from utils.timers import start_timer, cancel_timer
 
 from .pitch import send_pitch_selection
 
@@ -195,6 +197,30 @@ async def play_command(message):
     sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
     await set_message_id(match["match_id"], sent["message_id"])
 
+    async def _challenge_expired():
+        current = await get_match(match["match_id"])
+        if not current or current.get("status") != "pending":
+            return
+        try:
+            await update_status(match["match_id"], "expired")
+            await app.edit_message_text(
+                chat_id,
+                sent["message_id"],
+                "<b>⌛ Match challenge has expired.\n\nSend a new one by reply /play, or /play @username.</b>",
+                parse_mode="HTML",
+                reply_markup=NO_KEYBOARD,
+            )
+        except Exception as exc:
+            print(f"[play] Failed to expire challenge match_id={match['match_id']}: {exc!r}")
+
+    start_timer(
+        "play_challenge",
+        match["match_id"],
+        lambda _remaining: asyncio.sleep(0),
+        _challenge_expired,
+        total_seconds=60,
+    )
+
     print(f"[play] match_id={match['match_id']} challenger={challenger_id} opponent={opponent_id}")
 
 
@@ -231,6 +257,7 @@ async def on_play_accept(callback_query):
         )
         return
 
+    cancel_timer("play_challenge", match_id)
     await update_status(match_id, "accepted")
     await app.answer_callback_query(callback_query["id"], "Challenge accepted!")
 
@@ -272,6 +299,7 @@ async def on_play_decline(callback_query):
         await app.answer_callback_query(callback_query["id"], "This challenge isn't for you!", show_alert=True)
         return
 
+    cancel_timer("play_challenge", match_id)
     await update_status(match_id, "declined")
     await app.answer_callback_query(callback_query["id"], "Challenge declined.")
 

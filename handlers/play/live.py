@@ -215,6 +215,10 @@ async def on_play_bowler(callback_query):
         await app.answer_callback_query(callback_query["id"], "That bowler isn't available.", show_alert=True)
         return
 
+    if session.current_bowler is not None:
+        await app.answer_callback_query(callback_query["id"], "⚠️ Bowler already chosen.", show_alert=True)
+        return
+
     if not assign_bowler(session, candidate):
         await app.answer_callback_query(callback_query["id"], "That bowler has no overs left.", show_alert=True)
         return
@@ -242,6 +246,9 @@ async def on_play_tactic(callback_query):
         return
     if session.current_bowler is None:
         await app.answer_callback_query(callback_query["id"], "Choose a bowler first.", show_alert=True)
+        return
+    if session.current_tactic is not None:
+        await app.answer_callback_query(callback_query["id"], "⚠️ Bowling tactic already chosen.", show_alert=True)
         return
 
     assign_tactic(session, tactic)
@@ -504,6 +511,9 @@ async def on_play_strategy(callback_query):
         return
     if session.current_tactic is None:
         await app.answer_callback_query(callback_query["id"], "Waiting on the bowling tactic first.", show_alert=True)
+        return
+    if session.current_strategy is not None or session.stage != "choose_strategy":
+        await app.answer_callback_query(callback_query["id"], "⚠️ Batting approach already chosen.", show_alert=True)
         return
 
     session.current_strategy = strategy
