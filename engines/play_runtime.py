@@ -359,6 +359,7 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
         bowler_name=bowler.get("name"),
         bowler_tactic=session.current_tactic or "swinging",
         confidence=float(striker.confidence or 0.0),
+        wickets_this_over=sum(1 for token in session.this_over if str(token).upper() == "W"),
     )
 
 
