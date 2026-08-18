@@ -33,6 +33,42 @@ def _line(player: dict, number: int, icon: str, captain_id: int | None) -> str:
     return f"{number}. {name} • {level} {flag} {icon}{cap}"
 
 
+def _team_status(xi: list[dict]) -> tuple[bool, str]:
+    raw_batsmen = [p for p in xi if p.get("role") == "Batsman"]
+    keepers = [p for p in xi if str(p.get("role") or "") == "Wicketkeeper"]
+    keepers.extend(p for p in raw_batsmen if p.get("is_wicketkeeper"))
+    if not keepers and len(raw_batsmen) == 5:
+        keepers = [raw_batsmen[-1]]
+    keeper_ids = {int(p.get("player_id") or 0) for p in keepers}
+    batsmen = [p for p in raw_batsmen if int(p.get("player_id") or 0) not in keeper_ids]
+    allrounders = [p for p in xi if p.get("role") == "AllRounder"]
+    bowlers = [p for p in xi if p.get("role") == "Bowler"]
+
+    reasons = []
+    if len(xi) < 11:
+        reasons.append(f"need {11 - len(xi)} more player{'s' if 11 - len(xi) != 1 else ''}")
+    elif len(xi) > 11:
+        reasons.append(f"remove {len(xi) - 11} player{'s' if len(xi) - 11 != 1 else ''}")
+
+    checks = [
+        ("batsman", len(batsmen), 3, 4),
+        ("wicket-keeper", len(keepers), 1, 2),
+        ("all-rounder", len(allrounders), 3, 4),
+        ("bowler", len(bowlers), 3, 4),
+    ]
+    for label, count, minimum, maximum in checks:
+        if count < minimum:
+            missing = minimum - count
+            reasons.append(f"need {missing} more {label}{'s' if missing != 1 else ''}")
+        elif count > maximum:
+            extra = count - maximum
+            reasons.append(f"remove {extra} {label}{'s' if extra != 1 else ''}")
+
+    if not reasons:
+        return True, "Valid"
+    return False, "Not Valid — " + ", ".join(reasons)
+
+
 def _render_pxl(xi: list[dict], team_name: str) -> str:
     raw_batsmen = [p for p in xi if p.get("role") == "Batsman"]
     keepers = [p for p in xi if str(p.get("role") or "") == "Wicketkeeper"]
@@ -94,25 +130,16 @@ async def pxl_command(message):
     first_name = from_user.get("first_name")
 
     xi = await load_current_xi(user_id) or []
-    if len(xi) < 11:
-        await app.send_message(
-            chat_id,
-            "⚠️ Your Playing XI is incomplete. You need exactly 11 players.",
-            parse_mode="HTML",
-        )
-        return
-
     xi = xi[:11]
-    valid, reason = validate_playing_xi(xi)
-    if not valid:
-        await app.send_message(
-            chat_id,
-            "<b>⚠️ Your Playing XI is not perfect.</b>\n\n"
-            "You need <b>3-4 batsmen, 1-2 wicket-keepers, "
-            "3-4 all-rounders and 3-4 bowlers</b> to use this Playing XI.",
-            parse_mode="HTML",
-        )
-        return
+    valid, _ = validate_playing_xi(xi)
+    _, status_text = _team_status(xi)
 
     team_name = await ensure_franchise_name(user_id, first_name)
-    await app.send_message(chat_id, _render_pxl(xi, team_name), parse_mode="HTML")
+    report = _render_pxl(xi, team_name)
+    full_squad_marker = "➤ 📋 <b>Full Squad:</b> /squad"
+    report = report.replace(
+        full_squad_marker,
+        f"➤ 📊 <b>Team Status:</b> {html.escape(status_text)}\n\n{full_squad_marker}",
+        1,
+    )
+    await app.send_message(chat_id, report, parse_mode="HTML")

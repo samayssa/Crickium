@@ -20,6 +20,8 @@ def _captain_id(squad: list[dict]) -> int | None:
 
 def _icon(player: dict) -> str:
     role = str(player.get("role") or "").lower()
+    if "wicket" in role or bool(player.get("is_wicketkeeper")):
+        return "🧤"
     if "all" in role:
         return "🔄"
     if "bowl" in role:
