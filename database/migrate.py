@@ -213,6 +213,10 @@ async def migrate():
         await execute(ddl)
         print(f"[migrate] Table '{table_name}' OK.")
 
+    print("[migrate] Ensuring 'users.captain_player_id' column exists...")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captain_player_id BIGINT;")
+    print("[migrate] 'users.captain_player_id' OK.")
+
     print("[migrate] Ensuring 'users.last_seen_at' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();")
     print("[migrate] 'users.last_seen_at' OK.")
