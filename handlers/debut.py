@@ -93,7 +93,9 @@ async def debut_command(message):
     user_id = from_user.get("id")
     first_name = from_user.get("first_name") or "Player"
 
-    if str((message.get("chat") or {}).get("type") or "").strip().lower() != "private":
+    chat_type = str((message.get("chat") or {}).get("type") or "").strip().lower()
+    is_private = chat_type in {"private", "chattype.private", "chat_type.private"} or chat_type.endswith(".private")
+    if not is_private:
         await app.send_message(
             chat_id,
             "⚠️ To make a debut in CRICKIUM, please send this command in the bot DM.",
