@@ -8,21 +8,17 @@ from handlers.registry import register
 from app import app
 from engines.lineup_engine import load_current_xi
 from database.user_stats_repo import ensure_franchise_name
+from database.captain_repo import get_captain_id
 from utils.country_flags import flag_for
 from utils.debut_gate import validate_playing_xi
 
 
-def _captain_id(players: list[dict]) -> int | None:
-    if not players:
+async def _captain_id(players: list[dict], user_id: int) -> int | None:
+    captain_id = await get_captain_id(user_id)
+    if captain_id is None:
         return None
-    player = max(
-        players,
-        key=lambda p: (
-            int(p.get("bat_level") or 0) + int(p.get("bowl_level") or 0),
-            int(p.get("player_id") or 0),
-        ),
-    )
-    return int(player.get("player_id") or 0)
+    player_ids = {int(p.get("player_id") or 0) for p in players}
+    return captain_id if captain_id in player_ids else None
 
 
 def _line(player: dict, number: int, icon: str, captain_id: int | None) -> str:
@@ -69,7 +65,7 @@ def _team_status(xi: list[dict]) -> tuple[bool, str]:
     return False, "Not Valid — " + ", ".join(reasons)
 
 
-def _render_pxl(xi: list[dict], team_name: str) -> str:
+def _render_pxl(xi: list[dict], team_name: str, captain_id: int | None = None) -> str:
     raw_batsmen = [p for p in xi if p.get("role") == "Batsman"]
     keepers = [p for p in xi if str(p.get("role") or "") == "Wicketkeeper"]
     keepers.extend(p for p in raw_batsmen if p.get("is_wicketkeeper"))
@@ -79,7 +75,6 @@ def _render_pxl(xi: list[dict], team_name: str) -> str:
     batsmen = [p for p in raw_batsmen if int(p.get("player_id") or 0) not in keeper_ids]
     allrounders = [p for p in xi if p.get("role") == "AllRounder"]
     bowlers = [p for p in xi if p.get("role") == "Bowler"]
-    captain_id = _captain_id(xi)
 
     lines = [
         "╭━━━〔 🏏 PLAYING XI 〕━━━╮",
@@ -135,7 +130,8 @@ async def pxl_command(message):
     _, status_text = _team_status(xi)
 
     team_name = await ensure_franchise_name(user_id, first_name)
-    report = _render_pxl(xi, team_name)
+    captain_id = await _captain_id(xi, user_id)
+    report = _render_pxl(xi, team_name, captain_id)
     full_squad_marker = "➤ 📋 <b>Full Squad:</b> /squad"
     report = report.replace(
         full_squad_marker,

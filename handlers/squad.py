@@ -8,14 +8,12 @@ from handlers.registry import register
 from app import app
 from engines.lineup_engine import load_squad, load_current_xi
 from database.user_stats_repo import ensure_franchise_name
+from database.captain_repo import get_captain_id
 from utils.country_flags import flag_for
 
 
-def _captain_id(squad: list[dict]) -> int | None:
-    if not squad:
-        return None
-    player = max(squad, key=lambda p: (int(p.get("bat_level") or 0) + int(p.get("bowl_level") or 0), int(p.get("player_id") or 0)))
-    return int(player.get("player_id") or 0)
+async def _captain_id(user_id: int) -> int | None:
+    return await get_captain_id(user_id)
 
 
 def _icon(player: dict) -> str:
@@ -44,7 +42,7 @@ async def squad_command(message):
         return
 
     team_name = await ensure_franchise_name(user_id, first_name)
-    captain_id = _captain_id(squad)
+    captain_id = await _captain_id(user_id)
     lines = [
         "╭━━━〔 🏏 SQUAD 〕━━━╮",
         "",
