@@ -52,6 +52,7 @@ def resolve(strategy: str, context: BallContext) -> BallOutcome:
         tactic, mindset, context.pitch, context.over_number,
         context.batter_level, context.bowler_level, context.confidence,
         batsman_balls_faced=context.batsman_balls_faced,
+        wickets_this_over=getattr(context, "wickets_this_over", 0),
         bowler_style=context.bowler_hand,
         bowler_role=context.bowler_role,
     )
