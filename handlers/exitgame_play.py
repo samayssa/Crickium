@@ -8,7 +8,7 @@ from database.query import execute
 from database.play_repo import get_active_match_in_chat, get_match, update_status
 from database.user_stats_repo import add_match_xp, record_match_result
 from engines.level_engine import WIN_XP, EXIT_PENALTY_XP
-from engines.play_runtime import clear_session
+from engines.play_runtime import clear_session, get_session
 from utils.mentions import mention_html
 from buttons.play_buttons import exit_confirm_keyboard
 
@@ -94,23 +94,54 @@ async def on_play_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] Failed to award XP/stats for match_id={match_id}: {exc!r}")
 
+    session = get_session(match_id)
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+    stayed_mention = mention_html(stayed_id, match.get("opponent_username") if int(stayed_id) == int(match["opponent_id"]) else match.get("challenger_username"), match.get("opponent_name") if int(stayed_id) == int(match["opponent_id"]) else match.get("challenger_name"))
+
+    # Remove the live scorecard immediately so the result/highlights becomes
+    # the final match card shown in the chat.
+    if session and session.live_message_id:
+        try:
+            await app.delete_message(chat_id, session.live_message_id)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to delete live scorecard for match_id={match_id}: {exc!r}")
+
+    if session:
+        try:
+            from handlers.play.live import _exit_match_result_text
+            highlights = _exit_match_result_text(session, exiter_mention, stayed_mention)
+            await app.edit_message_text(chat_id, message_id, highlights, parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to render exit highlights for match_id={match_id}: {exc!r}")
+            await app.edit_message_text(
+                chat_id,
+                message_id,
+                (
+                    "<b>🏳️ MATCH ENDED\n\n"
+                    f"{exiter_mention} exited the game.\n"
+                    f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>"
+                ),
+                parse_mode="HTML",
+                reply_markup=NO_KEYBOARD,
+            )
+    else:
+        await app.edit_message_text(
+            chat_id,
+            message_id,
+            (
+                "<b>🏳️ MATCH ENDED\n\n"
+                f"{exiter_mention} exited the game.\n"
+                f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>"
+            ),
+            parse_mode="HTML",
+            reply_markup=NO_KEYBOARD,
+        )
+
     try:
         clear_session(match_id)
     except Exception as exc:
         print(f"[exitgame_play] Failed to clear play session for match_id={match_id}: {exc!r}")
-
-    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
-    await app.edit_message_text(
-        chat_id,
-        message_id,
-        (
-            "<b>🏳️ MATCH ENDED\n\n"
-            f"{exiter_mention} exited the game.\n"
-            f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>"
-        ),
-        parse_mode="HTML",
-        reply_markup=NO_KEYBOARD,
-    )
     print(f"[exitgame_play] Match ended by user_id={presser['id']} in chat_id={chat_id}, match_id={match_id}")
 
 
