@@ -19,7 +19,10 @@ ROLE_ALIASES = {
     "batter": "Batsman",
     "bat": "Batsman",
     "bowler": "Bowler",
+    "bowlers": "Bowler",
     "bowling": "Bowler",
+    "bowl": "Bowler",
+    "ball": "Bowler",
     "allrounder": "AllRounder",
     "all-rounder": "AllRounder",
     "all_rounder": "AllRounder",
@@ -42,13 +45,14 @@ def _parse_filter(text: str) -> tuple[str | None, str | None, int | None]:
     if len(parts) < 2:
         return None, None, None
     args = parts[1:]
-    if len(args) >= 2:
-        role = ROLE_ALIASES.get(args[0].strip().lower())
-        if role:
-            try:
-                return "role", role, int(args[1])
-            except ValueError:
-                return None, None, None
+    role = ROLE_ALIASES.get(args[0].strip().lower())
+    if role:
+        if len(args) == 1:
+            return "role", role, None
+        try:
+            return "role", role, int(args[1])
+        except ValueError:
+            return None, None, None
     token = args[0].strip()
     try:
         return "level", None, int(token)
@@ -66,8 +70,9 @@ def _where_clause(kind: str, value, level: int | None):
     if kind == "role":
         conditions.append("role = $1")
         params.append(value)
-        conditions.append("GREATEST(COALESCE(bat_level, 0), COALESCE(bowl_level, 0)) = $2")
-        params.append(int(level))
+        if level is not None:
+            conditions.append("GREATEST(COALESCE(bat_level, 0), COALESCE(bowl_level, 0)) = $2")
+            params.append(int(level))
     elif kind == "level":
         conditions.append("GREATEST(COALESCE(bat_level, 0), COALESCE(bowl_level, 0)) = $1")
         params.append(int(level))
@@ -169,7 +174,7 @@ async def pshop_command(message):
     if kind is None:
         await app.send_message(
             chat_id,
-            "<b>⚠️ Usage: /pshop 78, /pshop batsman 85, /pshop bowler 78, or /pshop legendary.</b>",
+            "<b>⚠️ Usage: /pshop 78, /pshop batsman, /pshop batsman 85, /pshop bowler 78, or /pshop legendary.</b>",
             parse_mode="HTML",
         )
         return
