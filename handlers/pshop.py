@@ -103,14 +103,24 @@ def _role_icon(role: str) -> str:
 
 def _page_keyboard(page: int, total: int, kind: str, value, level: int | None):
     pages = max(1, math.ceil(total / PAGE_SIZE))
-    if pages <= 1:
-        return NO_KEYBOARD
     token = f"{kind}|{value or ''}|{level if level is not None else ''}"
     return {
         "inline_keyboard": [[
-            {"text": "⬅️ Previous", "callback_data": f"pshop_page:{max(0, page - 1)}:{token}"},
-            {"text": f"📄 {page + 1}/{pages}", "callback_data": "pshop_page:noop"},
-            {"text": "Next ➡️", "callback_data": f"pshop_page:{min(pages - 1, page + 1)}:{token}"},
+            {
+                "text": "⬅️ Previous",
+                "callback_data": f"pshop_page:{max(0, page - 1)}:{token}",
+                "style": "primary",
+            },
+            {
+                "text": f"📄 {page + 1}/{pages}",
+                "callback_data": "pshop_page:noop",
+                "style": "danger",
+            },
+            {
+                "text": "Next ➡️",
+                "callback_data": f"pshop_page:{min(pages - 1, page + 1)}:{token}",
+                "style": "success",
+            },
         ]]
     }
 
