@@ -98,9 +98,10 @@ def bowler_selection_keyboard(match_id, bowlers, selected_id=None) -> InlineKeyb
     for player in bowlers:
         pid = int(player.get("player_id") or 0)
         overs_left = player.get("_overs_left")
-        label = f"🥎 {player.get('name', 'Bowler')}"
+        bowling_level = int(player.get("bowl_level") or 0)
+        label = f"🥎 {player.get('name', 'Bowler')} • {bowling_level}"
         if overs_left is not None:
-            label = f"{label} (Left {overs_left} Ov)"
+            label = f"{label} • Left {overs_left} Ov"
         if selected_id is not None and int(selected_id) == pid:
             label = f"✅ {label}"
         rows.append([_styled_button(label, f"play_bowler:{match_id}:{pid}", "danger")])
