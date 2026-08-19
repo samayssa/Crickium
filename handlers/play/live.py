@@ -306,6 +306,57 @@ def _match_result_text(innings_1: dict, innings_2: dict) -> str:
     )
 
 
+
+def _exit_match_result_text(session, exiter_mention: str, winner_mention: str) -> str:
+    """Build the same MATCH RESULT/HIGHLIGHTS style for an early exit,
+    using only innings that actually happened up to the exit point."""
+    snapshots = list(session.innings_history)
+    current_snapshot = snapshot_innings(session)
+    if not snapshots or snapshots[-1].get("innings_number") != current_snapshot.get("innings_number"):
+        snapshots.append(current_snapshot)
+    potm = "Player"
+    if snapshots:
+        best_score = -1.0
+        for snap in snapshots:
+            for batter in snap.get("batters", []):
+                impact = int(batter.get("runs") or 0)
+                if impact > best_score:
+                    best_score = impact
+                    potm = batter.get("name") or "Player"
+            for bowler in snap.get("bowlers", []):
+                impact = int(bowler.get("wickets") or 0) * 25 - int(bowler.get("runs") or 0) * 0.2
+                if impact > best_score:
+                    best_score = impact
+                    potm = bowler.get("name") or "Player"
+
+    def _innings_block(snap: dict) -> str:
+        bats = top_batters(snap)
+        bowls = top_bowlers(snap)
+        bat_lines = "\n".join(f"⭐ {b['name']} - {b['runs']} ({b['balls']})" for b in bats) or "⭐ -"
+        bowl_lines = "\n".join(f"🎯 {b['name']} - {b['wickets']}W ({b['runs']}R)" for b in bowls) or "🎯 -"
+        return (
+            f"🏏 {snap['batting_team_display']} Innings — {snap['runs']}/{snap['wickets']} ({snap['over_text']} Ov)\n"
+            f"{bat_lines}\n{bowl_lines}"
+        )
+
+    blocks = "\n\n".join(_innings_block(s) for s in snapshots)
+    return (
+        "<b>╭━━〔 🏆 MATCH RESULT 〕━━╮\n\n"
+        f"🎉 {winner_mention} XI won by opponent exit!\n\n"
+        "📋 MATCH HIGHLIGHTS\n\n"
+        f"{blocks}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🚪 {exiter_mention} exited the game.\n\n"
+        f"🌟 Player of the Match: {html_escape_simple(potm)}\n\n"
+        "╰━━━━━━━━━━━━━━━━━━━━╯</b>"
+    )
+
+
+def html_escape_simple(value: str) -> str:
+    from html import escape
+    return escape(str(value or "Player"))
+
+
 async def _safe_send(chat_id, text, **kwargs):
     try:
         return await app.send_message(chat_id, text, **kwargs)
