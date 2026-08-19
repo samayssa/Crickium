@@ -10,10 +10,26 @@ from app import app
 from database.query import fetch, fetchval
 from services.player_card import overall_rating
 from utils.country_flags import flag_for
-from utils.rarity import get_rarity, ROLE_ALIASES
+from utils.rarity import get_rarity
 from utils.price_chart import get_price
 
 PAGE_SIZE = 5
+ROLE_ALIASES = {
+    "batsman": "Batsman",
+    "batter": "Batsman",
+    "bat": "Batsman",
+    "bowler": "Bowler",
+    "bowling": "Bowler",
+    "allrounder": "AllRounder",
+    "all-rounder": "AllRounder",
+    "all_rounder": "AllRounder",
+    "ar": "AllRounder",
+    "wicketkeeper": "Wicketkeeper",
+    "wicket-keeper": "Wicketkeeper",
+    "wicket keeper": "Wicketkeeper",
+    "wk": "Wicketkeeper",
+}
+
 NO_KEYBOARD = {"inline_keyboard": []}
 
 
