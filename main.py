@@ -203,6 +203,15 @@ async def handle_my_chat_member(_, chat_member_updated):
         if chat is None or str(getattr(chat, "type", "")).lower() not in {"chattype.group", "chattype.supergroup", "group", "supergroup"}:
             return
 
+        # ChatMemberUpdated is emitted for ordinary user joins/promotions too.
+        # Only handle the event when the member whose status changed is the
+        # actual Crickium bot account.
+        changed_member = getattr(chat_member_updated, "new_chat_member", None)
+        changed_user = getattr(changed_member, "user", None)
+        me = await app.get_me()
+        if not changed_user or int(getattr(changed_user, "id", 0) or 0) != int(me.get("id", 0) or 0):
+            return
+
         actor_user = getattr(chat_member_updated, "from_user", None)
         actor = _pyro_user_to_dict(actor_user)
         group_id = int(getattr(chat, "id", 0) or 0)
