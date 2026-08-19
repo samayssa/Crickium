@@ -11,7 +11,7 @@ from app import app
 from database.query import transaction
 from database.squads_repo import get_team_squad
 from services.player_card import overall_rating
-from utils.mentions import mention
+from utils.mentions import mention_html
 from utils.rarity import get_rarity
 from utils.debut_gate import has_completed_debut
 
@@ -102,7 +102,7 @@ async def daily_command(message):
         )
         return
 
-    display = mention(user_id, username, first_name)
+    display = mention_html(user_id, username, first_name)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     try:
@@ -138,6 +138,20 @@ async def daily_command(message):
                     return {"status": "cooldown", "next_claim_at": next_claim}
 
             previous_streak = int(daily["streak"] or 0) if daily else 0
+
+            # A daily streak has a 24-hour claim window. After a user becomes
+            # eligible, they get the next 24 hours to claim it. Missing that
+            # window breaks the streak and the next successful claim starts at Day 1.
+            if daily and daily["last_claim_at"] is not None:
+                last_claim = (
+                    daily["last_claim_at"].replace(tzinfo=None)
+                    if getattr(daily["last_claim_at"], "tzinfo", None)
+                    else daily["last_claim_at"]
+                )
+                missed_deadline = now >= (last_claim + timedelta(seconds=2 * DAILY_COOLDOWN_SECONDS))
+                if missed_deadline:
+                    previous_streak = 0
+
             day = _next_day(previous_streak)
             reward = REWARDS[day]
 
