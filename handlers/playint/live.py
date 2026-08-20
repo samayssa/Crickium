@@ -7,7 +7,7 @@ from typing import Any
 
 from app import app
 from buttons.playint_buttons import bowler_selection_keyboard, bowler_tactic_keyboard, strategy_keyboard
-from database.playint_repo import get_match, update_status
+from database.playint_repo import get_match, update_status, get_teams_player_ids
 from database.user_stats_repo import add_match_xp, record_match_result
 from database.player_user_stats_repo import record_match_player_stats
 from engines.level_engine import WIN_XP, LOSS_XP, TIE_XP
@@ -146,10 +146,23 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
     import json
     challenger_xi = json.loads(match.get("challenger_xi") or "[]") if isinstance(match.get("challenger_xi"), str) else list(match.get("challenger_xi") or [])
     opponent_xi = json.loads(match.get("opponent_xi") or "[]") if isinstance(match.get("opponent_xi"), str) else list(match.get("opponent_xi") or [])
-    def _as_team_players(xi):
-        return [dict(p) for p in xi]
-    batting_squad = _as_team_players(challenger_xi if batting_team_id == challenger_id else opponent_xi)
-    bowling_squad = _as_team_players(challenger_xi if bowling_team_id == challenger_id else opponent_xi)
+
+    async def _resolve_team_players(team_code, xi_ids):
+        ids = [int(x) for x in xi_ids if str(x).lstrip("-").isdigit()]
+        if not team_code or not ids:
+            return []
+        rows = await get_teams_player_ids(team_code, ids, engine_key="T20I")
+        by_id = {int(p.get("player_id")): p for p in rows}
+        return [dict(by_id[pid]) for pid in ids if pid in by_id]
+
+    challenger_squad = await _resolve_team_players(match.get("challenger_team_code"), challenger_xi)
+    opponent_squad = await _resolve_team_players(match.get("opponent_team_code"), opponent_xi)
+    batting_squad = challenger_squad if batting_team_id == challenger_id else opponent_squad
+    bowling_squad = challenger_squad if bowling_team_id == challenger_id else opponent_squad
+    if len(batting_squad) < 11 or len(bowling_squad) < 11:
+        print(f"[playint] Could not resolve both Playing XIs for match_id={match['match_id']}: batting={len(batting_squad)} bowling={len(bowling_squad)}")
+        await update_status(int(match["match_id"]), "ended")
+        return
 
     batting_display = _team_display(match, batting_team_id)
     bowling_display = _team_display(match, bowling_team_id)

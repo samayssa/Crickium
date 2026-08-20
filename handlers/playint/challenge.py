@@ -3,6 +3,7 @@ import html
 from handlers.registry import register, register_callback
 from app import app
 from database.query import fetchrow
+from database.play_repo import get_active_match_in_chat as get_play_match_in_chat, get_active_match_for_user as get_play_match_for_user
 from database.playint_repo import create_match,get_match,set_message_id,update_status,get_active_match_in_chat,get_active_match_for_user
 from buttons.playint_buttons import challenge_keyboard
 from utils.mentions import mention_html
@@ -36,9 +37,14 @@ async def playint_command(message):
     active=await get_active_match_in_chat(chat_id)
     if active:
         await app.send_message(chat_id,'<b>⚠️ A PlayInt game is already going on in this group.</b>',parse_mode='HTML'); return
+    active_play=await get_play_match_in_chat(chat_id)
+    if active_play:
+        await app.send_message(chat_id,'<b>⚠️ A game is already going on in this group. Finish it before starting a PlayInt game.</b>',parse_mode='HTML'); return
     active=await get_active_match_for_user(challenger_id)
     if active:
         await app.send_message(chat_id,"<b>⚠️ You're already in a game. Please finish it first.</b>",parse_mode='HTML'); return
+    if await get_play_match_for_user(challenger_id):
+        await app.send_message(chat_id,"<b>⚠️ You're already in another game. Please finish it first.</b>",parse_mode='HTML'); return
 
     reply=(message.get('reply_to_message') or {}).get('from') or {}
     target=None
@@ -64,6 +70,9 @@ async def playint_command(message):
     if await get_active_match_for_user(opponent_id):
         om=mention_html(opponent_id,opponent_username,opponent_name)
         await app.send_message(chat_id,f'<b>⚠️ {om} is already in another game.</b>',parse_mode='HTML'); return
+    if await get_play_match_for_user(opponent_id):
+        om=mention_html(opponent_id,opponent_username,opponent_name)
+        await app.send_message(chat_id,f'<b>⚠️ {om} is already in another game.</b>',parse_mode='HTML'); return
 
     match=await create_match(chat_id,challenger_id,u.get('username'),u.get('first_name'),opponent_id,opponent_username,opponent_name)
     a=mention_html(challenger_id,u.get('username'),u.get('first_name')); o=mention_html(opponent_id,opponent_username,opponent_name)
@@ -77,6 +86,8 @@ async def playint_accept(callback_query):
         await app.answer_callback_query(callback_query['id'],'This challenge is no longer active.',show_alert=True); return
     if int(presser['id'])!=int(match['opponent_id']):
         await app.answer_callback_query(callback_query['id'],"This challenge isn't for you!",show_alert=True); return
+    if await get_play_match_for_user(int(presser['id'])):
+        await app.answer_callback_query(callback_query['id'],"You're already in another game. Finish it first.",show_alert=True); return
     await update_status(mid,'accepted'); await app.answer_callback_query(callback_query['id'],'Challenge accepted!')
     a=mention_html(match['challenger_id'],match['challenger_username'],match['challenger_name']); o=mention_html(match['opponent_id'],match['opponent_username'],match['opponent_name'])
     text=("<b>╭━━〔 🏏 T20I MATCH 〕━━╮\n\n" f"⚔️ {a}\n              VS\n🔥 {o}\n\n</b>"
