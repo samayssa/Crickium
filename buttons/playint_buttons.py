@@ -72,3 +72,7 @@ def bowler_tactic_keyboard(match_id,bowler=None):
 def strategy_keyboard(match_id):
     vals=[('🛡️ DEFENSIVE','defensive'),('🔄 ROTATE','rotate'),('⚖️ NEUTRAL','neutral'),('⚔️ AGGRESSIVE','aggressive'),('🚀 ULTRA AGGRESSIVE','ultra_aggressive')]
     return InlineKeyboardMarkup([[_b(lbl,f'playint_strategy:{match_id}:{val}','primary')] for lbl,val in vals])
+
+
+def exit_confirm_keyboard(match_id):
+    return InlineKeyboardMarkup([[_b("✅ Yes, I want", f"playint_exit_yes:{match_id}", "success"), _b("❌ Cancel", f"playint_exit_cancel:{match_id}", "danger")]])
