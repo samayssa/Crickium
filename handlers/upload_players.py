@@ -3,7 +3,9 @@ print("upload_players.py loaded")
 from handlers.registry import register
 from app import app
 from config import ADMIN_USER_ID
-from database.players_repo import bulk_upload_players
+from database.players_repo import bulk_upload_players, parse_player_line
+from database.playint_repo import insert_playint_player, parse_playint_player_line
+from database.playint_teams_repo import normalize_team_keyword, team_name
 from database.access_repo import has_upload_access
 
 
@@ -22,6 +24,38 @@ async def upload_players_command(message):
             chat_id,
             "🚫 This command is restricted to the bot owner, or users the owner has granted access to via /access."
         )
+        return
+
+    # ---- Optional PlayInt team upload: /upload_pl T20I-IND ----
+    parts = (message.get("text") or "").split()
+    playint_keyword = parts[1] if len(parts) > 1 else None
+    team_code = normalize_team_keyword(playint_keyword) if playint_keyword else None
+    if playint_keyword and team_code:
+        reply_to = message.get("reply_to_message")
+        if not reply_to or "text" not in reply_to:
+            await app.send_message(chat_id, "⚠️ Please use /upload_pl T20I-XXX as a reply to a message containing player data.")
+            return
+        raw_text = reply_to["text"]
+        uploaded = already = failed = 0
+        details = []
+        for line in [l for l in raw_text.splitlines() if l.strip()]:
+            player, error = parse_playint_player_line(line)
+            if error:
+                failed += 1; details.append(error); continue
+            try:
+                inserted, _row = await insert_playint_player(team_code, team_name(team_code), player, user_id, engine_key="T20I")
+                if inserted:
+                    uploaded += 1
+                else:
+                    already += 1
+            except Exception as exc:
+                failed += 1; details.append(f"{player.get('name','Player')}: {exc}")
+        report = (f"📋 <b>PlayInt Team Upload Report</b>\n\n"
+                  f"🌍 Team: <b>{team_name(team_code)}</b>\n"
+                  f"✅ Saved: {uploaded}\n♻️ Updated/Existing: {already}\n❌ Failed: {failed}")
+        if details:
+            report += "\n\n<b>Failure details:</b>\n" + "\n".join(f"• {d}" for d in details[:15])
+        await app.send_message(chat_id, report, parse_mode="HTML")
         return
 
     # ---- Must be used as a reply to a text message ----
