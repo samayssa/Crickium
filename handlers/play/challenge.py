@@ -2,7 +2,6 @@ from __future__ import annotations
 
 print("play/challenge.py loaded")
 
-import asyncio
 import html
 
 from handlers.registry import register, register_callback
@@ -12,10 +11,10 @@ from database.play_repo import (
     create_match, get_match, set_message_id, update_status,
     get_active_match_in_chat, get_active_match_for_user,
 )
+from database.playint_repo import get_active_match_in_chat as get_playint_match_in_chat, get_active_match_for_user as get_playint_match_for_user
 from utils.mentions import mention_html
 from buttons.play_buttons import challenge_keyboard
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
-from utils.timers import start_timer, cancel_timer
 
 from .pitch import send_pitch_selection
 
@@ -93,6 +92,11 @@ async def play_command(message):
         )
         return
 
+    active_playint_in_chat = await get_playint_match_in_chat(chat_id)
+    if active_playint_in_chat:
+        await app.send_message(chat_id, f"<b>⚠️ A PlayInt game is already going on in {html.escape(str(chat_title))}. Finish it before starting a new game.</b>", parse_mode="HTML")
+        return
+
     # --- Rule 2: the person sending /play can't already be mid-game. ---
     active_for_challenger = await get_active_match_for_user(challenger_id)
     if active_for_challenger:
@@ -101,6 +105,11 @@ async def play_command(message):
             "<b>⚠️ You're already in a game.\nPlease complete your previous one to start a new one.</b>",
             parse_mode="HTML",
         )
+        return
+
+    active_playint_for_challenger = await get_playint_match_for_user(challenger_id)
+    if active_playint_for_challenger:
+        await app.send_message(chat_id, "<b>⚠️ You're already in a PlayInt game. Please complete it before starting a new game.</b>", parse_mode="HTML")
         return
 
     # --- Resolve the opponent: reply-to-message OR /play @username. ---
@@ -173,6 +182,12 @@ async def play_command(message):
         )
         return
 
+    active_playint_for_opponent = await get_playint_match_for_user(opponent_id)
+    if active_playint_for_opponent:
+        opponent_mention = mention_html(opponent_id, opponent_username, opponent_name)
+        await app.send_message(chat_id, f"<b>⚠️ {opponent_mention} is already in another game. Try again once that game finishes.</b>", parse_mode="HTML")
+        return
+
     # The opponent can't be mid-game elsewhere either.
     active_for_opponent = await get_active_match_for_user(opponent_id)
     if active_for_opponent:
@@ -196,30 +211,6 @@ async def play_command(message):
     keyboard = challenge_keyboard(match["match_id"])
     sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
     await set_message_id(match["match_id"], sent["message_id"])
-
-    async def _challenge_expired():
-        current = await get_match(match["match_id"])
-        if not current or current.get("status") != "pending":
-            return
-        try:
-            await update_status(match["match_id"], "expired")
-            await app.edit_message_text(
-                chat_id,
-                sent["message_id"],
-                "<b>⌛ Match challenge has expired.\n\nSend a new one by reply /play, or /play @username.</b>",
-                parse_mode="HTML",
-                reply_markup=NO_KEYBOARD,
-            )
-        except Exception as exc:
-            print(f"[play] Failed to expire challenge match_id={match['match_id']}: {exc!r}")
-
-    start_timer(
-        "play_challenge",
-        match["match_id"],
-        lambda _remaining: asyncio.sleep(0),
-        _challenge_expired,
-        total_seconds=60,
-    )
 
     print(f"[play] match_id={match['match_id']} challenger={challenger_id} opponent={opponent_id}")
 
@@ -257,7 +248,10 @@ async def on_play_accept(callback_query):
         )
         return
 
-    cancel_timer("play_challenge", match_id)
+    if await get_playint_match_for_user(int(presser["id"])):
+        await app.answer_callback_query(callback_query["id"], "You're already in a PlayInt game. Finish it first.", show_alert=True)
+        return
+
     await update_status(match_id, "accepted")
     await app.answer_callback_query(callback_query["id"], "Challenge accepted!")
 
@@ -299,7 +293,6 @@ async def on_play_decline(callback_query):
         await app.answer_callback_query(callback_query["id"], "This challenge isn't for you!", show_alert=True)
         return
 
-    cancel_timer("play_challenge", match_id)
     await update_status(match_id, "declined")
     await app.answer_callback_query(callback_query["id"], "Challenge declined.")
 
