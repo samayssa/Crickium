@@ -416,6 +416,182 @@ def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_lev
                 weights[key] = max(0.0, float(weights.get(key, 0.0))) + excess * share
 
 
+# ---------------------------------------------------------------------------
+# ISOLATED MICRO-MODIFIERS
+# ---------------------------------------------------------------------------
+# These helpers intentionally sit outside the existing tactic/pitch/phase/
+# level/confidence matrices. They do not rewrite or mutate those tables.
+# They only make small, final probability adjustments for two gameplay rules:
+#   1) fresh + Ultra Aggressive risk, and
+#   2) a six-tier level-gap expression with a small death-over lift.
+#
+# The transfer is done on normalized probability mass so single-run/single
+# probability is preserved exactly when the requested transfer is feasible.
+# ---------------------------------------------------------------------------
+
+FRESH_ULTRA_RISK: dict[str, dict[str, tuple[float, float]]] = {
+    # (dot probability points, wicket probability points)
+    "overs_1_6": {
+        "green": (0.045, 0.018),
+        "bouncy": (0.040, 0.016),
+        "dusty": (0.035, 0.014),
+        "slow": (0.035, 0.014),
+        "dry": (0.025, 0.011),
+        "even": (0.015, 0.007),
+        "hard": (0.015, 0.007),
+        "flat": (0.005, 0.003),
+    },
+    "overs_7_15": {
+        "green": (0.040, 0.017),
+        "bouncy": (0.035, 0.015),
+        "dusty": (0.032, 0.013),
+        "slow": (0.032, 0.013),
+        "dry": (0.022, 0.010),
+        "even": (0.012, 0.006),
+        "hard": (0.012, 0.006),
+        "flat": (0.005, 0.003),
+    },
+    "overs_16_20": {
+        "green": (0.055, 0.023),
+        "bouncy": (0.050, 0.021),
+        "dusty": (0.045, 0.019),
+        "slow": (0.045, 0.019),
+        "dry": (0.035, 0.015),
+        "even": (0.025, 0.011),
+        "hard": (0.025, 0.011),
+        "flat": (0.015, 0.007),
+    },
+}
+
+LEVEL_GAP_TIERS: tuple[tuple[int, int, str]] = (
+    (-10**9, -31, "huge_bowler"),
+    (-30, -16, "bowler"),
+    (-15, -1, "slight_bowler"),
+    (0, 15, "slight_batter"),
+    (16, 30, "batter"),
+    (31, 10**9, "huge_batter"),
+)
+
+LEVEL_GAP_MICRO: dict[str, tuple[float, float, float]] = {
+    # (dot points, wicket points, boundary points)
+    "huge_bowler": (0.018, 0.006, 0.022),
+    "bowler": (0.012, 0.004, 0.015),
+    "slight_bowler": (0.005, 0.002, 0.007),
+    "slight_batter": (-0.005, -0.002, 0.007),
+    "batter": (-0.012, -0.004, 0.015),
+    "huge_batter": (-0.018, -0.006, 0.022),
+}
+
+
+def _level_gap_tier(batter_level: int, bowler_level: int) -> str | None:
+    diff = int(batter_level or 0) - int(bowler_level or 0)
+    for low, high, name in LEVEL_GAP_TIERS:
+        if low <= diff <= high:
+            return name
+    return None
+
+
+def _transfer_probability_mass(
+    weights: dict,
+    *,
+    add_dot: float = 0.0,
+    add_wicket: float = 0.0,
+    add_boundary: float = 0.0,
+) -> None:
+    """Transfer normalized probability mass without touching singles.
+
+    Positive dot/wicket transfers are funded from boundary mass. Positive
+    boundary transfers are funded from dot/wicket mass. The requested
+    transfer is scaled down automatically if insufficient source mass exists.
+    """
+    clean = {k: max(0.0, float(v)) for k, v in weights.items()}
+    total = sum(clean.values())
+    if total <= 0:
+        return
+    probs = {k: v / total for k, v in clean.items()}
+
+    # Positive boundary demand comes from dot + wicket, and positive
+    # dot/wicket demand comes from boundary. This deliberately leaves singles
+    # and extras out of the transfer pool.
+    dot = probs.get(0, 0.0)
+    wicket = probs.get("W", 0.0)
+    boundary_keys = (4, 6)
+    boundary = sum(probs.get(k, 0.0) for k in boundary_keys)
+
+    if add_dot > 0 or add_wicket > 0:
+        requested = max(0.0, add_dot) + max(0.0, add_wicket)
+        available = boundary
+        scale = min(1.0, available / requested) if requested > 0 else 0.0
+        dot_add = max(0.0, add_dot) * scale
+        wicket_add = max(0.0, add_wicket) * scale
+        moved = dot_add + wicket_add
+        probs[0] = dot + dot_add
+        probs["W"] = wicket + wicket_add
+        if boundary > 0 and moved > 0:
+            for key in boundary_keys:
+                share = probs.get(key, 0.0) / boundary
+                probs[key] = max(0.0, probs.get(key, 0.0) - moved * share)
+
+    elif add_boundary > 0:
+        source = dot + wicket
+        moved = min(max(0.0, add_boundary), source)
+        if source > 0 and moved > 0:
+            probs[0] = max(0.0, dot - moved * (dot / source))
+            probs["W"] = max(0.0, wicket - moved * (wicket / source))
+            if boundary > 0:
+                for key in boundary_keys:
+                    share = probs.get(key, 0.0) / boundary
+                    probs[key] = probs.get(key, 0.0) + moved * share
+            else:
+                probs[4] = moved * 0.75
+                probs[6] = moved * 0.25
+
+    # Write the probabilities back at the same overall scale.
+    for key in list(weights):
+        weights[key] = max(0.0, probs.get(key, 0.0) * total)
+
+
+def _apply_fresh_ultra_micro(weights: dict, pitch: str, over_number: int, balls_faced: int, mindset: str) -> None:
+    if mindset != "ultra_aggressive":
+        return
+    balls = max(0, int(balls_faced or 0))
+    if balls > 5:
+        return
+    phase = phase_key(over_number)
+    pitch_name = str(pitch or "even").strip().lower()
+    dot_add, wicket_add = FRESH_ULTRA_RISK.get(phase, {}).get(pitch_name, (0.0, 0.0))
+    # First two balls are the full opening-risk spike; balls 3-5 retain only
+    # 70% of it so the batter visibly settles without a hard discontinuity.
+    if balls >= 3:
+        dot_add *= 0.70
+        wicket_add *= 0.70
+    _transfer_probability_mass(
+        weights, add_dot=dot_add, add_wicket=wicket_add,
+    )
+
+
+def _apply_level_gap_micro(weights: dict, batter_level: int, bowler_level: int, over_number: int) -> None:
+    tier = _level_gap_tier(batter_level, bowler_level)
+    if tier is None:
+        return
+    dot_points, wicket_points, boundary_points = LEVEL_GAP_MICRO[tier]
+    # Death overs slightly sharpen a meaningful mismatch, without creating a
+    # separate pitch/tactic matrix or changing the existing level engine.
+    if phase_key(over_number) == "overs_16_20" and tier in {"bowler", "huge_bowler", "batter", "huge_batter"}:
+        dot_points *= 1.10
+        wicket_points *= 1.10
+        boundary_points *= 1.10
+
+    if dot_points >= 0 or wicket_points >= 0:
+        _transfer_probability_mass(
+            weights,
+            add_dot=max(0.0, dot_points),
+            add_wicket=max(0.0, wicket_points),
+        )
+    else:
+        _transfer_probability_mass(weights, add_boundary=max(0.0, boundary_points))
+
+
 def resolve_weights(
     bowler_tactic: str,
     batter_mindset: str,
@@ -462,6 +638,15 @@ def resolve_weights(
     _apply_realism_caps(
         weights, pitch, batter_level, bowler_level, confidence,
         batsman_balls_faced, int(wickets_this_over or 0),
+    )
+
+    # Isolated final micro-rules. The existing matrices, tactics, phase,
+    # confidence, level dampening and realism caps above remain untouched.
+    _apply_fresh_ultra_micro(
+        weights, pitch, over_number, batsman_balls_faced, mindset,
+    )
+    _apply_level_gap_micro(
+        weights, batter_level, bowler_level, over_number,
     )
 
     return {key: max(0.0, value) for key, value in weights.items()}
