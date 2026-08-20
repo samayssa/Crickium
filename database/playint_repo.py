@@ -113,9 +113,9 @@ async def get_active_match_for_user(user_id):
     )
 
 
-async def get_team_players(team_code, limit=None, offset=0):
-    query = "SELECT * FROM playint_players WHERE team_code=$1 ORDER BY player_id ASC"
-    args = [team_code]
+async def get_team_players(team_code, limit=None, offset=0, engine_key="T20I"):
+    query = "SELECT * FROM playint_players WHERE engine_key=$1 AND team_code=$2 ORDER BY player_id ASC"
+    args = [engine_key, team_code]
     if limit is not None:
         query += " LIMIT $2 OFFSET $3"
         args.extend([limit, offset])
@@ -123,37 +123,42 @@ async def get_team_players(team_code, limit=None, offset=0):
     return [dict(r) for r in rows]
 
 
-async def count_team_players(team_code):
-    return int(await fetchval("SELECT COUNT(*) FROM playint_players WHERE team_code=$1;", team_code) or 0)
+async def count_team_players(team_code, engine_key="T20I"):
+    return int(await fetchval("SELECT COUNT(*) FROM playint_players WHERE engine_key=$1 AND team_code=$2;", engine_key, team_code) or 0)
 
 
-async def get_team_player(team_code, player_id):
-    return await fetchrow("SELECT * FROM playint_players WHERE team_code=$1 AND player_id=$2;", team_code, player_id)
+async def get_team_player(team_code, player_id, engine_key="T20I"):
+    return await fetchrow("SELECT * FROM playint_players WHERE engine_key=$1 AND team_code=$2 AND player_id=$3;", engine_key, team_code, player_id)
 
 
-async def get_teams_player_ids(team_code, player_ids):
+async def get_teams_player_ids(team_code, player_ids, engine_key="T20I"):
     if not player_ids:
         return []
-    rows = await fetch("SELECT * FROM playint_players WHERE team_code=$1 AND player_id = ANY($2::int[]);", team_code, player_ids)
+    rows = await fetch("SELECT * FROM playint_players WHERE engine_key=$1 AND team_code=$2 AND player_id = ANY($3::int[]);", engine_key, team_code, player_ids)
     return [dict(r) for r in rows]
 
 
-async def insert_playint_player(team_code, team_name, player, uploaded_by):
-    return await fetchrow(
+async def insert_playint_player(team_code, team_name, player, uploaded_by, engine_key="T20I"):
+    """Insert a player only within the specified engine + team scope.
+
+    Returns a dict with `inserted` and `row`. The global `players` table is
+    deliberately never consulted for PlayInt uploads.
+    """
+    row = await fetchrow(
         """
         INSERT INTO playint_players
-        (team_code, team_name, name, country, role, bat_level, bowl_level, batting_hand, bowling_hand, uploaded_by)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        ON CONFLICT (team_code, name) DO UPDATE SET
-          team_name=EXCLUDED.team_name,
-          country=EXCLUDED.country,
-          role=EXCLUDED.role,
-          bat_level=EXCLUDED.bat_level,
-          bowl_level=EXCLUDED.bowl_level,
-          batting_hand=EXCLUDED.batting_hand,
-          bowling_hand=EXCLUDED.bowling_hand
+        (engine_key, team_code, team_name, name, country, role, bat_level, bowl_level, batting_hand, bowling_hand, uploaded_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT (engine_key, team_code, name) DO NOTHING
         RETURNING *;
         """,
-        team_code, team_name, player['name'], player['country'], player['role'],
+        engine_key, team_code, team_name, player['name'], player['country'], player['role'],
         player['bat_level'], player['bowl_level'], player['batting_hand'], player['bowling_hand'], uploaded_by,
     )
+    if row:
+        return True, dict(row)
+    existing = await fetchrow(
+        "SELECT * FROM playint_players WHERE engine_key=$1 AND team_code=$2 AND name=$3;",
+        engine_key, team_code, player['name'],
+    )
+    return False, dict(existing) if existing else None

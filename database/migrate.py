@@ -1,6 +1,52 @@
 from database.query import execute
 
 TABLES = {
+    "playint_players": """
+        CREATE TABLE IF NOT EXISTS playint_players(
+            player_id SERIAL PRIMARY KEY,
+            engine_key TEXT NOT NULL DEFAULT 'T20I',
+            team_code TEXT NOT NULL,
+            team_name TEXT NOT NULL,
+            name TEXT NOT NULL,
+            country TEXT,
+            role TEXT NOT NULL,
+            bat_level INTEGER NOT NULL,
+            bowl_level INTEGER NOT NULL,
+            batting_hand TEXT,
+            bowling_hand TEXT,
+            uploaded_by BIGINT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(engine_key, team_code, name)
+        );
+    """,
+    "playint_matches": """
+        CREATE TABLE IF NOT EXISTS playint_matches(
+            match_id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT,
+            challenger_id BIGINT NOT NULL,
+            challenger_username TEXT,
+            challenger_name TEXT,
+            opponent_id BIGINT NOT NULL,
+            opponent_username TEXT,
+            opponent_name TEXT,
+            challenger_team_code TEXT,
+            challenger_team_name TEXT,
+            opponent_team_code TEXT,
+            opponent_team_name TEXT,
+            challenger_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            opponent_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            challenger_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            opponent_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            status TEXT DEFAULT 'pending',
+            pitch TEXT,
+            toss_winner_id BIGINT,
+            toss_call TEXT,
+            toss_result TEXT,
+            decision TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
     "schema_version": """
         CREATE TABLE IF NOT EXISTS schema_version(
             id SERIAL PRIMARY KEY,
@@ -213,10 +259,6 @@ async def migrate():
         await execute(ddl)
         print(f"[migrate] Table '{table_name}' OK.")
 
-    print("[migrate] Ensuring 'users.captain_player_id' column exists...")
-    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captain_player_id BIGINT;")
-    print("[migrate] 'users.captain_player_id' OK.")
-
     print("[migrate] Ensuring 'users.last_seen_at' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();")
     print("[migrate] 'users.last_seen_at' OK.")
@@ -341,5 +383,16 @@ async def migrate():
         """
     )
     print("[migrate] players career-stat columns OK.")
+
+    # --- PlayInt engine/team scoped player storage ---
+    # Existing PlayInt rows belong to the T20I engine. Keep them intact while
+    # replacing the old team-only uniqueness rule with engine + team + name.
+    print("[migrate] Ensuring playint_players engine scope...")
+    await execute("ALTER TABLE playint_players ADD COLUMN IF NOT EXISTS engine_key TEXT NOT NULL DEFAULT 'T20I';")
+    await execute("UPDATE playint_players SET engine_key='T20I' WHERE engine_key IS NULL OR engine_key='';")
+    await execute("ALTER TABLE playint_players DROP CONSTRAINT IF EXISTS playint_players_team_code_name_key;")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_playint_players_engine_team_name ON playint_players(engine_key, team_code, name);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_playint_players_engine_team ON playint_players(engine_key, team_code);")
+    print("[migrate] playint_players engine scope OK.")
 
     print("Migration Complete.")
