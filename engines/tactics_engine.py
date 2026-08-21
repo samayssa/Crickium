@@ -180,15 +180,15 @@ def _apply_pitch_edge(weights: dict, pitch: str, batsman_balls_faced: int, bowle
         })
     elif balls <= 15:
         _apply(weights, {
-            0: 1.06, 1: 1.04, 2: 1.02, 3: 0.98,
-            4: 0.92, 6: 0.84, "W": 1.04,
+            0: 1.07, 1: 1.04, 2: 1.02, 3: 0.98,
+            4: 0.90, 6: 0.82, "W": 1.06,
         })
     elif balls <= 30:
-        _apply(weights, {0: 1.01, 4: 0.97, 6: 0.94, "W": 1.02})
+        _apply(weights, {0: 1.03, 4: 0.95, 6: 0.92, "W": 1.04})
     elif balls <= 45:
-        _apply(weights, {0: 1.00, 4: 0.99, 6: 0.97, "W": 1.01})
+        _apply(weights, {0: 1.02, 4: 0.97, 6: 0.94, "W": 1.03})
     else:
-        _apply(weights, {0: 1.00, 4: 0.995, 6: 0.985, "W": 1.005})
+        _apply(weights, {0: 1.01, 4: 0.98, 6: 0.95, "W": 1.02})
     return True
 
 
@@ -285,6 +285,27 @@ CONFIDENCE_ZONE_MATRIX: dict = {
     "in_the_zone": {0: 0.85, "W": 0.70, 4: 1.15, 6: 1.20},
 }
 
+# Small surface-aware calibration layered on top of the existing confidence
+# matrix. On bowling-friendly pitches, a high-confidence batter becomes more
+# efficient but does not erase the help available to the bowler. Batting-
+# friendly pitches keep the original In-The-Zone multipliers unchanged.
+IN_THE_ZONE_PITCH_ADJUSTMENTS = {
+    "green": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
+    "dusty": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
+    "dry": {0: 0.94, "W": 0.86, 4: 1.07, 6: 1.11},
+    "slow": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
+    "bouncy": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
+}
+
+
+def _apply_confidence_pitch_adjustment(weights: dict, pitch: str, zone: str) -> None:
+    if zone != "in_the_zone":
+        return
+    pitch_name = str(pitch or "even").strip().lower()
+    adjustment = IN_THE_ZONE_PITCH_ADJUSTMENTS.get(pitch_name)
+    if adjustment:
+        _apply(weights, adjustment)
+
 # The one override on the whole engine: a batter In The Zone playing
 # Aggressive/Ultra Aggressive against a bowler on Variation does NOT
 # get the in_the_zone wicket discount - it goes back to standard/
@@ -306,18 +327,29 @@ def _apply(weights: dict, modifiers: dict) -> None:
         weights[key] = weights.get(key, 0.0) * mult
 
 
-def _dampen_level_advantage(weights: dict, batter_level: int, bowler_level: int, balls_faced: int) -> None:
-    """Progressively soften level mismatch once the batter has settled.
+def _dampen_level_advantage(
+    weights: dict,
+    batter_level: int,
+    bowler_level: int,
+    balls_faced: int,
+    confidence: float,
+) -> None:
+    """Soften level mismatch as the batter gains experience and confidence.
 
-    0-15 balls: full level effect.
-    16-30: 65% of the mismatch remains.
-    31-45: 40% remains.
-    45+: 20% remains.
+    The original matchup matrix remains unchanged. Only its influence is
+    reduced progressively: 0-15 balls is full strength, then 80% / 65% /
+    50% of the mismatch remains. Higher confidence gives a small additional
+    reduction after the batter has faced enough balls to be meaningfully set.
     """
     balls = max(0, int(balls_faced or 0))
     if balls <= 15:
         return
-    factor = 0.65 if balls <= 30 else (0.40 if balls <= 45 else 0.20)
+    factor = 0.80 if balls <= 30 else (0.65 if balls <= 45 else 0.50)
+    conf = max(0.0, min(100.0, float(confidence or 0.0)))
+    if conf >= 80.0:
+        factor *= 0.80
+    elif conf >= 40.0:
+        factor *= 0.90
     diff = int(batter_level or 0) - int(bowler_level or 0)
     bucket = level_bucket(batter_level, bowler_level)
     base = LEVEL_DIFF_MATRIX[bucket]
@@ -626,10 +658,13 @@ def resolve_weights(
     if zone == "in_the_zone" and mindset in ("ultra_aggressive", "aggressive") and tactic == "variation":
         zone_mult["W"] = VARIATION_COUNTER_WICKET_MULT
     _apply(weights, zone_mult)
+    _apply_confidence_pitch_adjustment(weights, pitch, zone)
 
     # Once a batter has seen the attack for a while, raw level mismatch
     # matters less than actual execution and confidence.
-    _dampen_level_advantage(weights, batter_level, bowler_level, batsman_balls_faced)
+    _dampen_level_advantage(
+        weights, batter_level, bowler_level, batsman_balls_faced, confidence,
+    )
 
     if pitch_match:
         _cap_early_pitch_wicket_risk(weights, batsman_balls_faced)
