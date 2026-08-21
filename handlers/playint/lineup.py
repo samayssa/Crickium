@@ -27,7 +27,7 @@ def _role_counts(players):
 
 def _valid(players):
     c=_role_counts(players)
-    return len(players)==11 and 3<=c['Batsman']<=4 and 3<=c['AllRounder']<=4 and 3<=c['Bowler']<=4 and 1<=c['Wicketkeeper']<=2
+    return len(players)==11 and c['Batsman']>=1 and 2<=c['AllRounder']<=4 and 3<=c['Bowler']<=4 and c['Wicketkeeper']>=1
 
 def _build_text(code,players,selected):
     c=_role_counts([p for p in players if int(p.get('player_id') or 0) in selected])
@@ -35,7 +35,7 @@ def _build_text(code,players,selected):
     lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"{team_label(code).split(' ',1)[0]} <b>{team_name(code).upper()}</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
     chosen=[p for p in players if int(p.get('player_id') or 0) in selected]
     lines.extend([p.get('name','Player') for p in chosen])
-    lines += ['',f"🏏 Batsmen: {c['Batsman']}/3–4",f"🔄 All-Rounders: {c['AllRounder']}/3–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1–2",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
+    lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
     return '\n'.join(lines)
 
 async def _players(code):
