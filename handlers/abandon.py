@@ -16,10 +16,11 @@ from database.playint_repo import (
     update_status as update_playint_status,
 )
 from buttons.endgame_buttons import abandon_confirm_keyboard
-from engines.play_runtime import get_session as get_play_session, clear_session
-from engines.playint_runtime import get_playint_session, clear_playint_session
+from engines.play_runtime import get_session as get_play_session, get_session_in_chat as get_play_session_in_chat, clear_session
+from engines.playint_runtime import get_playint_session, get_playint_session_in_chat, clear_playint_session
 from engines.play_engine import pitch_label
 from utils.mentions import mention_html
+from utils.timers import cancel_timer
 
 
 NO_KEYBOARD = {"inline_keyboard": []}
@@ -106,6 +107,17 @@ def _game_summary(
 
 
 async def _find_active(chat_id: int):
+    # Live matches are kept in the in-memory runtime once the game starts.
+    # Prefer that authoritative live state before falling back to the DB
+    # stage/status lookup used for challenge/setup screens.
+    session = get_play_session_in_chat(chat_id)
+    if session is not None:
+        return dict(session.match), "play"
+
+    session = get_playint_session_in_chat(chat_id)
+    if session is not None:
+        return dict(session.match), "playint"
+
     match = await get_play_match_in_chat(chat_id)
     if match:
         return dict(match), "play"
@@ -117,14 +129,19 @@ async def _find_active(chat_id: int):
 
 async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None:
     session = get_play_session(match_id) if engine == "play" else get_playint_session(match_id)
-    if not session:
-        return
 
-    message_ids = {
-        getattr(session, "live_message_id", None),
-        getattr(session, "ready_message_id", None),
-        getattr(session, "short_message_id", None),
-    }
+    message_ids = set()
+    if session is not None:
+        message_ids.update({
+            getattr(session, "live_message_id", None),
+            getattr(session, "ready_message_id", None),
+            getattr(session, "short_message_id", None),
+        })
+    else:
+        match = await (get_play_match(match_id) if engine == "play" else get_playint_match(match_id))
+        if match:
+            message_ids.add(match.get("message_id"))
+
     for message_id in message_ids:
         if not message_id:
             continue
@@ -159,7 +176,7 @@ async def abond_command(message):
     if chat_type not in {"group", "supergroup"}:
         await app.send_message(
             chat_id,
-            "<b>⚠️ /abond can only be used inside a group game.</b>",
+            "<b>⚠️ /abandon can only be used inside a group game.</b>",
             parse_mode="HTML",
         )
         return
@@ -219,6 +236,9 @@ async def abandon_yes(callback_query):
             await update_play_status(mid, "ended")
         else:
             await update_playint_status(mid, "ended")
+        cancel_timer("challenge", mid)
+        cancel_timer("toss_call", mid)
+        cancel_timer("decision", mid)
     except Exception as exc:
         print(f"[abandon] Failed to mark {engine} match_id={mid} ended: {exc!r}")
         await app.answer_callback_query(
