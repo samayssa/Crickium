@@ -6,8 +6,10 @@ from database.query import fetchrow
 from database.play_repo import get_active_match_in_chat as get_play_match_in_chat, get_active_match_for_user as get_play_match_for_user
 from database.playint_repo import create_match,get_match,set_message_id,update_status,get_active_match_in_chat,get_active_match_for_user
 from buttons.playint_buttons import challenge_keyboard
-from utils.mentions import mention_html
+from utils.mentions import mention, mention_html
 from utils.debut_gate import has_minimum_team,get_playing_xi_status
+from utils.timers import start_timer, cancel_timer
+from engines.match_engine import challenge_expired_message
 from .teams import send_team_selection
 
 
@@ -79,6 +81,28 @@ async def playint_command(message):
     sent=await app.send_message(chat_id,_challenge_text(a,o),parse_mode='HTML',reply_markup=challenge_keyboard(match['match_id']))
     await set_message_id(match['match_id'],sent['message_id'])
 
+    challenge_id = int(match['match_id'])
+    async def on_reminder(remaining):
+        return None
+
+    async def on_timeout():
+        current = await get_match(challenge_id)
+        if not current or current['status'] != 'pending':
+            return
+        await update_status(challenge_id, 'expired')
+        await app.edit_message_text(
+            chat_id,
+            sent['message_id'],
+            challenge_expired_message(
+                mention(current['challenger_id'], current['challenger_username'], current['challenger_name']),
+                mention(current['opponent_id'], current['opponent_username'], current['opponent_name']),
+            ),
+            parse_mode='Markdown',
+            reply_markup={'inline_keyboard': []},
+        )
+
+    start_timer('challenge', challenge_id, on_reminder, on_timeout, total_seconds=60)
+
 @register_callback('playint_accept')
 async def playint_accept(callback_query):
     mid=int(callback_query['data'].split(':')[1]); presser=callback_query['from']; msg=callback_query['message']; match=await get_match(mid)
@@ -88,7 +112,7 @@ async def playint_accept(callback_query):
         await app.answer_callback_query(callback_query['id'],"This challenge isn't for you!",show_alert=True); return
     if await get_play_match_for_user(int(presser['id'])):
         await app.answer_callback_query(callback_query['id'],"You're already in another game. Finish it first.",show_alert=True); return
-    await update_status(mid,'accepted'); await app.answer_callback_query(callback_query['id'],'Challenge accepted!')
+    await update_status(mid,'accepted'); cancel_timer('challenge', mid); await app.answer_callback_query(callback_query['id'],'Challenge accepted!')
     a=mention_html(match['challenger_id'],match['challenger_username'],match['challenger_name']); o=mention_html(match['opponent_id'],match['opponent_username'],match['opponent_name'])
     text=("<b>╭━━〔 🏏 T20I MATCH 〕━━╮\n\n" f"⚔️ {a}\n              VS\n🔥 {o}\n\n</b>"
           "<blockquote><b>🏏 T20 International\n🌍 National Squads</b></blockquote>\n\n"
@@ -104,7 +128,7 @@ async def playint_decline(callback_query):
         await app.answer_callback_query(callback_query['id'],'This challenge is no longer active.',show_alert=True); return
     if int(presser['id'])!=int(match['opponent_id']):
         await app.answer_callback_query(callback_query['id'],"This challenge isn't for you!",show_alert=True); return
-    await update_status(mid,'declined'); await app.answer_callback_query(callback_query['id'],'Challenge declined.')
+    await update_status(mid,'declined'); cancel_timer('challenge', mid); await app.answer_callback_query(callback_query['id'],'Challenge declined.')
     a=mention_html(match['challenger_id'],match['challenger_username'],match['challenger_name']); o=mention_html(match['opponent_id'],match['opponent_username'],match['opponent_name'])
     text=("<b>╭━━〔 🏏 T20I MATCH 〕━━╮\n\n" f"⚔️ {a}\n              VS\n🔥 {o}\n\n</b>"
           "<blockquote><b>🏏 T20 International\n🌍 National Squads</b></blockquote>\n\n"
