@@ -142,7 +142,7 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
         clear_playint_session(match_id)
 
 
-@register("abond")
+@register("abandon")
 async def abond_command(message):
     user_id = int((message.get("from") or {}).get("id") or 0)
     chat_id = int((message.get("chat") or {}).get("id") or 0)
