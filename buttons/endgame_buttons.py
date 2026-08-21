@@ -1,8 +1,8 @@
 def endgame_confirm_keyboard(chat_id) -> dict:
     return {
         "inline_keyboard": [[
-            {"text": "✅ Yes, I want", "callback_data": f"endgame_yes:{chat_id}"},
-            {"text": "❌ Cancel", "callback_data": f"endgame_cancel:{chat_id}"},
+            {"text": "✅ Yes, Abandon", "callback_data": f"endgame_yes:{chat_id}"},
+            {"text": "❌ No, Cancel", "callback_data": f"endgame_cancel:{chat_id}"},
         ]]
     }
 import inspect
@@ -31,7 +31,7 @@ def abandon_confirm_keyboard(chat_id: int) -> "InlineKeyboardMarkup":
     Bot API button styling used by the project's other keyboards."""
     return InlineKeyboardMarkup([
         [
-            _abandon_button("✅ Yes, I want", f"abandon_yes:{chat_id}", "success"),
-            _abandon_button("❌ Cancel", f"abandon_cancel:{chat_id}", "danger"),
+            _abandon_button("✅ Yes, Abandon", f"abandon_yes:{chat_id}", "success"),
+            _abandon_button("❌ No, Cancel", f"abandon_cancel:{chat_id}", "danger"),
         ]
     ])
