@@ -103,6 +103,15 @@ def get_playint_session(match_id: int) -> PlaySession | None:
     return _PLAYINT_SESSIONS.get(int(match_id))
 
 
+def get_playint_session_in_chat(chat_id: int) -> PlaySession | None:
+    """Return the live in-memory session currently occupying a group."""
+    target = int(chat_id)
+    for session in _PLAYINT_SESSIONS.values():
+        if int(session.chat_id) == target:
+            return session
+    return None
+
+
 def clear_playint_session(match_id: int) -> None:
     _PLAYINT_SESSIONS.pop(int(match_id), None)
 
