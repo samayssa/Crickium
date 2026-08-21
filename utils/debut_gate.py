@@ -25,8 +25,10 @@ def validate_playing_xi(xi: list[dict]) -> tuple[bool, str]:
     """Validate the requested 11-player composition.
 
     The data model stores wicket-keepers as a flag on a Batsman row. A valid XI
-    must therefore contain 3-4 normal batsmen, 1-2 keepers, 3-4 all-rounders and
-    3-4 bowlers, totaling exactly eleven players.
+    must therefore contain at least 1 normal batsman, at least 1 keeper, 2-4
+    all-rounders and 3-4 bowlers, totaling exactly eleven players. There is no
+    separate upper cap on batsmen or keepers beyond the XI size and the other
+    required role minimums.
     """
     if len(xi) != 11:
         return False, "11 players are required in your Playing XI."
@@ -45,12 +47,12 @@ def validate_playing_xi(xi: list[dict]) -> tuple[bool, str]:
     allrounders = [p for p in xi if p.get("role") == "AllRounder"]
     bowlers = [p for p in xi if p.get("role") == "Bowler"]
 
-    if not (3 <= len(batsmen) <= 4):
-        return False, f"You need 3-4 batsmen (excluding wicket-keepers); you have {len(batsmen)}."
-    if not (1 <= len(keepers) <= 2):
-        return False, f"You need 1-2 wicket-keepers; you have {len(keepers)}."
-    if not (3 <= len(allrounders) <= 4):
-        return False, f"You need 3-4 all-rounders; you have {len(allrounders)}."
+    if len(batsmen) < 1:
+        return False, f"You need at least 1 batsman (excluding wicket-keepers); you have {len(batsmen)}."
+    if len(keepers) < 1:
+        return False, f"You need at least 1 wicket-keeper; you have {len(keepers)}."
+    if not (2 <= len(allrounders) <= 4):
+        return False, f"You need 2-4 all-rounders; you have {len(allrounders)}."
     if not (3 <= len(bowlers) <= 4):
         return False, f"You need 3-4 bowlers; you have {len(bowlers)}."
 
