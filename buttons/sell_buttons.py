@@ -29,3 +29,14 @@ def sell_confirm_keyboard(player_id, seller_id) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def sell_range_confirm_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                _styled_button("💰 CONFIRM SELL", f"sell_range_confirm:{token}", "success"),
+                _styled_button("❌ CANCEL", f"sell_range_cancel:{token}", "danger"),
+            ]
+        ]
+    )
