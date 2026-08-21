@@ -280,10 +280,40 @@ async def on_claim_release(callback_query):
         await app.answer_callback_query(callback_query["id"], "This claim has already been resolved.", show_alert=True)
         return
 
-    await set_claim_status(claim_id, "released")
-    
-    # Fetch player details to build a similar beautiful response card on Release
+    # Release is a sell-like operation: credit the player's current sell value
+    # and resolve the claim in one DB transaction so a double-click cannot
+    # grant the reward twice.  The existing response text below is unchanged.
     claimed_player = await fetchrow("SELECT * FROM players WHERE player_id = $1;", claim["player_id"])
+    if not claimed_player:
+        await app.answer_callback_query(callback_query["id"], "Player could not be found.", show_alert=True)
+        return
+
+    ovr = overall_rating(int(claimed_player.get("bat_level") or 0), int(claimed_player.get("bowl_level") or 0))
+    _buy_price, sell_price = get_price(ovr)
+
+    async def _release_tx(conn):
+        row = await conn.fetchrow(
+            "SELECT status FROM player_claims WHERE claim_id = $1 FOR UPDATE;",
+            claim_id,
+        )
+        if not row or row["status"] != "pending":
+            return False
+        await conn.execute(
+            "UPDATE player_claims SET status = 'released' WHERE claim_id = $1;",
+            claim_id,
+        )
+        updated = await conn.execute(
+            "UPDATE users SET balance = balance + $1, last_seen_at = NOW() WHERE user_id = $2;",
+            int(sell_price), int(presser["id"]),
+        )
+        if not updated.endswith(" 1"):
+            raise RuntimeError(f"Could not credit release reward for user_id={presser['id']}")
+        return True
+
+    released = await transaction(_release_tx)
+    if not released:
+        await app.answer_callback_query(callback_query["id"], "This claim has already been resolved.", show_alert=True)
+        return
     if claimed_player:
         footer = "🔄 This player has been released back to the global pool."
         text = _player_card_text(
