@@ -200,6 +200,40 @@ async def get_delete_targets(parsed_player: dict) -> dict:
     return {"kind": "global", "player": player, "name": name, "edition": None}
 
 
+async def get_delete_target_by_player_id(player_id: int) -> dict | None:
+    """Resolve a delete target from the command-facing player_id namespace.
+
+    Global players keep their positive database player_id. Special-edition players
+    are exposed through the existing negative player_id namespace returned by
+    as_special_player(), so -N unambiguously identifies special_player_id N.
+    """
+    pid = int(player_id)
+    if pid < 0:
+        player = await get_special_player_by_id(abs(pid))
+        if not player:
+            return None
+        return {
+            "kind": "special",
+            "player": player,
+            "name": str(player.get("name") or "").strip(),
+            "edition": str(player.get("edition") or "").strip(),
+        }
+
+    row = await fetchrow("SELECT * FROM players WHERE player_id=$1;", pid)
+    if not row:
+        return None
+    player = dict(row)
+    player["is_special"] = False
+    player["edition"] = None
+    player["special_edition_id"] = None
+    return {
+        "kind": "global",
+        "player": player,
+        "name": str(player.get("name") or "").strip(),
+        "edition": None,
+    }
+
+
 async def search_delete_candidates(query: str, limit: int = 50) -> list[dict]:
     """Find global + special players whose names contain the supplied text."""
     q = (query or "").strip()
