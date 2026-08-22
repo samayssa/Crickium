@@ -13,6 +13,7 @@ from database.special_players_repo import (
     delete_global_player,
     delete_special_player,
     search_delete_candidates,
+    get_delete_target_by_player_id,
 )
 from buttons.delp_buttons import delete_confirm_keyboard
 from config import ADMIN_USER_ID
@@ -37,6 +38,12 @@ def _candidate_label(player: dict) -> str:
     if player.get("is_special") and player.get("edition"):
         return f"{name} ({player['edition']})"
     return name
+
+
+def _candidate_id(player: dict) -> str:
+    if player.get("is_special"):
+        return str(int(player.get("player_id") or 0))
+    return str(int(player.get("player_id") or 0))
 
 
 def _candidate_target(player: dict) -> dict:
@@ -75,6 +82,8 @@ async def _show_single_confirmation(chat_id: int, user_id: int, target: dict):
     _PENDING[token] = {"owner_id": user_id, "targets": [target]}
     text = (
         f"⚠️ <b>DELETE PLAYER</b>\n\n"
+        f"Player ➤ <b>{html.escape(label)}</b>\n"
+        f"Player ID ➤ <code>{html.escape(_candidate_id(player))}</code>\n\n"
         f"Are you sure you want to delete <b>{html.escape(label)}</b> from the database, "
         f"from the <b>{html.escape(scope)}</b>?\n\n"
         f"This action cannot be undone."
@@ -90,7 +99,12 @@ async def _show_multiple_matches(chat_id: int, query: str, targets: list[dict]):
         if not player:
             continue
         exact = _candidate_label(player)
-        lines.append(f"• <code>/delp {html.escape(exact)}</code>")
+        pid = _candidate_id(player)
+        lines.append(
+            f"• <b>{html.escape(exact)}</b>\n"
+            f"  ID ➤ <code>{html.escape(pid)}</code>\n"
+            f"  <code>/delp {html.escape(exact)}</code>"
+        )
     lines.extend(["", "Special edition players must include their edition in brackets."])
     await app.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
 
@@ -157,10 +171,35 @@ async def delp_command(message):
         await app.send_message(chat_id, "⚠️ Use /delp <player name> or reply to the player list you want to delete.")
         return
 
-    # Direct name workflow: exact special syntax first; otherwise flexible substring matching.
+    # Direct workflow: exact player-id lookup, then name / special-edition lookup.
+    # Positive IDs address global players. Negative IDs address special editions
+    # through the existing command-facing namespace.
+    try:
+        numeric_id = int(arg)
+    except (TypeError, ValueError):
+        numeric_id = None
+
+    if numeric_id is not None:
+        target = await get_delete_target_by_player_id(numeric_id)
+        if not target:
+            await app.send_message(
+                chat_id,
+                f"⚠️ No player with ID <code>{html.escape(str(numeric_id))}</code> was found in the database.",
+                parse_mode="HTML",
+            )
+            return
+        await _show_single_confirmation(chat_id, user_id, target)
+        return
+
+    # Name workflow: exact special syntax first; otherwise flexible substring matching.
     targets = await _delete_candidates_from_name(arg)
     if not targets:
-        await app.send_message(chat_id, f"⚠️ No player matching <b>{html.escape(arg)}</b> was found in the database.", parse_mode="HTML")
+        await app.send_message(
+            chat_id,
+            f"⚠️ No player matching <b>{html.escape(arg)}</b> was found in the database.\n\n"
+            f"Use <code>/delp {html.escape(arg)}</code> with a valid player name or player ID.",
+            parse_mode="HTML",
+        )
         return
 
     if len(targets) == 1:
