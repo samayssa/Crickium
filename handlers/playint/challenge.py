@@ -7,7 +7,6 @@ from database.play_repo import get_active_match_in_chat as get_play_match_in_cha
 from database.playint_repo import create_match,get_match,set_message_id,update_status,get_active_match_in_chat,get_active_match_for_user
 from buttons.playint_buttons import challenge_keyboard
 from utils.mentions import mention, mention_html
-from utils.debut_gate import has_minimum_team,get_playing_xi_status
 from utils.timers import start_timer, cancel_timer
 from engines.match_engine import challenge_expired_message
 from .teams import send_team_selection
@@ -33,9 +32,6 @@ def parse_target(text):
 @register('playint')
 async def playint_command(message):
     chat_id=int(message['chat']['id']); u=message.get('from',{}); challenger_id=int(u.get('id'))
-    # Player eligibility is the existing entry gate; national team selection follows acceptance.
-    if not await has_minimum_team(challenger_id):
-        await app.send_message(chat_id,'<b>⚠️ You need a minimum 11 players team to challenge.</b>',parse_mode='HTML'); return
     active=await get_active_match_in_chat(chat_id)
     if active:
         await app.send_message(chat_id,'<b>⚠️ A PlayInt game is already going on in this group.</b>',parse_mode='HTML'); return
@@ -67,8 +63,6 @@ async def playint_command(message):
     opponent_id, opponent_username, opponent_name = target
     if opponent_id==challenger_id:
         await app.send_message(chat_id,"<b>⚠️ You can't challenge yourself!</b>",parse_mode='HTML'); return
-    if not await has_minimum_team(opponent_id):
-        await app.send_message(chat_id,'<b>⚠️ The opponent needs a minimum 11 players team.</b>',parse_mode='HTML'); return
     if await get_active_match_for_user(opponent_id):
         om=mention_html(opponent_id,opponent_username,opponent_name)
         await app.send_message(chat_id,f'<b>⚠️ {om} is already in another game.</b>',parse_mode='HTML'); return
