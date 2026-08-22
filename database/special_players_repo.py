@@ -97,6 +97,45 @@ async def get_special_player_by_id(special_player_id: int) -> dict | None:
     return as_special_player(row) if row else None
 
 
+async def search_player_variants(query: str, limit: int = 100) -> list[dict]:
+    """Search global + special players by partial player name.
+
+    Kept separate from get_player_variants() so existing exact-name callers keep
+    their current behavior. Results are ordered with exact/prefix global names
+    first, followed by special editions, using their existing IDs for stability.
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    like = f"%{q}%"
+    prefix = f"{q}%"
+    global_rows = await fetch(
+        """
+        SELECT * FROM players
+        WHERE LOWER(name) LIKE LOWER($1)
+        ORDER BY
+            CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END,
+            CASE WHEN LOWER(name) LIKE LOWER($3) THEN 0 ELSE 1 END,
+            player_id ASC
+        LIMIT $4;
+        """, like, q, prefix, limit,
+    )
+    special_rows = await fetch(
+        """
+        SELECT * FROM special_edition_players
+        WHERE LOWER(name) LIKE LOWER($1)
+        ORDER BY
+            CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END,
+            CASE WHEN LOWER(name) LIKE LOWER($3) THEN 0 ELSE 1 END,
+            special_player_id ASC
+        LIMIT $4;
+        """, like, q, prefix, limit,
+    )
+    result = [dict(r) | {"is_special": False, "edition": None, "special_edition_id": None} for r in global_rows]
+    result.extend(as_special_player(r) for r in special_rows)
+    return result
+
+
 async def get_player_variants(name: str) -> list[dict]:
     global_rows = await fetch(
         "SELECT * FROM players WHERE LOWER(name)=LOWER($1) LIMIT 1;", name
