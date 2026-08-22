@@ -68,6 +68,8 @@ async def _delete_candidates_from_name(query: str) -> list[dict]:
         return []
     base_name, edition = split_player_edition(query)
     if edition:
+        # Resolve special syntax first, but allow legacy global records whose
+        # actual stored name contains the same parenthesized text.
         target = await get_delete_targets({"name": query})
         return [target] if target.get("player") else []
     rows = await search_delete_candidates(base_name)
