@@ -33,7 +33,7 @@ from database.admin_repo import CLEAR_TABLES
 # up too means the pre-clear backup file reflects everything that is
 # genuinely about to be destroyed, not just the tables named in
 # CLEAR_TABLES.
-_CLEARDATA_CASCADE_EXTRAS = ["player_card_images", "daily_rewards"]
+_CLEARDATA_CASCADE_EXTRAS = ["player_card_images", "special_player_card_images", "daily_rewards"]
 
 CLEARDATA_BACKUP_TABLES = [*CLEAR_TABLES, *_CLEARDATA_CASCADE_EXTRAS]
 
@@ -55,6 +55,8 @@ NEVER_CLEARED_TABLES = [
 FULL_BACKUP_TABLES = [
     "users",
     "players",
+    "special_edition_players",
+    "special_player_card_images",
     "team_squads",
     "team_lineups",
     "daily_rewards",
@@ -82,6 +84,8 @@ assert set(CLEARDATA_BACKUP_TABLES).isdisjoint(NEVER_CLEARED_TABLES), (
 _RESTORE_ORDER = [
     "users",
     "players",
+    "special_edition_players",
+    "special_player_card_images",
     "team_squads",
     "team_lineups",
     "daily_rewards",

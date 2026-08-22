@@ -187,6 +187,31 @@ TABLES = {
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "special_edition_players": """
+        CREATE TABLE IF NOT EXISTS special_edition_players(
+            special_player_id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            edition TEXT NOT NULL,
+            country TEXT,
+            role TEXT NOT NULL,
+            bat_level INTEGER NOT NULL,
+            bowl_level INTEGER NOT NULL,
+            batting_hand TEXT,
+            bowling_hand TEXT,
+            uploaded_by BIGINT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
+    "special_player_card_images": """
+        CREATE TABLE IF NOT EXISTS special_player_card_images(
+            special_player_id BIGINT PRIMARY KEY REFERENCES special_edition_players(special_player_id) ON DELETE CASCADE,
+            file_id TEXT NOT NULL,
+            channel_message_id BIGINT,
+            uploaded_by BIGINT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
     "authorized_uploaders": """
         CREATE TABLE IF NOT EXISTS authorized_uploaders(
             user_id BIGINT PRIMARY KEY,
@@ -266,6 +291,11 @@ async def migrate():
     print("[migrate] Ensuring index on players.role exists...")
     await execute("CREATE INDEX IF NOT EXISTS idx_players_role ON players(role);")
     print("[migrate] idx_players_role OK.")
+
+    print("[migrate] Ensuring unique index on special-edition identity...")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_special_edition_identity ON special_edition_players(LOWER(name), LOWER(edition));")
+    await execute("CREATE INDEX IF NOT EXISTS idx_special_edition_name ON special_edition_players(LOWER(name));")
+    print("[migrate] special-edition indexes OK.")
 
     print("[migrate] Ensuring index on player_claims.user_id exists...")
     await execute("CREATE INDEX IF NOT EXISTS idx_player_claims_user ON player_claims(user_id, claimed_at);")

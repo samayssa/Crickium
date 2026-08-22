@@ -52,3 +52,23 @@ async def get_card_template_image(card_type: str) -> dict | None:
     """`card_type` is "bat" or "ball"."""
     row = await fetchrow("SELECT * FROM template_card_image WHERE card_type = $1;", card_type)
     return dict(row) if row else None
+
+
+async def save_special_player_card_image(special_player_id: int, file_id: str, channel_message_id: int | None, uploaded_by: int) -> None:
+    await execute(
+        """
+        INSERT INTO special_player_card_images (special_player_id, file_id, channel_message_id, uploaded_by, updated_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (special_player_id) DO UPDATE SET
+            file_id = EXCLUDED.file_id,
+            channel_message_id = EXCLUDED.channel_message_id,
+            uploaded_by = EXCLUDED.uploaded_by,
+            updated_at = NOW();
+        """,
+        special_player_id, file_id, channel_message_id, uploaded_by,
+    )
+
+
+async def get_special_player_card_image(special_player_id: int) -> dict | None:
+    row = await fetchrow("SELECT * FROM special_player_card_images WHERE special_player_id = $1;", special_player_id)
+    return dict(row) if row else None
