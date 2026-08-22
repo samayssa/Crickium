@@ -4,7 +4,7 @@ from handlers.registry import register
 from app import app
 from config import ADMIN_USER_ID
 from database.query import fetchrow
-from database.access_repo import grant_upload_access, has_upload_access
+from database.access_repo import grant_upload_access, has_upload_access, revoke_upload_access
 from utils.mentions import mention
 
 
@@ -30,6 +30,9 @@ async def access_command(message):
         await app.send_message(chat_id, "*🚫 This command is restricted to the bot owner only.*", parse_mode="Markdown")
         return
 
+    parts = (message.get("text") or "").split()
+    revoke = any(part.lower() == "revoke" for part in parts[1:])
+
     reply_to = message.get("reply_to_message")
     target_id = None
     target_username = None
@@ -45,7 +48,9 @@ async def access_command(message):
         target_name = target.get("first_name", "User")
         print(f"[access] Target resolved via reply: id={target_id} username=@{target_username}")
     else:
-        arg = _parse_target_arg(message.get("text", ""))
+        raw_parts = (message.get("text") or "").split()
+        target_parts = [part for part in raw_parts[1:] if part.lower() != "revoke"]
+        arg = target_parts[0] if target_parts else None
         if not arg:
             await app.send_message(
                 chat_id,
@@ -93,6 +98,14 @@ async def access_command(message):
 
     target_display = mention(target_id, target_username, target_name)
 
+    if revoke:
+        removed = await revoke_upload_access(target_id)
+        if removed:
+            await app.send_message(chat_id, f"*✅ Access Revoked*\n\n{target_display} no longer has access to the upload/admin player commands.", parse_mode="Markdown")
+        else:
+            await app.send_message(chat_id, f"*ℹ️ {target_display} does not currently have granted access.*", parse_mode="Markdown")
+        return
+
     if await has_upload_access(target_id):
         await app.send_message(
             chat_id,
@@ -105,7 +118,7 @@ async def access_command(message):
     await app.send_message(
         chat_id,
         f"*✅ Access Granted*\n\n"
-        f"{target_display} can now use /upload_pl and /upload_prob.",
+        f"{target_display} can now use /upload_pl, /upload_img, /delp and /editp.",
         parse_mode="Markdown",
     )
     print(f"[access] Granted upload access to user_id={target_id}, granted_by={user_id}")

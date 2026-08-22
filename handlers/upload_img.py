@@ -5,7 +5,8 @@ from app import app
 from config import ADMIN_USER_ID, PLAYER_IMAGE_CHANNEL_ID
 from database.access_repo import has_upload_access
 from database.players_repo import get_player
-from database.card_images_repo import save_player_card_image, save_card_template_image
+from database.special_players_repo import split_player_edition, get_special_player, display_edition
+from database.card_images_repo import save_player_card_image, save_special_player_card_image, save_card_template_image
 from database.tier_card_images_repo import save_tier_card_image
 from engines.level_engine import TIER_KEYS
 from utils.style import describe_player_styles
@@ -121,15 +122,29 @@ async def upload_img_command(message):
     tier_key = arg.strip().lower() if arg.strip().lower() in TIER_KEYS else None
     is_tier = tier_key is not None
     player = None
+    is_special = False
+    special_edition = None
     if not is_template and not is_tier:
-        player = await get_player(arg)
-        if not player:
-            await app.send_message(
-                chat_id,
-                f"⚠️ No player named *{arg}* found. Check the spelling, or upload them first with /upload_pl.",
-                parse_mode="Markdown",
-            )
-            return
+        base_name, special_edition = split_player_edition(arg)
+        if special_edition:
+            player = await get_special_player(base_name, special_edition)
+            is_special = True
+            if not player:
+                await app.send_message(
+                    chat_id,
+                    f"⚠️ No special edition player named *{base_name} ({special_edition})* found in the special database.",
+                    parse_mode="Markdown",
+                )
+                return
+        else:
+            player = await get_player(arg)
+            if not player:
+                await app.send_message(
+                    chat_id,
+                    f"⚠️ No player named *{arg}* found. Check the spelling, or upload them first with /upload_pl.",
+                    parse_mode="Markdown",
+                )
+                return
 
     original_file_id = photo["file_id"]
 
@@ -140,6 +155,8 @@ async def upload_img_command(message):
         placeholder_caption = _tier_caption(tier_key)
     else:
         placeholder_caption = _player_caption(player)
+        if is_special:
+            placeholder_caption = placeholder_caption.replace("🖼 *Player Card Image*", "🖼 *Special Edition Player Card Image*")
     try:
         sent = await app.send_photo(
             PLAYER_IMAGE_CHANNEL_ID,
@@ -173,6 +190,8 @@ async def upload_img_command(message):
         final_caption = _tier_caption(tier_key, stored_file_id)
     else:
         final_caption = _player_caption(player, stored_file_id)
+        if is_special:
+            final_caption = final_caption.replace("🖼 *Player Card Image*", "🖼 *Special Edition Player Card Image*")
     await app.edit_message_caption(PLAYER_IMAGE_CHANNEL_ID, channel_message_id, final_caption, parse_mode="Markdown")
 
     # ---- Step 3: save the reference in the database ----
@@ -194,10 +213,22 @@ async def upload_img_command(message):
         )
         print(f"[upload_img] {tier_key} tier card updated. file_id={stored_file_id} channel_message_id={channel_message_id}")
     else:
-        await save_player_card_image(player["player_id"], stored_file_id, channel_message_id, uploaded_by=user_id)
-        await app.send_message(
-            chat_id,
-            f"*✅ Custom card image saved for {player['name']}.*",
-            parse_mode="Markdown",
-        )
-        print(f"[upload_img] Player image saved. player_id={player['player_id']} file_id={stored_file_id} channel_message_id={channel_message_id}")
+        if is_special:
+            await save_special_player_card_image(player["special_edition_id"], stored_file_id, channel_message_id, uploaded_by=user_id)
+        else:
+            await save_player_card_image(player["player_id"], stored_file_id, channel_message_id, uploaded_by=user_id)
+        if is_special:
+            edition_text = display_edition(player.get("edition")) or str(player.get("edition") or "Special Edition")
+            await app.send_message(
+                chat_id,
+                f"*✅ Custom card image saved for {player['name']} ({edition_text}).*",
+                parse_mode="Markdown",
+            )
+            print(f"[upload_img] Special player image saved. special_player_id={player['player_id']} file_id={stored_file_id} channel_message_id={channel_message_id}")
+        else:
+            await app.send_message(
+                chat_id,
+                f"*✅ Custom card image saved for {player['name']}.*",
+                parse_mode="Markdown",
+            )
+            print(f"[upload_img] Player image saved. player_id={player['player_id']} file_id={stored_file_id} channel_message_id={channel_message_id}")
