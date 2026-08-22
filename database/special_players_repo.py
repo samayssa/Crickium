@@ -191,10 +191,29 @@ async def delete_global_player(player_id: int) -> bool:
 
 
 async def get_delete_targets(parsed_player: dict) -> dict:
-    name, edition = split_player_edition(parsed_player["name"])
+    """Resolve a delete target while preserving legacy global names.
+
+    Before special editions existed, names containing parentheses were allowed in
+    the global players table. A legacy name such as ``Virat Kohli (Test Edition)``
+    must therefore be treated as a special edition only when that exact special
+    record actually exists; otherwise it remains a global-player name.
+    """
+    raw_name = str(parsed_player.get("name") or "").strip()
+    name, edition = split_player_edition(raw_name)
     if edition:
         player = await get_special_player(name, edition)
-        return {"kind": "special", "player": player, "name": name, "edition": edition}
+        if player:
+            return {"kind": "special", "player": player, "name": name, "edition": edition}
+
+        # Legacy fallback: this exact parenthesized value may be the real global
+        # player name from before the special-edition feature existed.
+        from database.players_repo import get_player
+        legacy_global = await get_player(raw_name)
+        if legacy_global:
+            return {"kind": "global", "player": legacy_global, "name": raw_name, "edition": None}
+
+        return {"kind": "special", "player": None, "name": name, "edition": edition}
+
     from database.players_repo import get_player
     player = await get_player(name)
     return {"kind": "global", "player": player, "name": name, "edition": None}
