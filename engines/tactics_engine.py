@@ -498,6 +498,81 @@ def _tailender_band(batter_level: int) -> str | None:
     return "deep_tail"
 
 
+def _move_probability_mass(weights: dict, source_key, target_key, amount: float) -> None:
+    """Move a normalized amount of probability mass between two outcomes."""
+    amount = max(0.0, float(amount or 0.0))
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0 or amount <= 0:
+        return
+    source = max(0.0, float(weights.get(source_key, 0.0)))
+    available = source / total
+    moved = min(amount, available)
+    if moved <= 0:
+        return
+    weights[source_key] = source - (moved * total)
+    weights[target_key] = max(0.0, float(weights.get(target_key, 0.0))) + (moved * total)
+
+
+def _apply_defensive_adaptation_micro(
+    weights: dict,
+    batter_level: int,
+    bowler_level: int,
+    balls_faced: int,
+    confidence: float,
+) -> None:
+    """Small defensive-intent adaptation layered after the existing engine.
+
+    Surviving 6/15/30+ balls makes a defensive batter more effective at rotating
+    strike rather than generating endless dots. A material level advantage still
+    shifts dot-vs-single pressure in the same direction as the existing matchup
+    matrix. After 30 balls, fours/sixes become intentionally rare for defense.
+    """
+    balls = max(0, int(balls_faced or 0))
+    if balls <= 5:
+        return
+
+    conf = max(0.0, min(100.0, float(confidence or 0.0)))
+    # Confidence growth makes the defensive batter better at converting dots
+    # into safe singles, without touching any other mindset.
+    conf_factor = 0.75 + (0.25 * (conf / 100.0))
+
+    single_gain = 0.045 * conf_factor
+    if balls > 15:
+        single_gain += 0.055 * conf_factor
+    if balls > 30:
+        single_gain += 0.060 * conf_factor
+
+    _move_probability_mass(weights, 0, 1, single_gain)
+
+    # Preserve the existing level-difference mapping, but let a clear matchup
+    # show up specifically in the defensive dot/single balance as the batter
+    # becomes experienced.
+    diff = int(bowler_level or 0) - int(batter_level or 0)
+    if diff >= 11:
+        _move_probability_mass(weights, 1, 0, min(0.035, 0.020 + (diff - 11) * 0.001))
+    elif diff <= -11:
+        _move_probability_mass(weights, 0, 1, min(0.035, 0.020 + (abs(diff) - 11) * 0.001))
+
+    if balls <= 30:
+        return
+
+    # Deeply settled defensive batters keep the strike moving, but boundaries
+    # become rare. Cap combined 4/6 mass at 2.5% and route suppressed mass to
+    # safe singles first.
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    boundary_mass = max(0.0, float(weights.get(4, 0.0))) + max(0.0, float(weights.get(6, 0.0)))
+    if total <= 0 or boundary_mass <= 0:
+        return
+    cap = total * 0.025
+    if boundary_mass <= cap:
+        return
+    excess = boundary_mass - cap
+    scale = cap / boundary_mass
+    weights[4] = max(0.0, float(weights.get(4, 0.0))) * scale
+    weights[6] = max(0.0, float(weights.get(6, 0.0))) * scale
+    weights[1] = max(0.0, float(weights.get(1, 0.0))) + excess
+
+
 def _apply_tailender_micro(weights: dict, batter_level: int) -> None:
     """Make sub-50 batters behave like lower-order/tail players without
     replacing any existing tactic, pitch, phase, level, confidence, or cap
@@ -788,6 +863,10 @@ def resolve_weights(
     _apply_level_gap_micro(
         weights, batter_level, bowler_level, over_number,
     )
+    if mindset == "defensive":
+        _apply_defensive_adaptation_micro(
+            weights, batter_level, bowler_level, batsman_balls_faced, confidence,
+        )
     _apply_tailender_micro(weights, batter_level)
 
     return {key: max(0.0, value) for key, value in weights.items()}
