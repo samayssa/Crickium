@@ -451,6 +451,111 @@ def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_lev
 # ---------------------------------------------------------------------------
 # ISOLATED MICRO-MODIFIERS
 # ---------------------------------------------------------------------------
+# Tailender calibration is intentionally isolated from the existing tactical
+# matrices. It only applies when the batter's own level is below 50.
+#   41-49: clear lower-order pressure
+#   40-44: stronger dismissal pressure
+#   <40:   strongest tailender penalty; boundaries become exceptional
+# The transfer preserves the existing architecture and leaves 50+ batters
+# completely unchanged. Singles are mildly reduced, while dot/wicket mass is
+# funded primarily from singles + boundaries so the effect is a true
+# lower-order profile rather than a blanket global wicket multiplier.
+# ---------------------------------------------------------------------------
+
+TAILENDER_BAND_RULES: dict[str, dict[str, float]] = {
+    "lower_order": {
+        "min_level": 45,
+        "dot": 0.10,
+        "wicket": 0.015,
+        "single": 0.045,
+        "boundary": 0.055,
+    },
+    "tailender": {
+        "min_level": 40,
+        "dot": 0.15,
+        "wicket": 0.030,
+        "single": 0.060,
+        "boundary": 0.085,
+    },
+    "deep_tail": {
+        "min_level": -10**9,
+        "dot": 0.20,
+        "wicket": 0.050,
+        "single": 0.080,
+        "boundary": 0.120,
+    },
+}
+
+
+def _tailender_band(batter_level: int) -> str | None:
+    level = int(batter_level or 0)
+    if level >= 50:
+        return None
+    if level >= 45:
+        return "lower_order"
+    if level >= 40:
+        return "tailender"
+    return "deep_tail"
+
+
+def _apply_tailender_micro(weights: dict, batter_level: int) -> None:
+    """Make sub-50 batters behave like lower-order/tail players without
+    replacing any existing tactic, pitch, phase, level, confidence, or cap
+    logic. The requested mass is funded from singles and boundaries only.
+    """
+    band = _tailender_band(batter_level)
+    if band is None:
+        return
+    rule = TAILENDER_BAND_RULES[band]
+
+    clean = {k: max(0.0, float(v)) for k, v in weights.items()}
+    total = sum(clean.values())
+    if total <= 0:
+        return
+    probs = {k: v / total for k, v in clean.items()}
+
+    # Move a modest amount out of singles and boundary outcomes. This keeps
+    # normal cricket scoring available, but makes lower-order survival much
+    # less comfortable.
+    requested_dot = rule["dot"]
+    requested_wicket = rule["wicket"]
+    requested_single = rule["single"]
+    requested_boundary = rule["boundary"]
+
+    source_single = probs.get(1, 0.0)
+    source_boundary = probs.get(4, 0.0) + probs.get(6, 0.0)
+    requested_from_single = min(requested_single, source_single * 0.75)
+    requested_from_boundary = min(requested_boundary, source_boundary * 0.80)
+    available = requested_from_single + requested_from_boundary
+    desired_add = requested_dot + requested_wicket
+    if desired_add <= 0 or available <= 0:
+        return
+
+    scale = min(1.0, available / desired_add)
+    dot_add = requested_dot * scale
+    wicket_add = requested_wicket * scale
+
+    # Fund the new dot/wicket mass proportionally from singles and boundaries.
+    move_single = available * (requested_from_single / max(1e-12, available))
+    move_boundary = available * (requested_from_boundary / max(1e-12, available))
+
+    probs[1] = max(0.0, probs.get(1, 0.0) - move_single)
+    if source_boundary > 0 and move_boundary > 0:
+        for key in (4, 6):
+            share = probs.get(key, 0.0) / source_boundary
+            probs[key] = max(0.0, probs.get(key, 0.0) - move_boundary * share)
+
+    probs[0] = probs.get(0, 0.0) + dot_add
+    probs["W"] = probs.get("W", 0.0) + wicket_add
+
+    # Renormalize to protect against floating-point drift. No other outcome
+    # is directly altered, and levels >=50 never enter this function.
+    new_total = sum(max(0.0, v) for v in probs.values())
+    if new_total <= 0:
+        return
+    for key in list(weights):
+        weights[key] = max(0.0, probs.get(key, 0.0) * total / new_total)
+
 # These helpers intentionally sit outside the existing tactic/pitch/phase/
 # level/confidence matrices. They do not rewrite or mutate those tables.
 # They only make small, final probability adjustments for two gameplay rules:
@@ -683,6 +788,7 @@ def resolve_weights(
     _apply_level_gap_micro(
         weights, batter_level, bowler_level, over_number,
     )
+    _apply_tailender_micro(weights, batter_level)
 
     return {key: max(0.0, value) for key, value in weights.items()}
 
