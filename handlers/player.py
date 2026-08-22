@@ -8,7 +8,7 @@ import uuid
 from handlers.registry import register, register_callback
 from app import app
 from database.players_repo import get_player
-from database.special_players_repo import get_player_variants, split_player_edition, display_edition, get_special_player
+from database.special_players_repo import get_player_variants, search_player_variants, split_player_edition, display_edition, get_special_player
 from database.squads_repo import get_team_squad
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
@@ -114,7 +114,7 @@ async def player_command(message):
         player = await get_special_player(base_name, edition)
         players = [player] if player else []
     else:
-        players = await get_player_variants(name)
+        players = await search_player_variants(name)
 
     if not players:
         await app.send_message(

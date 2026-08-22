@@ -9,7 +9,7 @@ from handlers.registry import register, register_callback
 from app import app
 from database.query import fetchrow, transaction
 from database.players_repo import get_player
-from database.special_players_repo import get_player_variants, get_special_player, split_player_edition, display_edition
+from database.special_players_repo import get_player_variants, search_player_variants, get_special_player, split_player_edition, display_edition
 from database.squads_repo import get_team_squad, save_team_squad
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
@@ -176,7 +176,7 @@ async def buy_command(message):
         special = await get_special_player(base_name, edition)
         players = [special] if special else []
     else:
-        players = await get_player_variants(name)
+        players = await search_player_variants(name)
 
     if not players:
         await app.send_message(chat_id, f"⚠️ No player named <b>{_escape(name)}</b> found. Check the spelling, or upload them first with /upload_pl.", parse_mode="HTML")

@@ -10,6 +10,8 @@ from handlers.registry import register, register_callback
 from app import app
 from database.query import execute, fetchrow
 from database.players_repo import get_player
+from database.special_players_repo import get_special_player_by_id, display_edition
+import uuid
 from database.squads_repo import get_team_squad, save_team_squad
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
@@ -28,6 +30,7 @@ CANCEL_NOTICE = "❌ Sale cancelled — this player stays in your squad."
 # In-memory batch-sale snapshots keep callback data short while preserving the exact
 # numbered players shown to the user until the confirmation/cancellation is pressed.
 _PENDING_BATCH_SALES: dict[str, dict] = {}
+_PENDING_SELL_SEARCH: dict[str, dict] = {}
 
 
 def _new_sale_token() -> str:
@@ -46,6 +49,49 @@ def _player_role_text(player: dict) -> str:
         return "Wicketkeeper"
     return "Player"
 
+
+def _sell_display_name(player: dict) -> str:
+    name = str(player.get("name") or "Unknown").strip()
+    if player.get("is_special") and player.get("edition"):
+        return f"{name} ({display_edition(player.get('edition'))})"
+    return name
+
+
+def _owned_player_matches(squad: list[dict], query: str) -> list[dict]:
+    q = str(query or "").strip()
+    if not q:
+        return []
+    q_lower = q.casefold()
+    matches = []
+    for raw in squad:
+        player = dict(raw)
+        display = _sell_display_name(player)
+        base = str(player.get("name") or "").strip()
+        edition = str(player.get("edition") or "").strip()
+        if q_lower in display.casefold() or q_lower in base.casefold():
+            matches.append(player)
+            continue
+        if edition and q_lower in edition.casefold():
+            matches.append(player)
+    matches.sort(key=lambda p: (
+        0 if _sell_display_name(p).casefold() == q_lower else 1,
+        0 if _sell_display_name(p).casefold().startswith(q_lower) else 1,
+        int(p.get("player_id") or 0),
+    ))
+    return matches
+
+
+def _sell_search_keyboard(token: str, page: int, total: int, player: dict, user_id: int) -> dict:
+    pages = max(1, total)
+    pid = int(player.get("player_id") or 0)
+    return {
+        "inline_keyboard": [[
+            {"text": "⬅️ Previous", "callback_data": f"sell_search:{token}:prev", "style": "primary"},
+            {"text": f"📄 {page + 1}/{pages}", "callback_data": "sell_search:noop", "style": "danger"},
+            {"text": "Next ➡️", "callback_data": f"sell_search:{token}:next", "style": "success"},
+        ], [
+            {"text": "💰 Sell This Player", "callback_data": f"sell_search:{token}:sell:{pid}:{int(user_id)}", "style": "success"},
+        ]]}
 
 def _parse_numeric_range(text: str) -> tuple[int, int] | None:
     parts = (text or "").split()
@@ -141,6 +187,9 @@ def _player_sale_text(player: dict, notice: str = DEFAULT_WARNING) -> str:
     name_block = f"<blockquote><b>👤 {name} {flag}</b></blockquote>"
 
     rarity_block = f"<blockquote><b>💎 {rarity}</b></blockquote>"
+    special_block = None
+    if player.get("is_special") and player.get("edition"):
+        special_block = f"<blockquote><b>✨ Special ➤ {_escape(display_edition(player.get('edition')))}</b></blockquote>"
 
     details_block = (
         "<blockquote><b><i>"
@@ -157,7 +206,11 @@ def _player_sale_text(player: dict, notice: str = DEFAULT_WARNING) -> str:
 
     notice_line = f"<b>{_escape(notice)}</b>"
 
-    return "\n".join([title, name_block, rarity_block, details_block, separator, "", notice_line])
+    parts = [title, name_block, rarity_block]
+    if special_block:
+        parts.append(special_block)
+    parts.extend([details_block, separator, "", notice_line])
+    return "\n".join(parts)
 
 
 def _player_sold_text(player: dict, sell_price: int) -> str:
@@ -244,30 +297,99 @@ async def sell_command(message):
         )
         return
 
-    player = await get_player(name)
-    if not player:
-        await app.send_message(
-            chat_id,
-            f"⚠️ No player named <b>{_escape(name)}</b> found. Check the spelling.",
-            parse_mode="HTML",
-        )
-        return
-
     squad = await get_team_squad(user_id) or []
-    owned = any(int(p.get("player_id") or 0) == int(player["player_id"]) for p in squad)
-    if not owned:
+    matches = _owned_player_matches(squad, name)
+
+    if not matches:
         await app.send_message(
             chat_id,
-            f"⚠️ You don't own <b>{_escape(player['name'])}</b>, so you can't sell them.",
+            f"⚠️ No player named <b>{_escape(name)}</b> found in your account. Check the spelling.",
             parse_mode="HTML",
         )
         return
 
+    if len(matches) > 1:
+        token = uuid.uuid4().hex[:10]
+        _PENDING_SELL_SEARCH[token] = {
+            "seller_id": int(user_id),
+            "players": matches,
+            "page": 0,
+        }
+        player = matches[0]
+        keyboard = _sell_search_keyboard(token, 0, len(matches), player, int(user_id))
+        await app.send_message(
+            chat_id,
+            _player_sale_text(player, f"⚠️ Multiple matching players found. Use the pages to choose one."),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        print(f"[sell] user_id={user_id} opened partial-name search token={token} matches={len(matches)} query={name!r}")
+        return
+
+    player = matches[0]
     text = _player_sale_text(player)
     keyboard = sell_confirm_keyboard(player["player_id"], user_id)
     await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
 
-    print(f"[sell] user_id={user_id} opened sale prompt for player_id={player['player_id']} ({player['name']})")
+    print(f"[sell] user_id={user_id} opened sale prompt for player_id={player['player_id']} ({_sell_display_name(player)})")
+
+
+
+@register_callback("sell_search")
+async def on_sell_search(callback_query):
+    parts = (callback_query.get("data") or "").split(":")
+    if len(parts) < 3:
+        await app.answer_callback_query(callback_query["id"], "Invalid sale search.", show_alert=True)
+        return
+    _, token, action = parts[:3]
+    if action == "noop":
+        await app.answer_callback_query(callback_query["id"], "Use Previous or Next to browse.")
+        return
+
+    state = _PENDING_SELL_SEARCH.get(token)
+    if not state:
+        await app.answer_callback_query(callback_query["id"], "This player search has expired.", show_alert=True)
+        return
+
+    user_id = int((callback_query.get("from") or {}).get("id") or 0)
+    if user_id != int(state["seller_id"]):
+        await app.answer_callback_query(callback_query["id"], "This search is not yours.", show_alert=True)
+        return
+
+    players = state["players"]
+    current = int(state.get("page", 0))
+
+    if action == "sell":
+        if len(parts) != 5:
+            await app.answer_callback_query(callback_query["id"], "Invalid player selection.", show_alert=True)
+            return
+        pid = int(parts[3])
+        selected = next((dict(p) for p in players if int(p.get("player_id") or 0) == pid), None)
+        if not selected:
+            await app.answer_callback_query(callback_query["id"], "This player is no longer available.", show_alert=True)
+            return
+        _PENDING_SELL_SEARCH.pop(token, None)
+        await app.answer_callback_query(callback_query["id"], "Selected.")
+        await _update_prompt(callback_query, _player_sale_text(selected), sell_confirm_keyboard(pid, user_id))
+        return
+
+    if action == "next":
+        current = min(len(players) - 1, current + 1)
+    elif action == "prev":
+        current = max(0, current - 1)
+    else:
+        await app.answer_callback_query(callback_query["id"], "Invalid page.", show_alert=True)
+        return
+
+    state["page"] = current
+    player = dict(players[current])
+    keyboard = _sell_search_keyboard(token, current, len(players), player, user_id)
+    await _update_prompt(
+        callback_query,
+        _player_sale_text(player, "⚠️ Multiple matching players found. Use the pages to choose one."),
+        keyboard,
+    )
+    await app.answer_callback_query(callback_query["id"], f"Page {current + 1}/{len(players)}")
 
 
 @register_callback("sell_confirm")
@@ -280,15 +402,35 @@ async def on_sell_confirm(callback_query):
         await app.answer_callback_query(callback_query["id"], "This isn't your sale prompt!", show_alert=True)
         return
 
-    player = await fetchrow("SELECT * FROM players WHERE player_id = $1;", int(player_id_str))
+    pid = int(player_id_str)
+    squad = await get_team_squad(seller_id) or []
+    player = next((dict(p) for p in squad if int(p.get("player_id") or 0) == pid), None)
     if not player:
-        await app.answer_callback_query(callback_query["id"], "This player no longer exists.", show_alert=True)
+        await app.answer_callback_query(callback_query["id"], "This player is no longer in your squad.", show_alert=True)
         await _update_prompt(callback_query, "<b>⚠️ This player is no longer available.</b>", NO_KEYBOARD)
         return
-    player = dict(player)
+    player["is_special"] = bool(player.get("is_special"))
+    if player.get("is_special"):
+        special_id = abs(pid)
+        db_player = await get_special_player_by_id(special_id)
+        if not db_player:
+            await app.answer_callback_query(callback_query["id"], "This player no longer exists.", show_alert=True)
+            await _update_prompt(callback_query, "<b>⚠️ This player is no longer available.</b>", NO_KEYBOARD)
+            return
+        player = db_player
+    else:
+        db_player = await get_player(str(player.get("name") or ""))
+        if not db_player:
+            await app.answer_callback_query(callback_query["id"], "This player no longer exists.", show_alert=True)
+            await _update_prompt(callback_query, "<b>⚠️ This player is no longer available.</b>", NO_KEYBOARD)
+            return
+        player = db_player
 
-    squad = await get_team_squad(seller_id) or []
-    still_owned = any(int(p.get("player_id") or 0) == int(player["player_id"]) for p in squad)
+    still_owned = any(
+        int(p.get("player_id") or 0) == pid
+        and bool(p.get("is_special")) == bool(player.get("is_special"))
+        for p in squad
+    )
     if not still_owned:
         await app.answer_callback_query(callback_query["id"], "You no longer own this player.", show_alert=True)
         await _update_prompt(callback_query, _player_sale_text(player, "ℹ️ You no longer own this player."), NO_KEYBOARD)
@@ -297,9 +439,10 @@ async def on_sell_confirm(callback_query):
     ovr = overall_rating(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
     _buy_price, sell_price = get_price(ovr)
 
-    new_squad = [p for p in squad if int(p.get("player_id") or 0) != int(player["player_id"])]
+    new_squad = [p for p in squad if int(p.get("player_id") or 0) != pid]
     await save_team_squad(seller_id, new_squad)
-    await reset_player_user_stats(seller_id, int(player["player_id"]))
+    if not player.get("is_special"):
+        await reset_player_user_stats(seller_id, pid)
     await execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2;", sell_price, seller_id)
 
     await app.answer_callback_query(callback_query["id"], "Sold!")
