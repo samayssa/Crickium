@@ -376,6 +376,42 @@ class App:
         )
         return _wrap_message(msg) if msg else {}
 
+    async def edit_message_media(self, chat_id, message_id, photo, caption=None, parse_mode=None, reply_markup=None):
+        """Edit an existing photo message in place, preserving its message id."""
+        print(f"[app.py] edit_message_media -> chat_id={chat_id} message_id={message_id}")
+        markup_json = _reply_markup_to_json(reply_markup)
+        raw_mode = _raw_parse_mode(parse_mode)
+        if _markup_has_style(markup_json) or isinstance(photo, (bytes, bytearray)) or hasattr(photo, "read"):
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(chat_id))
+            form.add_field("message_id", str(message_id))
+            media = {"type": "photo", "media": "attach://edited_photo"}
+            if caption is not None:
+                media["caption"] = caption
+                if raw_mode:
+                    media["parse_mode"] = raw_mode
+            form.add_field("media", _json.dumps(media))
+            if reply_markup is not None:
+                form.add_field("reply_markup", _json.dumps(markup_json))
+            if isinstance(photo, (bytes, bytearray)):
+                form.add_field("edited_photo", bytes(photo), filename="image.png", content_type="image/png")
+            else:
+                photo.seek(0)
+                form.add_field("edited_photo", photo.read(), filename="image.png", content_type="image/png")
+            result = await _resilient(
+                lambda: self._call_bot_api("editMessageMedia", data=form), label="edit_message_media(http)",
+            )
+            return _wrap_http_message(result)
+
+        from pyrogram.types import InputMediaPhoto
+        media = InputMediaPhoto(media=photo, caption=caption, parse_mode=_parse_mode(parse_mode))
+        msg = await _resilient(
+            lambda: self._client.edit_message_media(
+                chat_id=chat_id, message_id=message_id, media=media, reply_markup=_convert_reply_markup(reply_markup)
+            ), label="edit_message_media",
+        )
+        return _wrap_message(msg) if msg else {}
+
     async def delete_message(self, chat_id, message_id):
         print(f"[app.py] delete_message -> chat_id={chat_id} message_id={message_id}")
         try:
