@@ -198,3 +198,30 @@ async def get_delete_targets(parsed_player: dict) -> dict:
     from database.players_repo import get_player
     player = await get_player(name)
     return {"kind": "global", "player": player, "name": name, "edition": None}
+
+
+async def search_delete_candidates(query: str, limit: int = 50) -> list[dict]:
+    """Find global + special players whose names contain the supplied text."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    like = f"%{q}%"
+    global_rows = await fetch(
+        """
+        SELECT * FROM players
+        WHERE LOWER(name) LIKE LOWER($1)
+        ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END, player_id ASC
+        LIMIT $3;
+        """, like, q, limit
+    )
+    special_rows = await fetch(
+        """
+        SELECT * FROM special_edition_players
+        WHERE LOWER(name) LIKE LOWER($1)
+        ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END, special_player_id ASC
+        LIMIT $3;
+        """, like, q, limit
+    )
+    result = [dict(row) | {"is_special": False, "edition": None, "special_edition_id": None} for row in global_rows]
+    result.extend(as_special_player(row) for row in special_rows)
+    return result
