@@ -170,11 +170,23 @@ async def player_page_callback(callback_query):
     keyboard = catalog_page_keyboard(f"player_page:{token}", current, len(players))
     chat_id = callback_query["message"]["chat"]["id"]
     message_id = callback_query["message"]["message_id"]
-    # The app wrapper intentionally exposes caption/text edits but not editMessageMedia.
-    # Replace the old card with a new message so a special edition can show its own image.
     try:
-        await app.delete_message(chat_id, message_id)
-    except Exception:
-        pass
-    await _send_player_card(chat_id, user_id, player, keyboard)
+        image_bytes, _is_custom = await get_player_card_bytes(player)
+        await app.edit_message_media(
+            chat_id,
+            message_id,
+            image_bytes,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    except Exception as exc:
+        print(f"[player] In-place media edit failed ({exc!r}); falling back to caption/text edit.")
+        try:
+            if (callback_query.get("message") or {}).get("photo"):
+                await app.edit_message_caption(chat_id, message_id, text, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            await _send_player_card(chat_id, user_id, player, keyboard)
     await app.answer_callback_query(callback_query["id"], f"Page {current + 1}/{len(players)}")
