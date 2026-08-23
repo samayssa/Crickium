@@ -276,6 +276,17 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
     except Exception as exc:
         print(f"[match] Failed to update challenge status to completed: {exc!r}")
 
+    try:
+        from services.match_notification import send_match_completion_notification
+        await send_match_completion_notification(
+            app, engine="MATCH", pitch=session.meta.get("pitch"),
+            user1=(challenge.get("challenger_username"), challenge.get("challenger_name")),
+            user2=(challenge.get("opponent_username"), challenge.get("opponent_name")),
+            innings_1=first_card, innings_2=second_card,
+            result=result_text,
+        )
+    except Exception as exc:
+        print(f"[match] Match notification failed: {exc!r}")
     MATCH_ENGINE.clear_session(chat_id)
     print(f"[match] Match finished for challenge_id={challenge['challenge_id']}. {result_text}")
 

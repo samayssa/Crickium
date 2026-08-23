@@ -112,12 +112,18 @@ async def changexl_command(message):
         squad[outgoing_squad_idx], squad[target - 1] = squad[target - 1], squad[outgoing_squad_idx]
         await save_team_squad(user_id, squad)
 
+    incoming_name = incoming_player.get("name") or "Unknown"
+    outgoing_ovr = max(int((outgoing_player or {}).get("bat_level") or 0), int((outgoing_player or {}).get("bowl_level") or 0))
+    incoming_ovr = max(int(incoming_player.get("bat_level") or 0), int(incoming_player.get("bowl_level") or 0))
     await app.send_message(
         chat_id,
-        f"*🔁 PLAYING XI UPDATED*\n\n"
-        f"*Slot {slot}:* {outgoing_name} ➝ *{incoming_player.get('name')}*\n\n"
-        f"Use /pxl to see your updated Playing XI.\n"
-        f"Use /squad to see your updated squad positions.",
+        f"*🔁 PLAYING XI CHANGED*\n\n"
+        f"*Out / Slot {slot}:* {outgoing_name} • OVR {outgoing_ovr}\n"
+        f"*In / Squad {target}:* {incoming_name} • OVR {incoming_ovr}\n\n"
+        f"*✅ Slot {slot}* ➝ {incoming_name}\n"
+        f"*🪑 {outgoing_name}* moved to the bench.\n\n"
+        f"Use /pxl to view your Playing XI.\n"
+        f"Use /squad to view squad order.",
         parse_mode="Markdown",
     )
     print(f"[changexl] user_id={user_id} replaced XI slot {slot} ({outgoing_name}) with squad#{target} ({incoming_player.get('name')})")

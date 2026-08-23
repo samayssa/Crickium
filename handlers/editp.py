@@ -7,6 +7,7 @@ from app import app
 from config import ADMIN_USER_ID
 from database.access_repo import has_upload_access
 from database.players_repo import normalize_role
+from database.squads_repo import sync_player_snapshot
 from database.special_players_repo import (
     split_player_edition,
     get_special_player,
@@ -145,6 +146,14 @@ async def editp_command(message):
             if not updated:
                 errors.append(f"{parsed['identity']}: player disappeared before update.")
                 continue
+            # Players are denormalized into purchased squad JSON. Keep every
+            # owned copy in sync with the authoritative player record.
+            snapshot = {
+                key: updated.get(key)
+                for key in ("name", "edition", "country", "role", "bat_level", "bowl_level", "batting_hand", "bowling_hand", "is_special", "special_edition_id", "player_id")
+                if key in updated
+            }
+            await sync_player_snapshot(int(updated.get("player_id") or player.get("player_id") or 0), snapshot)
             success.append((parsed["identity"], kind, old, normalized))
         except Exception as exc:
             errors.append(f"{parsed['identity']}: {exc}")
