@@ -510,6 +510,8 @@ async def _finish_over_and_prompt_next(session) -> None:
         winner = (innings_1_snapshot["batting_team_display"] if winner_id == innings_1_snapshot["batting_team_id"]
                   else innings_2_snapshot["batting_team_display"]) if winner_id is not None else "MATCH TIED"
         potm_name = player_of_the_match(innings_1_snapshot, innings_2_snapshot)
+        match_result_text = _match_result_text(innings_1_snapshot, innings_2_snapshot)
+        await _safe_send(session.chat_id, match_result_text, parse_mode="HTML")
         try:
             await send_match_summary(
                 app, session.chat_id, [innings_1_snapshot, innings_2_snapshot],
@@ -517,8 +519,7 @@ async def _finish_over_and_prompt_next(session) -> None:
                     [innings_1_snapshot, innings_2_snapshot], potm_name),
             )
         except Exception as exc:
-            print(f"[play] Summary card failed; retaining text result: {exc!r}")
-            await _safe_send(session.chat_id, _match_result_text(innings_1_snapshot, innings_2_snapshot), parse_mode="HTML")
+            print(f"[play] Summary card failed after match-result text was sent: {exc!r}")
         await _record_player_squad_stats(session, innings_1_snapshot, innings_2_snapshot)
         await _award_match_xp_and_stats(session, innings_1_snapshot, innings_2_snapshot)
         try:
