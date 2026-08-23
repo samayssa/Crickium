@@ -24,9 +24,13 @@ CANVAS = (1024, 576)
 COORDINATES = {
     "title": (300, 8, 730, 58),
     "innings_1_header": (40, 61, 984, 109),
+    "innings_1_overs": (735, 61, 850, 109),
+    "innings_1_score": (855, 61, 975, 109),
     "innings_1_batting": (57, 112, 506, 266),
     "innings_1_bowling": (518, 112, 967, 266),
     "innings_2_header": (40, 278, 984, 326),
+    "innings_2_overs": (735, 278, 850, 326),
+    "innings_2_score": (855, 278, 975, 326),
     "innings_2_batting": (57, 329, 506, 463),
     "innings_2_bowling": (518, 329, 967, 463),
     "result": (40, 468, 984, 510),
@@ -99,10 +103,8 @@ def _figure(player: dict) -> str:
 
 def _rows(draw, box, snap, kind, color):
     x0, y0, x1, y1 = box
-    _text(draw, "BATTING" if kind == "bat" else "BOWLING",
-          (x0, y0, x0 + 150, y0 + 26), color, FONT_SIZES["section"], bold=True)
-    _text(draw, "RUNS (BALLS)" if kind == "bat" else "FIGURES",
-          (x1 - 150, y0, x1, y0 + 26), color, FONT_SIZES["section"], bold=True, align="right")
+    # These labels are already part of the supplied artwork. Redrawing them
+    # here creates the doubled labels visible in the faulty output.
     rows = (snap.get("batters") if kind == "bat" else snap.get("bowlers")) or []
     rows = sorted(rows, key=(lambda p: int(p.get("runs") or 0)) if kind == "bat"
                   else (lambda p: (int(p.get("wickets") or 0), -int(p.get("runs") or 0))),
@@ -145,8 +147,11 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         # Static innings labels are already part of the template. Only dynamic
         # team/over values are rendered by code so coordinates remain unchanged.
         _text(draw, f"{snap.get('over_text') or '0.0'} OVERS",
-              (header[2] - 190, header[1], header[2], header[3]),
-              COLORS["white"], FONT_SIZES["section"], bold=True, align="right")
+              box(f"innings_{idx+1}_overs"),
+              COLORS["white"], FONT_SIZES["section"], bold=True, align="center")
+        _text(draw, _score(snap),
+              box(f"innings_{idx+1}_score"),
+              COLORS["white"], FONT_SIZES["header"], bold=True, align="center")
         _rows(draw, box(f"innings_{idx+1}_batting"), snap, "bat", accent)
         _rows(draw, box(f"innings_{idx+1}_bowling"), snap, "bowl", accent)
 
