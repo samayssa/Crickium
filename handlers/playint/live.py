@@ -229,6 +229,10 @@ async def on_playint_bowler(callback_query):
         await app.answer_callback_query(callback_query["id"], "That bowler isn't available.", show_alert=True)
         return
 
+    if session.current_bowler is not None or session.stage != "choose_bowler":
+        await app.answer_callback_query(callback_query["id"], "⚠️ Bowler already chosen.", show_alert=True)
+        return
+
     if not assign_bowler(session, candidate):
         await app.answer_callback_query(callback_query["id"], "That bowler has no overs left.", show_alert=True)
         return
@@ -256,6 +260,9 @@ async def on_playint_tactic(callback_query):
         return
     if session.current_bowler is None:
         await app.answer_callback_query(callback_query["id"], "Choose a bowler first.", show_alert=True)
+        return
+    if session.current_tactic is not None or session.stage != "choose_tactic":
+        await app.answer_callback_query(callback_query["id"], "⚠️ Bowling tactic already chosen.", show_alert=True)
         return
 
     assign_tactic(session, tactic)
@@ -495,11 +502,15 @@ async def _finish_over_and_prompt_next(session) -> None:
         clear_playint_session(session.match_id)
         return
 
+    session.last_over = list(session.this_over)
+    session.last_over_commentary = list(session.over_commentary)
+
     session.current_bowler = None
     session.current_strategy = None
     session.current_tactic = None
     session.stage = "choose_bowler"
     session.this_over = []
+    session.over_commentary = []
 
     live = await _safe_send(
         session.chat_id,
@@ -533,6 +544,9 @@ async def on_playint_strategy(callback_query):
         return
     if session.current_tactic is None:
         await app.answer_callback_query(callback_query["id"], "Waiting on the bowling tactic first.", show_alert=True)
+        return
+    if session.current_strategy is not None or session.stage != "choose_strategy":
+        await app.answer_callback_query(callback_query["id"], "⚠️ Batting approach already chosen.", show_alert=True)
         return
 
     session.current_strategy = strategy
