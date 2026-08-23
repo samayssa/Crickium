@@ -5,7 +5,8 @@ from app import app
 from database.playint_repo import get_match,set_xi,set_xi_confirmed
 from database.playint_repo import get_team_players
 from database.playint_teams_repo import team_flag,team_name,team_label
-from buttons.playint_buttons import xi_keyboard
+from buttons.playint_challenger_buttons import challenger_xi_keyboard
+from buttons.playint_opponent_buttons import opponent_xi_keyboard
 from utils.mentions import mention_html
 from utils.country_flags import flag_for
 
@@ -16,6 +17,13 @@ def _decode_ids(value):
         try: return [int(x) for x in json.loads(value)]
         except Exception: return []
     return [int(x) for x in (value or [])]
+
+def _chosen_in_order(players, selected_ids):
+    by_id = {int(p.get('player_id') or 0): p for p in players}
+    return [by_id[pid] for pid in selected_ids if pid in by_id]
+
+def _xi_keyboard(match_id, code, players, selected_ids, is_challenger):
+    return (challenger_xi_keyboard if is_challenger else opponent_xi_keyboard)(match_id, code, players, selected_ids)
 
 def _role_counts(players):
     c={'Batsman':0,'AllRounder':0,'Bowler':0,'Wicketkeeper':0}
@@ -33,7 +41,7 @@ def _build_text(code,players,selected):
     c=_role_counts([p for p in players if int(p.get('player_id') or 0) in selected])
     status='✅ Team Valid' if _valid([p for p in players if int(p.get('player_id') or 0) in selected]) else '⚠️ Team Invalid'
     lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"{team_label(code).split(' ',1)[0]} <b>{team_name(code).upper()}</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
-    chosen=[p for p in players if int(p.get('player_id') or 0) in selected]
+    chosen=_chosen_in_order(players, selected)
     lines.extend([p.get('name','Player') for p in chosen])
     lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
     return '\n'.join(lines)
@@ -45,7 +53,7 @@ async def _players(code):
 
 async def send_build_messages(chat_id,match):
     for uid,field,code,is_ch in [(match['challenger_id'],'challenger_xi',match['challenger_team_code'],True),(match['opponent_id'],'opponent_xi',match['opponent_team_code'],False)]:
-        players=await _players(code); sent=await app.send_message(chat_id,_build_text(code,players,set()),parse_mode='HTML',reply_markup=xi_keyboard(match['match_id'],code,players,set(),is_ch));
+        players=await _players(code); sent=await app.send_message(chat_id,_build_text(code,players,[]),parse_mode='HTML',reply_markup=_xi_keyboard(match['match_id'],code,players,[],is_ch));
         # Separate build messages are retained; store latest one for cleanup only.
         if is_ch:
             await app.send_message(chat_id,'<b>🏏 Select your 11 players.</b>',parse_mode='HTML')
@@ -61,15 +69,22 @@ async def playint_xi(callback_query):
     expected=match.get('challenger_team_code') if is_ch else match.get('opponent_team_code')
     if code!=expected:
         await app.answer_callback_query(callback_query['id'],'Invalid team.',show_alert=True); return
-    selected=set(_decode_ids(match.get(field)))
+    selected=_decode_ids(match.get(field))
     players=await _players(code)
-    if pid not in {int(p.get('player_id') or 0) for p in players}:
+    player_ids={int(p.get('player_id') or 0) for p in players}
+    if pid not in player_ids:
         await app.answer_callback_query(callback_query['id'],'Player not found.',show_alert=True); return
-    if pid in selected: selected.remove(pid); msg='Player removed.'
-    elif len(selected)>=11: await app.answer_callback_query(callback_query['id'],'You can select maximum 11 players.',show_alert=True); return
-    else: selected.add(pid); msg='Player added.'
-    await set_xi(mid,uid,sorted(selected)); await app.answer_callback_query(callback_query['id'],msg)
-    await app.edit_message_text(callback_query['message']['chat']['id'],callback_query['message']['message_id'],_build_text(code,players,selected),parse_mode='HTML',reply_markup=xi_keyboard(mid,code,players,selected,is_ch))
+    if pid in selected:
+        selected.remove(pid); msg='Player unselected.'
+    elif len(selected)>=11:
+        await app.answer_callback_query(callback_query['id'],'You can select maximum 11 players.',show_alert=True); return
+    else:
+        selected.append(pid); msg='Player selected.'
+    # Answer immediately so Telegram clears the button spinner at once; the
+    # short DB write and message edit then happen without blocking the UI.
+    await app.answer_callback_query(callback_query['id'],msg)
+    await set_xi(mid,uid,selected,is_challenger=is_ch)
+    await app.edit_message_text(callback_query['message']['chat']['id'],callback_query['message']['message_id'],_build_text(code,players,selected),parse_mode='HTML',reply_markup=_xi_keyboard(mid,code,players,selected,is_ch))
 
 @register_callback('playint_xi_confirm')
 async def playint_xi_confirm(callback_query):
@@ -78,7 +93,7 @@ async def playint_xi_confirm(callback_query):
     is_ch=uid==int(match['challenger_id'])
     if not is_ch and uid!=int(match['opponent_id']):
         await app.answer_callback_query(callback_query['id'],'You are not part of this match.',show_alert=True); return
-    field='challenger_xi' if is_ch else 'opponent_xi'; selected=set(_decode_ids(match.get(field))); players=await _players(code); chosen=[p for p in players if int(p.get('player_id') or 0) in selected]
+    field='challenger_xi' if is_ch else 'opponent_xi'; selected=_decode_ids(match.get(field)); players=await _players(code); chosen=_chosen_in_order(players, selected)
     if not _valid(chosen):
         await app.answer_callback_query(callback_query['id'],'Team is invalid. Complete the required role limits first.',show_alert=True); return
     await set_xi_confirmed(mid,uid); await app.answer_callback_query(callback_query['id'],'Playing XI confirmed!')

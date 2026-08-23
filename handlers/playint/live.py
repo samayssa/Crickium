@@ -481,6 +481,17 @@ async def _finish_over_and_prompt_next(session) -> None:
             await update_status(session.match_id, "completed")
         except Exception as exc:
             print(f"[playint] Failed to mark match_id={session.match_id} completed: {exc!r}")
+        try:
+            from services.match_notification import send_match_completion_notification
+            await send_match_completion_notification(
+                app, engine="PLAYINT", pitch=session.match.get("pitch"),
+                user1=(session.match.get("challenger_username"), session.match.get("challenger_name")),
+                user2=(session.match.get("opponent_username"), session.match.get("opponent_name")),
+                innings_1=innings_1_snapshot, innings_2=innings_2_snapshot,
+                result=match_result_text,
+            )
+        except Exception as exc:
+            print(f"[playint] Match notification failed: {exc!r}")
         clear_playint_session(session.match_id)
         return
 
