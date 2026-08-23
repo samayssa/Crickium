@@ -5,7 +5,7 @@ from app import app
 from database.playint_repo import get_match,set_team,set_xi,set_xi_confirmed
 from database.playint_repo import get_team_players
 from database.playint_teams_repo import TEAM_MAP,TEAMS_PAGE_1,TEAMS_PAGE_2,team_flag,team_name,team_label
-from buttons.playint_buttons import team_keyboard,xi_keyboard
+from buttons.playint_buttons import team_keyboard
 from utils.mentions import mention_html
 
 
