@@ -258,6 +258,9 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
     )
     first_card = session.meta.get("first_innings_card_snapshot")
     second_card = snapshot_normal_session(session)
+    # Preserve the existing text result as the first post-match message. The
+    # image summary follows it immediately.
+    await app.send_message(chat_id, text, parse_mode="Markdown")
     try:
         cards = [first_card, second_card] if first_card else [second_card, second_card]
         potm_name = best_player(cards)
@@ -266,8 +269,7 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
             margin=margin, potm=player_details(cards, potm_name),
         )
     except Exception as exc:
-        print(f"[match] Summary card failed; retaining text result: {exc!r}")
-        await app.send_message(chat_id, text, parse_mode="Markdown")
+        print(f"[match] Summary card failed after match-result text was sent: {exc!r}")
 
     try:
         await update_status(challenge["challenge_id"], "completed")
