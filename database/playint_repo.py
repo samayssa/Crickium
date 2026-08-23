@@ -70,13 +70,15 @@ async def set_team(match_id, user_id, team_code, team_name):
         await execute("UPDATE playint_matches SET opponent_team_code=$1, opponent_team_name=$2, status='team_selection' WHERE match_id=$3;", team_code, team_name, match_id)
 
 
-async def set_xi(match_id, user_id, player_ids):
+async def set_xi(match_id, user_id, player_ids, is_challenger: bool | None = None):
     import json
-    row = await get_match(match_id)
-    if not row:
-        return
-    field = 'challenger_xi' if int(user_id) == int(row['challenger_id']) else 'opponent_xi'
-    await execute(f"UPDATE playint_matches SET {field}=$1::jsonb WHERE match_id=$2;", json.dumps(player_ids), match_id)
+    if is_challenger is None:
+        row = await get_match(match_id)
+        if not row:
+            return
+        is_challenger = int(user_id) == int(row['challenger_id'])
+    field = 'challenger_xi' if is_challenger else 'opponent_xi'
+    await execute(f"UPDATE playint_matches SET {field}=$1::jsonb WHERE match_id=$2;", json.dumps(list(player_ids)), match_id)
 
 
 async def set_xi_confirmed(match_id, user_id):
