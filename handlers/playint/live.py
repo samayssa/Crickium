@@ -33,6 +33,7 @@ from engines.playint_runtime import (
     top_bowlers,
 )
 from services.search import find_stadium_image_url
+from services.match_summary import send_match_summary, player_details
 from utils.mentions import mention_html
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
@@ -460,9 +461,19 @@ async def _finish_over_and_prompt_next(session) -> None:
         # Second (or later) innings just finished - the match is over.
         innings_2_snapshot = snapshot_innings(session)
         innings_1_snapshot = session.innings_history[0] if session.innings_history else innings_2_snapshot
-        await _safe_send(
-            session.chat_id, _match_result_text(innings_1_snapshot, innings_2_snapshot), parse_mode="HTML",
-        )
+        winner_id, margin = match_winner(innings_1_snapshot, innings_2_snapshot)
+        winner = (innings_1_snapshot["batting_team_display"] if winner_id == innings_1_snapshot["batting_team_id"]
+                  else innings_2_snapshot["batting_team_display"]) if winner_id is not None else "MATCH TIED"
+        potm_name = player_of_the_match(innings_1_snapshot, innings_2_snapshot)
+        try:
+            await send_match_summary(
+                app, session.chat_id, [innings_1_snapshot, innings_2_snapshot],
+                winner=winner, margin=margin, potm=player_details(
+                    [innings_1_snapshot, innings_2_snapshot], potm_name),
+            )
+        except Exception as exc:
+            print(f"[playint] Summary card failed; retaining text result: {exc!r}")
+            await _safe_send(session.chat_id, _match_result_text(innings_1_snapshot, innings_2_snapshot), parse_mode="HTML")
         await _record_player_squad_stats(session, innings_1_snapshot, innings_2_snapshot)
         await _award_match_xp_and_stats(session, innings_1_snapshot, innings_2_snapshot)
         try:
