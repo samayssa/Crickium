@@ -76,3 +76,81 @@ async def sync_player_snapshot(player_id: int, updates: dict[str, object]) -> in
     except Exception:
         return 0
 
+
+async def refresh_all_team_squads() -> tuple[int, int]:
+    """Synchronize every denormalized squad player snapshot from the
+    authoritative global/special player tables.
+
+    Positive player_id values refer to players.player_id. Negative values use
+    the special-edition namespace and map to abs(player_id)=special_player_id.
+    Other squad metadata is preserved.
+    """
+    result = await execute(
+        """
+        WITH refreshed AS (
+            SELECT
+                ts.user_id,
+                COALESCE(
+                    jsonb_agg(
+                        CASE
+                            WHEN ids.player_id > 0 AND gp.player_id IS NOT NULL THEN
+                                x.elem || jsonb_build_object(
+                                    'player_id', gp.player_id,
+                                    'name', gp.name,
+                                    'country', gp.country,
+                                    'role', gp.role,
+                                    'bat_level', gp.bat_level,
+                                    'bowl_level', gp.bowl_level,
+                                    'batting_hand', gp.batting_hand,
+                                    'bowling_hand', gp.bowling_hand,
+                                    'is_special', false,
+                                    'edition', NULL,
+                                    'special_edition_id', NULL
+                                )
+                            WHEN ids.player_id < 0 AND sp.special_player_id IS NOT NULL THEN
+                                x.elem || jsonb_build_object(
+                                    'player_id', -sp.special_player_id,
+                                    'name', sp.name,
+                                    'country', sp.country,
+                                    'role', sp.role,
+                                    'bat_level', sp.bat_level,
+                                    'bowl_level', sp.bowl_level,
+                                    'batting_hand', sp.batting_hand,
+                                    'bowling_hand', sp.bowling_hand,
+                                    'is_special', true,
+                                    'edition', sp.edition,
+                                    'special_edition_id', sp.special_player_id
+                                )
+                            ELSE x.elem
+                        END
+                        ORDER BY x.ord
+                    ),
+                    '[]'::jsonb
+                ) AS squad
+            FROM team_squads ts
+            CROSS JOIN LATERAL jsonb_array_elements(ts.squad) WITH ORDINALITY AS x(elem, ord)
+            CROSS JOIN LATERAL (SELECT CASE WHEN (x.elem->>'player_id') ~ '^-?[0-9]+$' THEN (x.elem->>'player_id')::bigint END AS player_id) AS ids
+            LEFT JOIN players gp
+                ON ids.player_id = gp.player_id
+            LEFT JOIN special_edition_players sp
+                ON ids.player_id < 0
+               AND abs(ids.player_id) = sp.special_player_id
+            GROUP BY ts.user_id
+        )
+        UPDATE team_squads ts
+        SET squad = refreshed.squad,
+            updated_at = NOW()
+        FROM refreshed
+        WHERE ts.user_id = refreshed.user_id
+        RETURNING ts.user_id, jsonb_array_length(ts.squad) AS player_count;
+        """
+    )
+
+    # asyncpg returns a command status for execute(). The statement above is
+    # intentionally a single atomic UPDATE so users never see half-refreshed
+    # squads. If the adapter returns rows in a future runtime, use them for a
+    # more precise count; otherwise derive the totals from a follow-up query.
+    rows = await fetch("SELECT user_id, jsonb_array_length(squad) AS player_count FROM team_squads;")
+    users = len(rows)
+    players = sum(int(r["player_count"] or 0) for r in rows)
+    return users, players
