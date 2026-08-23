@@ -9,6 +9,7 @@ from engines.innings_engine import BatterSlot, InningsState, create_innings, reg
 from engines.lineup_engine import bowling_candidates
 from engines.play_engine import playing_xi
 from engines.strategy_engine import resolve as resolve_strategy
+from engines.commentary_play_engine import get_commentary
 
 
 @dataclass(slots=True)
@@ -19,6 +20,7 @@ class OverEvent:
     wicket: bool
     legal: bool
     description: str
+    commentary: str = ""
 
 
 @dataclass(slots=True)
@@ -47,6 +49,9 @@ class PlaySession:
     selected_bowler_id: int | None = None
     stage: str = "choose_bowler"
     this_over: list[str] = field(default_factory=list)
+    over_commentary: list[str] = field(default_factory=list)
+    last_over: list[str] = field(default_factory=list)
+    last_over_commentary: list[str] = field(default_factory=list)
     bowler_stats: dict[int, dict[str, int]] = field(default_factory=dict)
     partnership_runs: int = 0
     partnership_balls: int = 0
@@ -161,6 +166,37 @@ def render_this_over(tokens: list[str]) -> str:
     return " • ".join(tokens)
 
 
+def _escape_commentary(text: str) -> str:
+    from html import escape
+    return escape(str(text or "")).replace("\r", "")
+
+
+def _render_commentary(commentary_lines: list[str]) -> str:
+    if not commentary_lines:
+        return ""
+    quoted = "\n\n".join(
+        f"Ball {index}: {_escape_commentary(line)}"
+        for index, line in enumerate(commentary_lines, start=1)
+    )
+    return f"<b>🗣️ Commentary</b>\n\n<blockquote expandable>{quoted}</blockquote>"
+
+
+def _render_over_timeline(session: PlaySession, *, bowler_prompt: bool) -> list[str]:
+    if session.this_over:
+        return session.this_over
+    if session.last_over:
+        return session.last_over
+    return []
+
+
+def _render_over_commentary(session: PlaySession, *, bowler_prompt: bool) -> list[str]:
+    if session.over_commentary:
+        return session.over_commentary
+    if session.last_over_commentary:
+        return session.last_over_commentary
+    return []
+
+
 def _format_batsman_line(slot: BatterSlot, striker: bool) -> str:
     prefix = "◉" if striker else " "
     name = (slot.name or "Player")[:22]
@@ -231,6 +267,9 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
     figures = "" if bowler_prompt or session.current_bowler is None or session.stage == "choose_tactic" else _format_bowler_figures(session)
     score = session.innings.score
     over_text = f"{score.overs}.{score.balls}"
+    timeline = _render_over_timeline(session, bowler_prompt=bowler_prompt)
+    commentary_lines = _render_over_commentary(session, bowler_prompt=bowler_prompt)
+    this_over_text = " • ".join(timeline) if timeline else "—"
     lines = [
         "<b>╭━━━〔 🏏 LIVE SCORE 〕━━━╮</b>",
         "",
@@ -251,7 +290,12 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
     ]
     if figures:
         lines.append(figures)
-    lines.extend(["", f"This over: [ {render_this_over(session.this_over)} ]", "", "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"])
+    lines.extend(["", f"This over: [ {this_over_text} ]", ""])
+    commentary_block = _render_commentary(commentary_lines)
+    if commentary_block:
+        lines.append(commentary_block)
+        lines.append("")
+    lines.append("<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>")
     return "\n".join(lines)
 
 def assign_bowler(session: PlaySession, player: dict[str, Any]) -> bool:
@@ -366,7 +410,19 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
         session.partnership_balls += 1
     session.partnership_runs += int(outcome.runs or 0)
     _update_bowler_stats(session, outcome)
+    commentary = get_commentary(
+        outcome.outcome,
+        over_number=int(context.over_number),
+        balls_faced=int(context.batsman_balls_faced),
+        result={
+            "outcome": outcome.outcome,
+            "runs": int(outcome.runs or 0),
+            "batter_name": striker_before.name if striker_before else None,
+            "bowler_name": (session.current_bowler or {}).get("name"),
+        },
+    )
     session.this_over.append(outcome.symbol)
+    session.over_commentary.append(commentary)
     if outcome.wicket:
         # A new pair is now at the crease - their partnership starts
         # fresh at 0/0, not carried over from the whole innings.
@@ -381,6 +437,7 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
         wicket=bool(outcome.wicket),
         legal=bool(outcome.legal),
         description=outcome.symbol,
+        commentary=commentary,
     )
 
 
@@ -496,6 +553,9 @@ def start_second_innings(session: PlaySession, target: int) -> None:
     session.selected_bowler_id = None
     session.stage = "choose_bowler"
     session.this_over = []
+    session.over_commentary = []
+    session.last_over = []
+    session.last_over_commentary = []
     session.bowler_stats = {}
     session.partnership_runs = 0
     session.partnership_balls = 0
