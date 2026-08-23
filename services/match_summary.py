@@ -73,7 +73,20 @@ def _text(draw, text, box, color, size, *, bold=False, align="left"):
 
 
 def _team_name(value: Any) -> str:
-    return str(value or "TEAM").replace("\n", " ").strip().upper()
+    """Return a clean plain-text team name without unsupported emoji/symbols."""
+    raw = str(value or "TEAM").replace("\n", " ").strip()
+    cleaned = []
+    for ch in raw:
+        # Regional-indicator flags, pictographs, dingbats and symbol fonts can
+        # render as tofu in the bundled Poppins font. Keep ordinary text and
+        # punctuation, drop Unicode symbol characters entirely.
+        import unicodedata
+        if unicodedata.category(ch).startswith("So") or unicodedata.category(ch) in {"Sk", "Sm"}:
+            continue
+        if ch in {"\ufe0f", "\u200d"}:
+            continue
+        cleaned.append(ch)
+    return "".join(cleaned).strip().upper() or "TEAM"
 
 
 def _score(snap: dict) -> str:
@@ -119,7 +132,9 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         x0, y0, x1, y1 = COORDINATES[key]
         return (round(x0 * scale_x), round(y0 * scale_y), round(x1 * scale_x), round(y1 * scale_y))
 
-    _text(draw, "MATCH SUMMARY", box("title"), COLORS["white"], FONT_SIZES["title"], bold=True, align="center")
+    # The bundled template already contains the static MATCH SUMMARY title and
+    # 1ST/2ND INNINGS header labels. Do not draw them again here; doing so
+    # creates the duplicated/overlapping text seen on the generated card.
     for idx in range(2):
         snap = innings[idx] if idx < len(innings) else {}
         accent = COLORS["blue"] if idx == 0 else COLORS["green"]
@@ -127,9 +142,8 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         _text(draw, _team_name(snap.get("batting_team_display")),
               (header[0], header[1], header[0] + 375, header[3]),
               COLORS["white"], FONT_SIZES["header"], bold=True)
-        _text(draw, f"{idx + 1}{'ST' if idx == 0 else 'ND'} INNINGS",
-              (header[0] + 375, header[1], header[2] - 190, header[3]),
-              COLORS["white"], FONT_SIZES["header"], bold=True, align="center")
+        # Static innings labels are already part of the template. Only dynamic
+        # team/over values are rendered by code so coordinates remain unchanged.
         _text(draw, f"{snap.get('over_text') or '0.0'} OVERS",
               (header[2] - 190, header[1], header[2], header[3]),
               COLORS["white"], FONT_SIZES["section"], bold=True, align="right")
