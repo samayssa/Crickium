@@ -46,6 +46,7 @@ from database.challenges_repo import (
 from database.squads_repo import get_team_squad
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
 from engines.innings_engine import create_innings
+from services.match_summary import send_match_summary, snapshot_normal_session, player_details, best_player
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -150,6 +151,7 @@ def _over_summary_text(session) -> str:
 
 
 async def _start_second_innings(chat_id: int, challenge: dict[str, Any], session):
+    session.meta["first_innings_card_snapshot"] = snapshot_normal_session(session)
     first_innings_summary = innings_summary(
         session.meta.get("batting_display"),
         session.innings.score.runs,
@@ -254,7 +256,18 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
         f"{second_summary}\n\n"
         f"*{result_text}*"
     )
-    await app.send_message(chat_id, text, parse_mode="Markdown")
+    first_card = session.meta.get("first_innings_card_snapshot")
+    second_card = snapshot_normal_session(session)
+    try:
+        cards = [first_card, second_card] if first_card else [second_card, second_card]
+        potm_name = best_player(cards)
+        await send_match_summary(
+            app, chat_id, cards, winner=winner_name or "MATCH TIED",
+            margin=margin, potm=player_details(cards, potm_name),
+        )
+    except Exception as exc:
+        print(f"[match] Summary card failed; retaining text result: {exc!r}")
+        await app.send_message(chat_id, text, parse_mode="Markdown")
 
     try:
         await update_status(challenge["challenge_id"], "completed")
