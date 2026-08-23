@@ -26,19 +26,6 @@ def team_keyboard(match_id, page=1):
     rows.append([_b('◀️ Previous',f'playint_team_page:{match_id}:prev:{page}','primary'),_b(f'Page {page}/2',f'playint_team_page:{match_id}:noop:{page}','primary'),_b('Next ▶️',f'playint_team_page:{match_id}:next:{page}','primary')])
     return InlineKeyboardMarkup(rows)
 
-def xi_keyboard(match_id, team_code, player_list, selected_ids, is_challenger):
-    style='success' if is_challenger else 'danger'
-    rows=[]
-    for i in range(0,len(player_list),2):
-        row=[]
-        for p in player_list[i:i+2]:
-            pid=int(p.get('player_id') or 0); flag=p.get('_flag') or '🏳️'; name=p.get('name','Player'); ovr=max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))
-            mark='✅ ' if pid in selected_ids else ''
-            row.append(_b(f'{mark}{flag} {name} • {ovr}',f'playint_xi:{match_id}:{team_code}:{pid}','success' if pid in selected_ids and is_challenger else ('danger' if pid in selected_ids else style)))
-        rows.append(row)
-    rows.append([_b('✅ CONFIRM PLAYING XI',f'playint_xi_confirm:{match_id}:{team_code}',style)])
-    return InlineKeyboardMarkup(rows)
-
 def pitch_keyboard(match_id):
     pairs=[('🌿 GREEN','green'),('🏜️ DRY','dry'),('🌪️ DUSTY','dusty'),('🛣️ FLAT','flat'),('🪨 HARD','hard'),('⚖️ EVEN','even'),('🏀 BOUNCY','bouncy'),('🐢 SLOW','slow')]
     rows=[]
