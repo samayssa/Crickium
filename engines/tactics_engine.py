@@ -233,93 +233,51 @@ def phase_key(over_number: int) -> str:
     return "overs_16_20"
 
 
-# --- LAYER 5: BOWLER LEVEL vs BATTER LEVEL (both 35-100) ---
-# Whoever's level leads the matchup gets the advantage - a big gap
-# either way should be clearly felt, not a rounding error.
-LEVEL_DIFF_BUCKETS = (
-    (-100, -30, "bowler_dominant_large"),
-    (-29, -11, "bowler_dominant"),
-    (-10, -7, "bowler_dominant_gap"),
-    (-6, 6, "even"),
-    (7, 10, "batter_dominant_gap"),
-    (11, 29, "batter_dominant"),
-    (30, 100, "batter_dominant_large"),
-)
-
-LEVEL_DIFF_MATRIX: dict = {
-    "bowler_dominant_large": {0: 1.22, 1: 0.92, "W": 1.45, 4: 0.68, 6: 0.58},
-    "bowler_dominant": {0: 1.10, 1: 0.96, "W": 1.28, 4: 0.82, 6: 0.78},
-    # 7-10 levels is a meaningful advantage, but deliberately not a free wicket.
-    "bowler_dominant_gap": {0: 1.06, 1: 0.98, "W": 1.16, 4: 0.90, 6: 0.86},
-    "even": {0: 1.00, 1: 1.00, "W": 1.00, 4: 1.00, 6: 1.00},
-    "batter_dominant_gap": {0: 0.94, 1: 1.03, "W": 0.88, 4: 1.10, 6: 1.14},
-    "batter_dominant": {0: 0.86, 1: 1.06, "W": 0.72, 4: 1.22, 6: 1.28},
-    "batter_dominant_large": {0: 0.76, 1: 1.10, "W": 0.54, 4: 1.38, 6: 1.48},
-}
+# --- LAYER 5: SMOOTH BOWLER LEVEL vs BATTER LEVEL ---
+# Test build: replace the old hard buckets with a smooth level-gap model.
+# Levels are treated from 1..99. A zero gap is neutral. Gaps 1..5 add a
+# one-percentage-point matchup budget per level. From gap 6 onward the
+# theoretical index accelerates (6 -> 1.10, 7 -> 1.20, ...), while the actual
+# probability transfer is softened and capped so the game stays balanced.
+LEVEL_MIN = 1
+LEVEL_MAX = 99
+LEVEL_GAP_MAX_BUDGET = 0.08  # balanced maximum total probability-mass transfer
 
 
-def level_bucket(batter_level: int, bowler_level: int) -> str:
-    diff = int(batter_level or 0) - int(bowler_level or 0)
-    for low, high, name in LEVEL_DIFF_BUCKETS:
-        if low <= diff <= high:
-            return name
-    return "even"
+def _clamp_level(value: int) -> int:
+    return max(LEVEL_MIN, min(LEVEL_MAX, int(value or 0)))
 
 
-# --- LAYER 6: BATSMAN CONFIDENCE ZONE ---
-# Zones (not a raw percentage) are what everything downstream reasons
-# about - engines/play_runtime.py still tracks the underlying 0-100
-# value (and the boundary streak used to build it up), but every
-# lookup here is zone-based.
-CONFIDENCE_ZONES = (
-    (0, 24, "nervous"),
-    (25, 39, "building"),
-    (40, 79, "set"),
-    (80, 100, "in_the_zone"),
-)
-
-CONFIDENCE_ZONE_MATRIX: dict = {
-    "nervous": {0: 1.20, "W": 1.30, 4: 0.70, 6: 0.60},
-    "building": {0: 1.05, "W": 1.10, 4: 0.90, 6: 0.85},
-    "set": {0: 1.00, "W": 1.00, 4: 1.00, 6: 1.00},
-    "in_the_zone": {0: 0.85, "W": 0.70, 4: 1.15, 6: 1.20},
-}
-
-# Small surface-aware calibration layered on top of the existing confidence
-# matrix. On bowling-friendly pitches, a high-confidence batter becomes more
-# efficient but does not erase the help available to the bowler. Batting-
-# friendly pitches keep the original In-The-Zone multipliers unchanged.
-IN_THE_ZONE_PITCH_ADJUSTMENTS = {
-    "green": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
-    "dusty": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
-    "dry": {0: 0.94, "W": 0.86, 4: 1.07, 6: 1.11},
-    "slow": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
-    "bouncy": {0: 0.95, "W": 0.88, 4: 1.06, 6: 1.10},
-}
+def level_gap(batter_level: int, bowler_level: int) -> int:
+    return _clamp_level(batter_level) - _clamp_level(bowler_level)
 
 
-def _apply_confidence_pitch_adjustment(weights: dict, pitch: str, zone: str) -> None:
-    if zone != "in_the_zone":
-        return
-    pitch_name = str(pitch or "even").strip().lower()
-    adjustment = IN_THE_ZONE_PITCH_ADJUSTMENTS.get(pitch_name)
-    if adjustment:
-        _apply(weights, adjustment)
+def theoretical_level_index(abs_gap: int) -> float:
+    gap = max(0, int(abs_gap or 0))
+    if gap <= 5:
+        return 1.0 + 0.01 * gap
+    return 1.10 + 0.10 * (gap - 6)
 
-# The one override on the whole engine: a batter In The Zone playing
-# Aggressive/Ultra Aggressive against a bowler on Variation does NOT
-# get the in_the_zone wicket discount - it goes back to standard/
-# slightly elevated instead, since Variation is built to trouble
-# exactly this batter, regardless of how set they are.
-VARIATION_COUNTER_WICKET_MULT = 1.05
+
+def level_advantage_budget(abs_gap: int) -> float:
+    gap = max(0, int(abs_gap or 0))
+    if gap <= 5:
+        budget = 0.01 * gap
+    else:
+        # Smooth actual effect: 6->6%, 10->10%, 20->20%, then capped.
+        budget = min(LEVEL_GAP_MAX_BUDGET, 0.05 + 0.01 * (gap - 5))
+    return max(0.0, min(LEVEL_GAP_MAX_BUDGET, budget))
+
+
+# --- LAYER 6: CONFIDENCE SYSTEM (TEMPORARILY DISABLED) ---
+# The confidence system is preserved for future restoration. Its values are
+# accepted by the public runtime signatures for compatibility, but confidence
+# does not affect probabilities in this test build.
+CONFIDENCE_ENGINE_ENABLED = False
 
 
 def confidence_zone(confidence: float) -> str:
-    value = max(0.0, min(100.0, float(confidence or 0.0)))
-    for low, high, name in CONFIDENCE_ZONES:
-        if low <= value <= high:
-            return name
-    return "set"
+    return "disabled"
 
 
 def _apply(weights: dict, modifiers: dict) -> None:
@@ -334,30 +292,8 @@ def _dampen_level_advantage(
     balls_faced: int,
     confidence: float,
 ) -> None:
-    """Soften level mismatch as the batter gains experience and confidence.
-
-    The original matchup matrix remains unchanged. Only its influence is
-    reduced progressively: 0-15 balls is full strength, then 80% / 65% /
-    50% of the mismatch remains. Higher confidence gives a small additional
-    reduction after the batter has faced enough balls to be meaningfully set.
-    """
-    balls = max(0, int(balls_faced or 0))
-    if balls <= 15:
-        return
-    factor = 0.80 if balls <= 30 else (0.65 if balls <= 45 else 0.50)
-    conf = max(0.0, min(100.0, float(confidence or 0.0)))
-    if conf >= 80.0:
-        factor *= 0.80
-    elif conf >= 40.0:
-        factor *= 0.90
-    diff = int(batter_level or 0) - int(bowler_level or 0)
-    bucket = level_bucket(batter_level, bowler_level)
-    base = LEVEL_DIFF_MATRIX[bucket]
-    for key, multiplier in base.items():
-        if key not in weights:
-            continue
-        softened = 1.0 + (float(multiplier) - 1.0) * factor
-        weights[key] = max(0.0, float(weights[key]) / max(0.01, float(multiplier)) * softened)
+    # Confidence-based level dampening is disabled for this test build.
+    return
 
 
 def _redistribute_excess(weights: dict, source_key: Any, cap_probability: float, preferred: tuple[Any, ...]) -> None:
@@ -392,21 +328,32 @@ def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_lev
     pitch_name = str(pitch or "even").strip().lower()
     diff = int(bowler_level or 0) - int(batter_level or 0)
 
-    # Wicket probability per delivery. A 7-10 level bowler edge is meaningful
-    # but still only a rare path to a second/third wicket in the same over.
+    # Wicket cap remains pitch-aware, but now tracks every level of matchup
+    # advantage so a 1-level bowler edge is not flattened to the same cap as
+    # an even matchup. The effect is deliberately bounded for balance.
+    level_gap_for_cap = max(0, int(diff or 0))
+    if pitch in {"flat", "hard"}:
+        base_cap = 0.030
+        gap_step = 0.0015
+        max_cap = 0.045
+    elif pitch in {"green", "dusty", "dry", "slow", "bouncy"}:
+        base_cap = 0.060
+        gap_step = 0.0020
+        max_cap = 0.080
+    else:
+        base_cap = 0.045
+        gap_step = 0.0020
+        max_cap = 0.060
+
+    matchup_cap = min(max_cap, base_cap + gap_step * level_gap_for_cap)
     if wickets_this_over >= 3:
         wicket_cap = 0.0
     elif wickets_this_over == 2:
-        wicket_cap = 0.018 if diff >= 7 else 0.010
+        wicket_cap = min(0.018, matchup_cap * 0.30)
     elif wickets_this_over == 1:
-        wicket_cap = 0.055 if diff >= 7 else 0.038
+        wicket_cap = min(0.055, matchup_cap * 0.82)
     else:
-        if pitch in {"flat", "hard"}:
-            wicket_cap = 0.042 if diff >= 7 else 0.030
-        elif pitch in {"green", "dusty", "dry", "slow", "bouncy"}:
-            wicket_cap = 0.080 if diff >= 7 else 0.060
-        else:
-            wicket_cap = 0.060 if diff >= 7 else 0.045
+        wicket_cap = matchup_cap
 
     # Confidence reduces how much raw level mismatch should matter.
     if balls_faced >= 45:
@@ -520,33 +467,17 @@ def _apply_defensive_adaptation_micro(
     balls_faced: int,
     confidence: float,
 ) -> None:
-    """Small defensive-intent adaptation layered after the existing engine.
-
-    Surviving 6/15/30+ balls makes a defensive batter more effective at rotating
-    strike rather than generating endless dots. A material level advantage still
-    shifts dot-vs-single pressure in the same direction as the existing matchup
-    matrix. After 30 balls, fours/sixes become intentionally rare for defense.
-    """
+    """Defensive adaptation based on balls faced only; confidence disabled."""
     balls = max(0, int(balls_faced or 0))
     if balls <= 5:
         return
-
-    conf = max(0.0, min(100.0, float(confidence or 0.0)))
-    # Confidence growth makes the defensive batter better at converting dots
-    # into safe singles, without touching any other mindset.
-    conf_factor = 0.75 + (0.25 * (conf / 100.0))
-
-    single_gain = 0.045 * conf_factor
+    single_gain = 0.045
     if balls > 15:
-        single_gain += 0.055 * conf_factor
+        single_gain += 0.055
     if balls > 30:
-        single_gain += 0.060 * conf_factor
-
+        single_gain += 0.060
     _move_probability_mass(weights, 0, 1, single_gain)
 
-    # Preserve the existing level-difference mapping, but let a clear matchup
-    # show up specifically in the defensive dot/single balance as the batter
-    # becomes experienced.
     diff = int(bowler_level or 0) - int(batter_level or 0)
     if diff >= 11:
         _move_probability_mass(weights, 1, 0, min(0.035, 0.020 + (diff - 11) * 0.001))
@@ -555,10 +486,6 @@ def _apply_defensive_adaptation_micro(
 
     if balls <= 30:
         return
-
-    # Deeply settled defensive batters keep the strike moving, but boundaries
-    # become rare. Cap combined 4/6 mass at 2.5% and route suppressed mass to
-    # safe singles first.
     total = sum(max(0.0, float(v)) for v in weights.values())
     boundary_mass = max(0.0, float(weights.get(4, 0.0))) + max(0.0, float(weights.get(6, 0.0)))
     if total <= 0 or boundary_mass <= 0:
@@ -782,26 +709,72 @@ def _apply_fresh_ultra_micro(weights: dict, pitch: str, over_number: int, balls_
     )
 
 
-def _apply_level_gap_micro(weights: dict, batter_level: int, bowler_level: int, over_number: int) -> None:
-    tier = _level_gap_tier(batter_level, bowler_level)
-    if tier is None:
-        return
-    dot_points, wicket_points, boundary_points = LEVEL_GAP_MICRO[tier]
-    # Death overs slightly sharpen a meaningful mismatch, without creating a
-    # separate pitch/tactic matrix or changing the existing level engine.
-    if phase_key(over_number) == "overs_16_20" and tier in {"bowler", "huge_bowler", "batter", "huge_batter"}:
-        dot_points *= 1.10
-        wicket_points *= 1.10
-        boundary_points *= 1.10
+def _apply_smooth_level_gap(weights: dict, batter_level: int, bowler_level: int, over_number: int) -> None:
+    """Apply a smooth, bounded level-gap advantage.
 
-    if dot_points >= 0 or wicket_points >= 0:
-        _transfer_probability_mass(
-            weights,
-            add_dot=max(0.0, dot_points),
-            add_wicket=max(0.0, wicket_points),
-        )
+    The theoretical index follows the requested progression (1.01..1.05,
+    then 1.10, 1.20, ...), while the actual game effect is a controlled
+    probability-mass transfer. A stronger bowler shifts mass toward dots and
+    wickets; a stronger batter gets the mirror image. Singles, doubles and
+    boundary rates move gradually rather than jumping between buckets.
+    """
+    diff = level_gap(batter_level, bowler_level)
+    if diff == 0:
+        return
+    budget = level_advantage_budget(abs(diff))
+    if phase_key(over_number) == "overs_16_20":
+        budget = min(LEVEL_GAP_MAX_BUDGET, budget * 1.05)
+
+    if diff < 0:
+        target = {0: 0.69, "W": 0.31}
+        source = {1: 0.38, 2: 0.22, 4: 0.20, 6: 0.14, "WD": 0.03, "NB": 0.03}
     else:
-        _transfer_probability_mass(weights, add_boundary=max(0.0, boundary_points))
+        target = {1: 0.38, 2: 0.20, 4: 0.20, 6: 0.14, "WD": 0.04, "NB": 0.04}
+        source = {0: 0.52, "W": 0.27, 4: 0.13, 6: 0.08}
+
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+    probs = {k: max(0.0, float(v)) / total for k, v in weights.items()}
+
+    # Minimum floors prevent a level advantage from ever driving a core
+    # outcome to zero. The existing realism layer still controls the final cap.
+    floors = {0: 0.05, 1: 0.04, 2: 0.01, 4: 0.015, 6: 0.003, "W": 0.008, "WD": 0.001, "NB": 0.001}
+
+    desired = {k: budget * share for k, share in source.items() if k in probs}
+    requested_total = sum(desired.values())
+    if requested_total <= 0:
+        return
+
+    # Take the requested mass from source outcomes while respecting floors.
+    moved = 0.0
+    available = {}
+    for key, amount in desired.items():
+        available[key] = max(0.0, probs.get(key, 0.0) - floors.get(key, 0.0))
+    total_available = sum(available.values())
+    if total_available <= 0:
+        return
+    scale = min(1.0, total_available / requested_total)
+    for key, avail in available.items():
+        take = min(avail, desired.get(key, 0.0) * scale)
+        probs[key] -= take
+        moved += take
+
+    # If source floors limited the exact request, redistribute only what was
+    # actually removed. This keeps the system probability-conserving.
+    target_total = sum(target.values())
+    if target_total <= 0 or moved <= 0:
+        return
+    for key, share in target.items():
+        if key in probs:
+            probs[key] += moved * (share / target_total)
+
+    # Final normalization and write-back.
+    total2 = sum(max(0.0, v) for v in probs.values())
+    if total2 <= 0:
+        return
+    for key in list(weights):
+        weights[key] = max(0.0, probs.get(key, 0.0) * total / total2)
 
 
 def resolve_weights(
@@ -831,21 +804,6 @@ def resolve_weights(
     _apply(weights, PITCH_MATRIX.get(pitch, {}))
     pitch_match = _apply_pitch_edge(weights, pitch, batsman_balls_faced, bowler_style, bowler_role)
     _apply(weights, PHASE_MATRIX[phase_key(over_number)])
-    _apply(weights, LEVEL_DIFF_MATRIX[level_bucket(batter_level, bowler_level)])
-
-    zone = confidence_zone(confidence)
-    zone_mult = dict(CONFIDENCE_ZONE_MATRIX[zone])
-    if zone == "in_the_zone" and mindset in ("ultra_aggressive", "aggressive") and tactic == "variation":
-        zone_mult["W"] = VARIATION_COUNTER_WICKET_MULT
-    _apply(weights, zone_mult)
-    _apply_confidence_pitch_adjustment(weights, pitch, zone)
-
-    # Once a batter has seen the attack for a while, raw level mismatch
-    # matters less than actual execution and confidence.
-    _dampen_level_advantage(
-        weights, batter_level, bowler_level, batsman_balls_faced, confidence,
-    )
-
     if pitch_match:
         _cap_early_pitch_wicket_risk(weights, batsman_balls_faced)
         _cap_early_pitch_boundary_pressure(weights, batsman_balls_faced)
@@ -855,13 +813,15 @@ def resolve_weights(
         batsman_balls_faced, int(wickets_this_over or 0),
     )
 
+    # Confidence is intentionally disabled. Apply the new level matchup as
+    # the final bounded micro-layer so its one-level changes are preserved
+    # instead of being flattened by the legacy wicket cap.
+    _apply_smooth_level_gap(weights, batter_level, bowler_level, over_number)
+
     # Isolated final micro-rules. The existing matrices, tactics, phase,
     # confidence, level dampening and realism caps above remain untouched.
     _apply_fresh_ultra_micro(
         weights, pitch, over_number, batsman_balls_faced, mindset,
-    )
-    _apply_level_gap_micro(
-        weights, batter_level, bowler_level, over_number,
     )
     if mindset == "defensive":
         _apply_defensive_adaptation_micro(
