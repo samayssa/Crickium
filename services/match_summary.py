@@ -24,17 +24,21 @@ CANVAS = (1024, 576)
 COORDINATES = {
     "title": (300, 8, 730, 58),
     "innings_1_header": (40, 61, 984, 109),
-    "innings_1_overs": (735, 61, 850, 109),
+    "innings_1_overs": (735, 61, 788, 109),
     "innings_1_score": (855, 61, 975, 109),
     "innings_1_batting": (57, 112, 506, 266),
     "innings_1_bowling": (518, 112, 967, 266),
     "innings_2_header": (40, 278, 984, 326),
-    "innings_2_overs": (735, 278, 850, 326),
+    "innings_2_overs": (735, 278, 788, 326),
     "innings_2_score": (855, 278, 975, 326),
     "innings_2_batting": (57, 329, 506, 463),
     "innings_2_bowling": (518, 329, 967, 463),
     "result": (40, 468, 984, 510),
-    "potm": (40, 518, 984, 566),
+    # The template already prints a white "#" glyph and a gold "POTM" badge
+    # in the footer row - these two boxes sit right next to each of them so
+    # only the dynamic match number / player details need to be drawn.
+    "match_number": (85, 515, 168, 548),
+    "potm": (275, 515, 984, 548),
 }
 COLORS = {
     "white": (245, 245, 245),
@@ -146,23 +150,40 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
               COLORS["white"], FONT_SIZES["header"], bold=True)
         # Static innings labels are already part of the template. Only dynamic
         # team/over values are rendered by code so coordinates remain unchanged.
-        _text(draw, f"{snap.get('over_text') or '0.0'} OVERS",
+        # The template already prints the word "OVERS" right after this box -
+        # drawing it again here was creating the doubled "OVERS OVERS" text.
+        _text(draw, f"{snap.get('over_text') or '0.0'}",
               box(f"innings_{idx+1}_overs"),
-              COLORS["white"], FONT_SIZES["section"], bold=True, align="center")
+              COLORS["white"], FONT_SIZES["section"], bold=True, align="right")
         _text(draw, _score(snap),
               box(f"innings_{idx+1}_score"),
               COLORS["white"], FONT_SIZES["header"], bold=True, align="center")
         _rows(draw, box(f"innings_{idx+1}_batting"), snap, "bat", accent)
         _rows(draw, box(f"innings_{idx+1}_bowling"), snap, "bowl", accent)
 
-    winner_text = f"{_team_name(winner)}  {margin}".strip().upper()
-    _text(draw, winner_text, box("result"), COLORS["gold"], FONT_SIZES["result"], bold=True, align="center")
+    # The template prints its own plain "WON BY" in the middle of this box.
+    # We want one clean gold sentence instead, so the safe zone between the
+    # trophy/wreath icons is painted over with the template's background
+    # color first, then the whole line is drawn fresh on top.
+    result_box = box("result")
+    erase_box = (
+        result_box[0] + round(120 * scale_x), result_box[1] + round(4 * scale_y),
+        result_box[2] - round(120 * scale_x), result_box[3] - round(4 * scale_y),
+    )
+    draw.rectangle(erase_box, fill=(2, 6, 8))
+    winner_text = f"{_team_name(winner)} WON BY {margin}".strip().upper()
+    _text(draw, winner_text, result_box, COLORS["gold"], FONT_SIZES["result"], bold=True, align="center")
     potm = potm or {}
     details = f"{int(potm.get('runs') or 0)} ({int(potm.get('balls') or 0)})"
     if potm.get("wickets") is not None:
         details += f"  |  {_figure(potm)}"
-    footer = f"# {int(match_number or 0)}     |     POTM     |     {potm.get('name') or '—'}     |     {details}"
-    _text(draw, footer, box("potm"), COLORS["white"], FONT_SIZES["potm"], bold=True, align="center")
+    # The template already prints a white "#" and a gold "POTM" badge in the
+    # footer, so only the number and the player's name/details are drawn -
+    # each right next to its matching static element.
+    _text(draw, str(int(match_number or 0)), box("match_number"),
+          COLORS["white"], FONT_SIZES["potm"], bold=True, align="left")
+    potm_line = f"{potm.get('name') or '—'}     |     {details}"
+    _text(draw, potm_line, box("potm"), COLORS["white"], FONT_SIZES["potm"], bold=True, align="left")
     out = BytesIO()
     image.save(out, "PNG")
     return out.getvalue()
