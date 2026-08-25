@@ -10,6 +10,7 @@ from buttons.playint_buttons import bowler_selection_keyboard, bowler_tactic_key
 from database.playint_repo import get_match, update_status, get_teams_player_ids
 from database.user_stats_repo import add_match_xp, record_match_result
 from database.player_user_stats_repo import record_match_player_stats
+from services.player_match_stats import record_session_player_stats
 from engines.level_engine import WIN_XP, LOSS_XP, TIE_XP
 from database.stadium_images_repo import get_stadium_image, save_stadium_image
 from engines.play_engine import pitch_label
@@ -329,66 +330,9 @@ async def _safe_send(chat_id, text, **kwargs):
 
 
 async def _record_player_squad_stats(session, innings_1: dict, innings_2: dict) -> None:
-    """Persist per-user stats for every player in each user's actual XI.
-    A player gets match=1 for both disciplines by being in the XI; innings
-    increments only when they actually faced a ball / delivered a ball.
-    """
+    """Persist per-user player stats for the current PlayInt match."""
     try:
-        snapshots = [innings_1, innings_2]
-        for user_id, xi in (
-            (int(session.match["challenger_id"]), None),
-            (int(session.match["opponent_id"]), None),
-        ):
-            if user_id == int(session.match["challenger_id"]):
-                # The XI for each side is stable for the whole match. It can be
-                # recovered from the side that participated in both innings.
-                xi = session.batting_squad if int(session.batting_team_id) == user_id else session.bowling_squad
-            else:
-                xi = session.batting_squad if int(session.batting_team_id) == user_id else session.bowling_squad
-            xi = list(xi or [])
-            bat_map = {}
-            bowl_map = {}
-            for snap in snapshots:
-                if int(snap.get("batting_team_id") or 0) == user_id:
-                    for b in snap.get("batters", []):
-                        pid = int(b.get("player_id") or 0)
-                        if pid:
-                            bat_map[pid] = b
-                if int(snap.get("bowling_team_id") or 0) == user_id:
-                    for b in snap.get("bowlers", []):
-                        pid = int(b.get("player_id") or 0)
-                        if pid:
-                            bowl_map[pid] = b
-
-            rows = []
-            for player in xi:
-                pid = int(player.get("player_id") or 0)
-                bat = bat_map.get(pid, {})
-                bowl = bowl_map.get(pid, {})
-                runs = int(bat.get("runs") or 0)
-                bat_balls = int(bat.get("balls") or 0)
-                dismissed = bool(bat.get("dismissed"))
-                wickets = int(bowl.get("wickets") or 0)
-                bowl_balls = int(bowl.get("balls") or 0)
-                bowl_runs = int(bowl.get("runs") or 0)
-                rows.append({
-                    "player_id": pid,
-                    "bat_matches": 1,
-                    "bat_innings": 1 if bat_balls > 0 else 0,
-                    "runs": runs,
-                    "fifties": 1 if 50 <= runs < 100 else 0,
-                    "centuries": 1 if runs >= 100 else 0,
-                    "bat_balls": bat_balls,
-                    "dismissals": 1 if dismissed else 0,
-                    "bowl_matches": 1,
-                    "bowl_innings": 1 if bowl_balls > 0 else 0,
-                    "wickets": wickets,
-                    "three_wickets": 1 if 3 <= wickets < 5 else 0,
-                    "five_wickets": 1 if wickets >= 5 else 0,
-                    "bowl_balls": bowl_balls,
-                    "bowl_runs": bowl_runs,
-                })
-            await record_match_player_stats(int(session.match_id), user_id, rows)
+        await record_session_player_stats(session)
     except Exception as exc:
         print(f"[playint] Failed to persist per-player squad stats: {exc!r}")
 
