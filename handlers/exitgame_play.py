@@ -11,7 +11,8 @@ from buttons.playint_buttons import exit_confirm_keyboard as playint_exit_confir
 from engines.playint_runtime import get_playint_session, clear_playint_session
 from database.user_stats_repo import add_match_xp, record_match_result
 from engines.level_engine import WIN_XP, EXIT_PENALTY_XP
-from engines.play_runtime import clear_session
+from engines.play_runtime import clear_session, get_session
+from services.player_match_stats import record_session_player_stats
 from utils.mentions import mention_html
 from buttons.play_buttons import exit_confirm_keyboard
 
@@ -86,6 +87,13 @@ async def on_play_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] Failed to apply coin penalty to user_id={presser['id']}: {exc!r}")
 
+    live_session = get_session(match_id)
+    if live_session:
+        try:
+            await record_session_player_stats(live_session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist player performance before exit for match_id={match_id}: {exc!r}")
+
     try:
         await update_status(match_id, "ended")
     except Exception as exc:
@@ -141,6 +149,13 @@ async def on_playint_exit_yes(callback_query):
         await execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
     except Exception as exc:
         print(f"[exitgame_play] PlayInt penalty failed: {exc!r}")
+    playint_session = get_playint_session(match_id)
+    if playint_session:
+        try:
+            await record_session_player_stats(playint_session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist PlayInt player performance before exit for match_id={match_id}: {exc!r}")
+
     try:
         await update_playint_status(match_id, "ended")
     except Exception as exc:
@@ -153,7 +168,7 @@ async def on_playint_exit_yes(callback_query):
         await record_match_result(stayed_id, won=True)
     except Exception as exc:
         print(f"[exitgame_play] PlayInt XP/stats failed: {exc!r}")
-    session = get_playint_session(match_id)
+    session = playint_session
     if session:
         for mid in {session.live_message_id, session.ready_message_id}:
             if mid:
