@@ -146,15 +146,42 @@ TACTICAL_MODIFIERS: dict = {
 
 # --- LAYER 3: ENVIRONMENTAL (PITCH CONDITION MAP) ---
 PITCH_MATRIX: dict = {
-    "green": {"W": 1.48, 0: 1.28, 4: 0.76, 6: 0.62, 1: 0.96, "WD": 1.10},
-    "dusty": {"W": 1.42, 0: 1.24, 1: 1.10, 4: 0.74, 6: 0.62, "BY": 1.30},
-    "dry": {1: 1.10, 2: 1.06, 4: 0.78, 6: 0.70, "W": 1.28, 0: 1.08},
-    "hard": {4: 1.20, 6: 1.15, 0: 0.90, "W": 1.10, "NB": 1.20},
-    "flat": {4: 1.40, 6: 1.45, 0: 0.70, "W": 0.60, "WD": 0.90},
-    "bouncy": {6: 1.05, "W": 1.34, 0: 1.18, 1: 0.90, 4: 0.82, "LB": 1.20},
-    "slow": {0: 1.22, 1: 1.08, 4: 0.72, 6: 0.66, "W": 1.24},
-    "even": {0: 1.00, 1: 1.00, 4: 1.00, 6: 1.00, "W": 1.00},
+    # Recalibrated run environment: batting-friendly surfaces now sit higher,
+    # while bowling-friendly surfaces retain their wicket/dot identity.
+    "green": {"W": 1.52, 0: 1.25, 4: 0.72, 6: 0.58, 1: 0.98, "WD": 1.08},
+    "dusty": {"W": 1.48, 0: 1.23, 1: 1.07, 4: 0.70, 6: 0.58, "BY": 1.28},
+    "dry": {1: 1.08, 2: 1.05, 4: 0.76, 6: 0.68, "W": 1.32, 0: 1.06},
+    "hard": {4: 1.35, 6: 1.28, 0: 0.82, 1: 1.02, 2: 1.04, "W": 1.05, "NB": 1.18},
+    "flat": {4: 1.65, 6: 1.75, 0: 0.55, 1: 1.02, 2: 1.08, "W": 0.50, "WD": 0.90},
+    "bouncy": {6: 1.00, "W": 1.38, 0: 1.18, 1: 0.92, 4: 0.80, "LB": 1.18},
+    "slow": {0: 1.20, 1: 1.07, 4: 0.70, 6: 0.64, "W": 1.30},
+    "even": {0: 0.96, 1: 1.02, 2: 1.03, 4: 1.05, 6: 1.05, "W": 1.03},
 }
+
+# Soft first-innings score environment targets. These are NOT hard score caps.
+# Defensive/rotate-heavy innings can still finish below the lower band.
+# The engine uses these as a mild run-environment nudge only.
+PITCH_SCORE_BANDS: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {
+    "flat": ((185, 235), (235, 270)),
+    "hard": ((175, 215), (215, 240)),
+    "even": ((150, 180), (180, 220)),
+    "green": ((130, 165), (165, 195)),
+    "dusty": ((125, 160), (160, 200)),
+    "dry": ((135, 175), (175, 210)),
+    "slow": ((125, 160), (160, 195)),
+    "bouncy": ((140, 175), (175, 215)),
+}
+
+
+def pitch_target_rpo(pitch: str) -> float:
+    name = str(pitch or "even").strip().lower()
+    bands = PITCH_SCORE_BANDS.get(name)
+    if not bands:
+        return 9.0
+    low_band, high_band = bands
+    low_mid = (low_band[0] + low_band[1]) / 2.0
+    high_mid = (high_band[0] + high_band[1]) / 2.0
+    return ((low_mid + high_mid) / 2.0) / 20.0
 
 def _pitch_match_for_bowler(pitch: str, bowler_style: str | None, bowler_role: str | None) -> bool:
     family = bowler_family(bowler_style, bowler_role)
@@ -233,6 +260,54 @@ def phase_key(over_number: int) -> str:
     return "overs_16_20"
 
 
+def _apply_pitch_score_environment(weights: dict, pitch: str) -> None:
+    """Gently pull the ball-outcome distribution toward the pitch's desired
+    first-innings scoring environment without imposing a hard score cap.
+    The current tactical/pitch/phase choices still dominate each ball.
+    """
+    target_rpo = pitch_target_rpo(pitch)
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+    expected = sum((k if isinstance(k, int) else (1.0 if k in {"WD", "NB", "LB", "BY"} else 0.0)) * max(0.0, float(v)) for k, v in weights.items()) / total
+    gap = target_rpo - expected
+    # Only make a gentle correction; this is deliberately not a score clamp.
+    if abs(gap) < 0.35:
+        return
+    strength = min(0.10, 0.018 + abs(gap) * 0.035)
+    probs = {k: max(0.0, float(v)) / total for k, v in weights.items()}
+    scoring = (1, 2, 4, 6, "WD", "NB", "LB", "BY")
+    containment = (0, "W")
+
+    if gap > 0:
+        source = sum(probs.get(k, 0.0) for k in containment)
+        moved = min(strength, source * 0.25)
+        if moved <= 0:
+            return
+        for k in containment:
+            share = probs.get(k, 0.0) / source if source else 0.0
+            probs[k] = max(0.0, probs.get(k, 0.0) - moved * share)
+        score_total = sum(probs.get(k, 0.0) for k in scoring)
+        if score_total > 0:
+            for k in scoring:
+                probs[k] += moved * (probs.get(k, 0.0) / score_total)
+    else:
+        source = sum(probs.get(k, 0.0) for k in scoring)
+        moved = min(strength, source * 0.18)
+        if moved <= 0:
+            return
+        for k in scoring:
+            share = probs.get(k, 0.0) / source if source else 0.0
+            probs[k] = max(0.0, probs.get(k, 0.0) - moved * share)
+        contain_total = sum(probs.get(k, 0.0) for k in containment)
+        if contain_total > 0:
+            probs[0] += moved * (probs.get(0, 0.0) / contain_total)
+            probs["W"] += moved * (probs.get("W", 0.0) / contain_total)
+
+    for k in list(weights):
+        weights[k] = max(0.0, probs.get(k, 0.0) * total)
+
+
 # --- LAYER 5: SMOOTH BOWLER LEVEL vs BATTER LEVEL ---
 # Test build: replace the old hard buckets with a smooth level-gap model.
 # Levels are treated from 1..99. A zero gap is neutral. Gaps 1..5 add a
@@ -241,7 +316,7 @@ def phase_key(over_number: int) -> str:
 # probability transfer is softened and capped so the game stays balanced.
 LEVEL_MIN = 1
 LEVEL_MAX = 99
-LEVEL_GAP_MAX_BUDGET = 0.08  # balanced maximum total probability-mass transfer
+LEVEL_GAP_MAX_BUDGET = 0.10  # slightly stronger but still bounded matchup transfer
 
 
 def _clamp_level(value: int) -> int:
@@ -265,7 +340,7 @@ def level_advantage_budget(abs_gap: int) -> float:
         budget = 0.01 * gap
     else:
         # Smooth actual effect: 6->6%, 10->10%, 20->20%, then capped.
-        budget = min(LEVEL_GAP_MAX_BUDGET, 0.05 + 0.01 * (gap - 5))
+        budget = min(LEVEL_GAP_MAX_BUDGET, 0.065 + 0.010 * (gap - 6))
     return max(0.0, min(LEVEL_GAP_MAX_BUDGET, budget))
 
 
@@ -410,39 +485,27 @@ def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_lev
 # ---------------------------------------------------------------------------
 
 TAILENDER_BAND_RULES: dict[str, dict[str, float]] = {
-    "lower_order": {
-        "min_level": 45,
-        "dot": 0.10,
-        "wicket": 0.015,
-        "single": 0.045,
-        "boundary": 0.055,
-    },
-    "tailender": {
-        "min_level": 40,
-        "dot": 0.15,
-        "wicket": 0.030,
-        "single": 0.060,
-        "boundary": 0.085,
-    },
-    "deep_tail": {
-        "min_level": -10**9,
-        "dot": 0.20,
-        "wicket": 0.050,
-        "single": 0.080,
-        "boundary": 0.120,
-    },
+    "soft_tail": {"min_level": 50, "dot": 0.035, "wicket": 0.010, "single": 0.018, "boundary": 0.030},
+    "lower_order": {"min_level": 45, "dot": 0.12, "wicket": 0.022, "single": 0.055, "boundary": 0.075},
+    "tailender": {"min_level": 40, "dot": 0.17, "wicket": 0.040, "single": 0.072, "boundary": 0.105},
+    "deep_tail": {"min_level": 35, "dot": 0.22, "wicket": 0.065, "single": 0.095, "boundary": 0.145},
+    "extreme_tail": {"min_level": -10**9, "dot": 0.27, "wicket": 0.080, "single": 0.115, "boundary": 0.175},
 }
 
 
 def _tailender_band(batter_level: int) -> str | None:
     level = int(batter_level or 0)
-    if level >= 50:
+    if level >= 52:
         return None
+    if level >= 50:
+        return "soft_tail"
     if level >= 45:
         return "lower_order"
     if level >= 40:
         return "tailender"
-    return "deep_tail"
+    if level >= 35:
+        return "deep_tail"
+    return "extreme_tail"
 
 
 def _move_probability_mass(weights: dict, source_key, target_key, amount: float) -> None:
@@ -802,6 +865,7 @@ def resolve_weights(
     _apply(weights, tactical)
 
     _apply(weights, PITCH_MATRIX.get(pitch, {}))
+    _apply_pitch_score_environment(weights, pitch)
     pitch_match = _apply_pitch_edge(weights, pitch, batsman_balls_faced, bowler_style, bowler_role)
     _apply(weights, PHASE_MATRIX[phase_key(over_number)])
     if pitch_match:
