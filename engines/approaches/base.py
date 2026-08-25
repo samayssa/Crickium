@@ -68,6 +68,10 @@ class BallContext:
     bowler_tactic: str = "swinging"
     confidence: float = 0.0
     wickets_this_over: int = 0
+    target: int | None = None
+    balls_remaining: int = 120
+    wickets_in_hand: int = 10
+    batting_position: int = 1
 
 
 @dataclass(slots=True)
