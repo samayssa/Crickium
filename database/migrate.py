@@ -425,4 +425,12 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_playint_players_engine_team ON playint_players(engine_key, team_code);")
     print("[migrate] playint_players engine scope OK.")
 
+    # /plstats stores the same signed squad-facing player_id used by team_squads.
+    # Global players are positive IDs; special editions use the negative
+    # special_player_id namespace. The old FK to players blocked all writes
+    # whenever one special-edition player appeared in a match ledger.
+    print("[migrate] Relaxing player_user_match_stats.player_id FK for global + special IDs...")
+    await execute("ALTER TABLE player_user_match_stats DROP CONSTRAINT IF EXISTS player_user_match_stats_player_id_fkey;")
+    print("[migrate] player_user_match_stats player identity constraint OK.")
+
     print("Migration Complete.")
