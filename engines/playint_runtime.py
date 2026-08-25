@@ -325,6 +325,14 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
     striker = session.innings.striker or BatterSlot(name="Player")
     bowler = session.current_bowler or {}
     over_number = int(session.innings.score.overs) + 1
+    try:
+        batting_position = next(
+            index + 1 for index, batter in enumerate(session.innings.batting_order)
+            if batter is striker
+        )
+    except StopIteration:
+        batting_position = 1
+    legal_balls = int(session.innings.score.legal_balls or 0)
     return BallContext(
         strategy=strategy,
         pitch=session.pitch,
@@ -343,6 +351,10 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
         bowler_tactic=session.current_tactic or "swinging",
         confidence=float(striker.confidence or 0.0),
         wickets_this_over=sum(1 for token in session.this_over if str(token).upper() == "W"),
+        target=session.innings.target,
+        balls_remaining=max(0, 120 - legal_balls),
+        wickets_in_hand=max(0, 10 - int(session.innings.score.wickets or 0)),
+        batting_position=batting_position,
     )
 
 

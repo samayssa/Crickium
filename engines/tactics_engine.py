@@ -162,9 +162,9 @@ PITCH_MATRIX: dict = {
 # Defensive/rotate-heavy innings can still finish below the lower band.
 # The engine uses these as a mild run-environment nudge only.
 PITCH_SCORE_BANDS: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {
-    "flat": ((185, 235), (235, 270)),
-    "hard": ((175, 215), (215, 240)),
-    "even": ((150, 180), (180, 220)),
+    "flat": ((175, 220), (220, 250)),
+    "hard": ((165, 205), (205, 230)),
+    "even": ((145, 175), (175, 210)),
     "green": ((130, 165), (165, 195)),
     "dusty": ((125, 160), (160, 200)),
     "dry": ((135, 175), (175, 210)),
@@ -344,15 +344,21 @@ def level_advantage_budget(abs_gap: int) -> float:
     return max(0.0, min(LEVEL_GAP_MAX_BUDGET, budget))
 
 
-# --- LAYER 6: CONFIDENCE SYSTEM (TEMPORARILY DISABLED) ---
-# The confidence system is preserved for future restoration. Its values are
-# accepted by the public runtime signatures for compatibility, but confidence
-# does not affect probabilities in this test build.
-CONFIDENCE_ENGINE_ENABLED = False
+# --- LAYER 6: CONFIDENCE SYSTEM ---
+# Confidence is deliberately a small finishing touch. It improves conversion
+# for a set batter, but never turns a batter into a shield against wickets.
+CONFIDENCE_ENGINE_ENABLED = True
 
 
 def confidence_zone(confidence: float) -> str:
-    return "disabled"
+    value = max(0.0, min(100.0, float(confidence or 0.0)))
+    if value < 25:
+        return "nervous"
+    if value < 60:
+        return "building"
+    if value < 80:
+        return "set"
+    return "in_the_zone"
 
 
 def _apply(weights: dict, modifiers: dict) -> None:
@@ -367,8 +373,71 @@ def _dampen_level_advantage(
     balls_faced: int,
     confidence: float,
 ) -> None:
-    # Confidence-based level dampening is disabled for this test build.
-    return
+    if not CONFIDENCE_ENGINE_ENABLED:
+        return
+    # A confident batter reduces the bowler's raw level edge very slightly;
+    # this is capped so confidence never erases a genuine skill mismatch.
+    if confidence >= 70 and bowler_level > batter_level:
+        _move_probability_mass(weights, "W", 1, min(0.012, (confidence - 65) / 2500))
+
+
+def _apply_confidence_micro(weights: dict, confidence: float, balls_faced: int) -> None:
+    """Soft confidence conversion; never applies a bowler-heavy penalty."""
+    if not CONFIDENCE_ENGINE_ENABLED:
+        return
+    value = max(0.0, min(100.0, float(confidence or 0.0)))
+    if value < 25:
+        _apply(weights, {0: 1.025, "W": 1.015, 4: 0.985, 6: 0.975})
+    elif value >= 80 and balls_faced >= 10:
+        _apply(weights, {1: 1.018, 2: 1.018, 4: 1.035, 6: 1.025, "W": 0.985})
+    elif value >= 60 and balls_faced >= 6:
+        _apply(weights, {1: 1.012, 2: 1.012, 4: 1.018, 6: 1.010})
+
+
+def _apply_match_state(
+    weights: dict,
+    target: int | None,
+    total_runs: int,
+    balls_remaining: int,
+    wickets_in_hand: int,
+    batting_position: int,
+) -> None:
+    """Apply chase pressure only where it belongs: the lower order.
+
+    A top-order batter is not punished merely because a chase is underway.
+    Pressure only becomes visible when the chase is genuinely behind and the
+    side has limited resources, or the current batter is already lower order.
+    """
+    if target is None or target <= 0:
+        return
+    need = max(0, int(target) - int(total_runs or 0))
+    balls = max(1, int(balls_remaining or 0))
+    required_rate = need * 6.0 / balls
+    if need <= 0 or required_rate < 10.0:
+        return
+    lower_order = int(batting_position or 1) >= 7
+    limited_resources = int(wickets_in_hand or 10) <= 3
+    if not (lower_order or limited_resources):
+        return
+
+    # Pressure creates volatility, not a scripted collapse. Keep this small
+    # and fund it from normal scoring outcomes rather than deleting boundaries.
+    if required_rate >= 14:
+        dot_wicket = 0.030 if lower_order else 0.014
+    else:
+        dot_wicket = 0.018 if lower_order else 0.008
+    source = max(0.0, float(weights.get(1, 0.0))) + max(0.0, float(weights.get(2, 0.0)))
+    source += max(0.0, float(weights.get(4, 0.0))) * 0.25
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0 or source <= 0:
+        return
+    moved = min(dot_wicket * total, source * 0.20)
+    for key in (1, 2, 4):
+        available = max(0.0, float(weights.get(key, 0.0)))
+        share = available / source if source else 0.0
+        weights[key] = available - moved * share
+    weights[0] = max(0.0, float(weights.get(0, 0.0))) + moved * 0.72
+    weights["W"] = max(0.0, float(weights.get("W", 0.0))) + moved * 0.28
 
 
 def _redistribute_excess(weights: dict, source_key: Any, cap_probability: float, preferred: tuple[Any, ...]) -> None:
@@ -485,11 +554,11 @@ def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_lev
 # ---------------------------------------------------------------------------
 
 TAILENDER_BAND_RULES: dict[str, dict[str, float]] = {
-    "soft_tail": {"min_level": 50, "dot": 0.035, "wicket": 0.010, "single": 0.018, "boundary": 0.030},
-    "lower_order": {"min_level": 45, "dot": 0.12, "wicket": 0.022, "single": 0.055, "boundary": 0.075},
-    "tailender": {"min_level": 40, "dot": 0.17, "wicket": 0.040, "single": 0.072, "boundary": 0.105},
-    "deep_tail": {"min_level": 35, "dot": 0.22, "wicket": 0.065, "single": 0.095, "boundary": 0.145},
-    "extreme_tail": {"min_level": -10**9, "dot": 0.27, "wicket": 0.080, "single": 0.115, "boundary": 0.175},
+    "soft_tail": {"min_level": 50, "dot": 0.035, "wicket": 0.010, "single": 0.018, "boundary": 0.020},
+    "lower_order": {"min_level": 45, "dot": 0.14, "wicket": 0.028, "single": 0.060, "boundary": 0.050},
+    "tailender": {"min_level": 40, "dot": 0.19, "wicket": 0.045, "single": 0.080, "boundary": 0.035},
+    "deep_tail": {"min_level": 35, "dot": 0.25, "wicket": 0.075, "single": 0.110, "boundary": 0.025},
+    "extreme_tail": {"min_level": -10**9, "dot": 0.31, "wicket": 0.090, "single": 0.125, "boundary": 0.012},
 }
 
 
@@ -620,6 +689,28 @@ def _apply_tailender_micro(weights: dict, batter_level: int) -> None:
         return
     for key in list(weights):
         weights[key] = max(0.0, probs.get(key, 0.0) * total / new_total)
+
+    # Tailenders may occasionally nick a boundary, but they should not
+    # inherit the hitting profile of a proper batter from the generic
+    # mindset/phase matrices. Enforce a small, explicit ceiling after all
+    # earlier layers have run.
+    boundary_cap = {
+        "soft_tail": 0.10,
+        "lower_order": 0.075,
+        "tailender": 0.055,
+        "deep_tail": 0.040,
+        "extreme_tail": 0.025,
+    }.get(band, 0.025)
+    final_total = sum(max(0.0, float(v)) for v in weights.values())
+    boundary_mass = max(0.0, float(weights.get(4, 0.0))) + max(0.0, float(weights.get(6, 0.0)))
+    cap_mass = final_total * boundary_cap
+    if boundary_mass > cap_mass and boundary_mass > 0:
+        excess = boundary_mass - cap_mass
+        scale = cap_mass / boundary_mass
+        weights[4] = max(0.0, float(weights.get(4, 0.0))) * scale
+        weights[6] = max(0.0, float(weights.get(6, 0.0))) * scale
+        weights[0] = max(0.0, float(weights.get(0, 0.0))) + excess * 0.80
+        weights[1] = max(0.0, float(weights.get(1, 0.0))) + excess * 0.20
 
 # These helpers intentionally sit outside the existing tactic/pitch/phase/
 # level/confidence matrices. They do not rewrite or mutate those tables.
@@ -852,6 +943,11 @@ def resolve_weights(
     wickets_this_over: int = 0,
     bowler_style: str | None = None,
     bowler_role: str | None = None,
+    target: int | None = None,
+    total_runs: int = 0,
+    balls_remaining: int = 120,
+    wickets_in_hand: int = 10,
+    batting_position: int = 1,
 ) -> dict:
     """Runs the full 6-layer algorithm and returns final weights, ready
     for a weighted-random pick."""
@@ -877,10 +973,15 @@ def resolve_weights(
         batsman_balls_faced, int(wickets_this_over or 0),
     )
 
-    # Confidence is intentionally disabled. Apply the new level matchup as
-    # the final bounded micro-layer so its one-level changes are preserved
-    # instead of being flattened by the legacy wicket cap.
     _apply_smooth_level_gap(weights, batter_level, bowler_level, over_number)
+    _apply_confidence_micro(weights, confidence, batsman_balls_faced)
+    _dampen_level_advantage(
+        weights, batter_level, bowler_level, batsman_balls_faced, confidence,
+    )
+    _apply_match_state(
+        weights, target, total_runs, balls_remaining, wickets_in_hand,
+        batting_position,
+    )
 
     # Isolated final micro-rules. The existing matrices, tactics, phase,
     # confidence, level dampening and realism caps above remain untouched.
@@ -929,13 +1030,18 @@ def _cap_early_pitch_boundary_pressure(weights: dict, batsman_balls_faced: int) 
 def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: int,
              batter_level: int, bowler_level: int, confidence: float,
              batsman_balls_faced: int = 0, wickets_this_over: int = 0,
-             bowler_style: str | None = None, bowler_role: str | None = None):
+             bowler_style: str | None = None, bowler_role: str | None = None,
+             target: int | None = None, total_runs: int = 0,
+             balls_remaining: int = 120, wickets_in_hand: int = 10,
+             batting_position: int = 1):
     """Returns one sampled outcome code from OUTCOMES."""
     weights = resolve_weights(
         bowler_tactic, batter_mindset, pitch, over_number, batter_level, bowler_level, confidence,
         batsman_balls_faced=batsman_balls_faced,
         wickets_this_over=wickets_this_over,
         bowler_style=bowler_style, bowler_role=bowler_role,
+        target=target, total_runs=total_runs, balls_remaining=balls_remaining,
+        wickets_in_hand=wickets_in_hand, batting_position=batting_position,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
     return random.choices(OUTCOMES, weights=values, k=1)[0]
