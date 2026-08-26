@@ -394,6 +394,84 @@ def _apply_confidence_micro(weights: dict, confidence: float, balls_faced: int) 
         _apply(weights, {1: 1.012, 2: 1.012, 4: 1.018, 6: 1.010})
 
 
+def _apply_early_collapse_pressure(
+    weights: dict,
+    batter_level: int,
+    batter_role: str | None,
+    batting_position: int,
+    wickets_in_hand: int,
+    balls_remaining: int,
+    confidence: float,
+) -> None:
+    """Small early-collapse pressure for genuinely lower-order batters.
+
+    It is activated only when six or more wickets have already fallen within
+    the first seven overs (42 legal balls). Position 7+ or a bowler-role batter
+    gets the full tail pressure. All-rounders receive only a lighter pressure.
+    Confidence gradually removes the extra pressure, returning the batter to
+    normal probabilities as they settle.
+    """
+    balls_remaining = max(0, int(balls_remaining or 0))
+    wickets_lost = max(0, 10 - int(wickets_in_hand or 0))
+    balls_played = max(0, 120 - balls_remaining)
+    if balls_played > 42 or wickets_lost < 6:
+        return
+
+    role = str(batter_role or "").strip().lower().replace("-", "_").replace(" ", "_")
+    is_bowler = "bowler" in role and "all" not in role
+    is_allrounder = "all_round" in role or "allrounder" in role
+    is_lower = int(batting_position or 1) >= 7 or is_bowler
+    if not is_lower and not is_allrounder:
+        return
+
+    # Full pressure for bowlers / position 7+, half-strength for all-rounders.
+    strength = 1.0 if is_lower else 0.45
+    # Confidence removes the special collapse pressure smoothly.
+    conf = max(0.0, min(100.0, float(confidence or 0.0)))
+    confidence_factor = max(0.0, 1.0 - conf / 100.0)
+    strength *= confidence_factor
+    if strength <= 0:
+        return
+
+    dot_add = 0.018 * strength
+    wicket_add = 0.010 * strength
+    single_cut = 0.012 * strength
+    boundary_cut = 0.010 * strength
+
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+
+    # Fund pressure from singles and boundaries only.
+    probs = {k: max(0.0, float(v)) / total for k, v in weights.items()}
+    single_available = probs.get(1, 0.0)
+    boundary_available = probs.get(4, 0.0) + probs.get(6, 0.0)
+    moved = min(single_cut, single_available)
+    boundary_move = min(boundary_cut, boundary_available)
+    total_move = moved + boundary_move
+    wanted = dot_add + wicket_add
+    if total_move <= 0 or wanted <= 0:
+        return
+
+    scale = min(1.0, total_move / wanted)
+    dot_add *= scale
+    wicket_add *= scale
+
+    probs[1] = max(0.0, probs.get(1, 0.0) - moved)
+    if boundary_move > 0 and boundary_available > 0:
+        for key in (4, 6):
+            share = probs.get(key, 0.0) / boundary_available
+            probs[key] = max(0.0, probs.get(key, 0.0) - boundary_move * share)
+    probs[0] = probs.get(0, 0.0) + dot_add
+    probs["W"] = probs.get("W", 0.0) + wicket_add
+
+    new_total = sum(max(0.0, v) for v in probs.values())
+    if new_total <= 0:
+        return
+    for key in list(weights):
+        weights[key] = max(0.0, probs.get(key, 0.0) * total / new_total)
+
+
 def _apply_match_state(
     weights: dict,
     target: int | None,
@@ -931,6 +1009,45 @@ def _apply_smooth_level_gap(weights: dict, batter_level: int, bowler_level: int,
         weights[key] = max(0.0, probs.get(key, 0.0) * total / total2)
 
 
+def _apply_final_wicket_cap(
+    weights: dict,
+    pitch: str,
+    batter_level: int,
+    bowler_level: int,
+    balls_faced: int,
+    wickets_this_over: int,
+) -> None:
+    """Final wicket guardrail applied after all micro-layers.
+
+    This prevents later tail/chase/level micro-rules from rebuilding a wicket
+    cluster that the realism layer already capped.
+    """
+    pitch_name = str(pitch or "even").strip().lower()
+    diff = max(0, int(bowler_level or 0) - int(batter_level or 0))
+    if pitch_name in {"flat", "hard"}:
+        base_cap, gap_step, max_cap = 0.030, 0.0015, 0.045
+    elif pitch_name in {"green", "dusty", "dry", "slow", "bouncy"}:
+        base_cap, gap_step, max_cap = 0.060, 0.0020, 0.080
+    else:
+        base_cap, gap_step, max_cap = 0.045, 0.0020, 0.060
+    matchup_cap = min(max_cap, base_cap + gap_step * diff)
+    if wickets_this_over >= 3:
+        cap = 0.0
+    elif wickets_this_over == 2:
+        cap = min(0.018, matchup_cap * 0.30)
+    elif wickets_this_over == 1:
+        cap = min(0.055, matchup_cap * 0.82)
+    else:
+        cap = matchup_cap
+    if balls_faced >= 45:
+        cap *= 0.85
+    elif balls_faced >= 30:
+        cap *= 0.90
+    elif balls_faced >= 15:
+        cap *= 0.95
+    _redistribute_excess(weights, "W", cap, (0, 1, 2, 4, 6))
+
+
 def resolve_weights(
     bowler_tactic: str,
     batter_mindset: str,
@@ -943,6 +1060,7 @@ def resolve_weights(
     wickets_this_over: int = 0,
     bowler_style: str | None = None,
     bowler_role: str | None = None,
+    batter_role: str | None = None,
     target: int | None = None,
     total_runs: int = 0,
     balls_remaining: int = 120,
@@ -982,6 +1100,10 @@ def resolve_weights(
         weights, target, total_runs, balls_remaining, wickets_in_hand,
         batting_position,
     )
+    _apply_early_collapse_pressure(
+        weights, batter_level, batter_role, batting_position, wickets_in_hand,
+        balls_remaining, confidence,
+    )
 
     # Isolated final micro-rules. The existing matrices, tactics, phase,
     # confidence, level dampening and realism caps above remain untouched.
@@ -993,6 +1115,10 @@ def resolve_weights(
             weights, batter_level, bowler_level, batsman_balls_faced, confidence,
         )
     _apply_tailender_micro(weights, batter_level)
+    _apply_final_wicket_cap(
+        weights, pitch, batter_level, bowler_level, batsman_balls_faced,
+        int(wickets_this_over or 0),
+    )
 
     return {key: max(0.0, value) for key, value in weights.items()}
 
@@ -1031,7 +1157,7 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
              batter_level: int, bowler_level: int, confidence: float,
              batsman_balls_faced: int = 0, wickets_this_over: int = 0,
              bowler_style: str | None = None, bowler_role: str | None = None,
-             target: int | None = None, total_runs: int = 0,
+             batter_role: str | None = None, target: int | None = None, total_runs: int = 0,
              balls_remaining: int = 120, wickets_in_hand: int = 10,
              batting_position: int = 1):
     """Returns one sampled outcome code from OUTCOMES."""
@@ -1039,7 +1165,7 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
         bowler_tactic, batter_mindset, pitch, over_number, batter_level, bowler_level, confidence,
         batsman_balls_faced=batsman_balls_faced,
         wickets_this_over=wickets_this_over,
-        bowler_style=bowler_style, bowler_role=bowler_role,
+        bowler_style=bowler_style, bowler_role=bowler_role, batter_role=batter_role,
         target=target, total_runs=total_runs, balls_remaining=balls_remaining,
         wickets_in_hand=wickets_in_hand, batting_position=batting_position,
     )

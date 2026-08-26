@@ -372,6 +372,7 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
         wickets=int(session.innings.score.wickets or 0),
         bowler_role=bowler.get("role"),
         bowler_hand=bowler.get("bowling_hand"),
+        batter_role=getattr(striker, "role", None),
         batter_name=striker.name,
         bowler_name=bowler.get("name"),
         bowler_tactic=session.current_tactic or "swinging",
