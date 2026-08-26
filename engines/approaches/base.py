@@ -63,6 +63,7 @@ class BallContext:
     wickets: int
     bowler_role: str | None = None
     bowler_hand: str | None = None
+    batter_role: str | None = None
     batter_name: str | None = None
     bowler_name: str | None = None
     bowler_tactic: str = "swinging"
