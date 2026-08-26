@@ -3,10 +3,12 @@ from __future__ import annotations
 print("plstats.py loaded")
 
 import html
+import uuid
 
-from handlers.registry import register
+from handlers.registry import register, register_callback
 from app import app
 from database.players_repo import get_player
+from database.special_players_repo import search_player_variants, split_player_edition, get_special_player
 from database.squads_repo import get_team_squad
 from database.player_user_stats_repo import get_player_user_stats
 from utils.country_flags import flag_for
@@ -38,6 +40,8 @@ def _num(value) -> str:
 
 def _plstats_text(player: dict, stats: dict) -> str:
     name = _escape(player.get("name") or "Unknown")
+    if player.get("is_special") and player.get("edition"):
+        name = f"{name} ({_escape(player.get('edition'))})"
     flag = flag_for(player.get("country"))
     bat_level = int(player.get("bat_level") or 0)
     bowl_level = int(player.get("bowl_level") or 0)
@@ -96,9 +100,6 @@ def _plstats_text(player: dict, stats: dict) -> str:
 async def plstats_command(message):
     chat_id = message["chat"]["id"]
     user_id = (message.get("from") or {}).get("id")
-
-    print(f"[plstats] /plstats invoked by user_id={user_id}")
-
     name = _parse_arg(message.get("text", ""))
     if not name:
         await app.send_message(
@@ -108,34 +109,104 @@ async def plstats_command(message):
         )
         return
 
-    player = await get_player(name)
-    if not player:
-        await app.send_message(
-            chat_id,
-            f"⚠️ No player named <b>{_escape(name)}</b> found. Check the spelling, "
-            f"or upload them first with /upload_pl.",
-            parse_mode="HTML",
-        )
-        return
+    base_name, edition = split_player_edition(name)
+    if edition:
+        p = await get_special_player(base_name, edition)
+        players = [p] if p else []
+    else:
+        players = await search_player_variants(name, limit=100)
 
+    # PLStats is ownership-aware: only cards currently held by this user are eligible.
     squad = await get_team_squad(user_id) or []
-    owned = any(int(p.get("player_id") or 0) == int(player["player_id"]) for p in squad)
-    if not owned:
+    owned_ids = {
+        (int(p.get("player_id") or 0), bool(p.get("is_special")))
+        for p in squad
+        if p.get("player_id") is not None
+    }
+    players = [p for p in players if (int(p.get("player_id") or 0), bool(p.get("is_special"))) in owned_ids]
+
+    if not players:
         await app.send_message(
             chat_id,
-            f"⚠️ <b>{_escape(player['name'])}</b> is not currently in your squad.",
+            f"⚠️ <b>No player named {_escape(name)} found in your squad.</b>",
             parse_mode="HTML",
         )
         return
 
+    # Exact full name without multiple same-name variants keeps the original one-card flow.
+    if len(players) == 1:
+        player = players[0]
+        stats = await get_player_user_stats(user_id, int(player["player_id"]))
+        text = _plstats_text(player, stats)
+        try:
+            image_bytes, _is_custom = await get_player_card_bytes(player)
+            await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML")
+        except Exception:
+            await app.send_message(chat_id, text, parse_mode="HTML")
+        return
+
+    token = uuid.uuid4().hex[:10]
+    _PLSTATS_PAGE_STATE[token] = {"players": players, "owner_id": int(user_id), "page": 0}
+    await _send_plstats_page(chat_id, int(user_id), token)
+
+
+async def _send_plstats_page(chat_id: int, user_id: int, token: str) -> None:
+    state = _PLSTATS_PAGE_STATE.get(token)
+    if not state:
+        return
+    players = state["players"]
+    page = int(state.get("page", 0))
+    player = players[page]
     stats = await get_player_user_stats(user_id, int(player["player_id"]))
     text = _plstats_text(player, stats)
-
+    keyboard = catalog_page_keyboard(f"plstats_page:{token}", page, len(players))
     try:
         image_bytes, _is_custom = await get_player_card_bytes(player)
-        await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML")
-    except Exception as exc:
-        print(f"[plstats] Card image failed ({exc!r}), falling back to a text-only message.")
-        await app.send_message(chat_id, text, parse_mode="HTML")
+        # Always send the first page as a fresh message; callbacks edit it in place.
+        if not state.get("message_id"):
+            msg = await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML", reply_markup=keyboard)
+            state["message_id"] = int(msg.get("message_id") or msg["message_id"]) if isinstance(msg, dict) else int(getattr(msg, "id", 0))
+            state["chat_id"] = int(chat_id)
+        else:
+            await app.edit_message_media(chat_id, state["message_id"], image_bytes, caption=text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception:
+        if not state.get("message_id"):
+            msg = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+            state["message_id"] = int(msg.get("message_id") or msg["message_id"]) if isinstance(msg, dict) else int(getattr(msg, "id", 0))
+            state["chat_id"] = int(chat_id)
+        else:
+            await app.edit_message_caption(chat_id, state["message_id"], text, parse_mode="HTML", reply_markup=keyboard)
 
-    print(f"[plstats] user_id={user_id} looked up stats for player_id={player['player_id']} ({player['name']})")
+
+@register_callback("plstats_page")
+async def plstats_page_callback(callback_query):
+    data = callback_query.get("data", "")
+    parts = data.split(":")
+    if len(parts) != 3:
+        await app.answer_callback_query(callback_query["id"], "Page state expired.", show_alert=True)
+        return
+    _, token, action = parts
+    state = _PLSTATS_PAGE_STATE.get(token)
+    if not state:
+        await app.answer_callback_query(callback_query["id"], "Page state expired. Send /plstats again.", show_alert=True)
+        return
+    user_id = int((callback_query.get("from") or {}).get("id") or 0)
+    if user_id != int(state["owner_id"]):
+        await app.answer_callback_query(callback_query["id"], "This player page is not yours.", show_alert=True)
+        return
+    players = state["players"]
+    current = int(state.get("page", 0))
+    if action == "noop":
+        await app.answer_callback_query(callback_query["id"], f"Page {current + 1}/{len(players)}")
+        return
+    if action == "next":
+        current = min(len(players) - 1, current + 1)
+    elif action == "prev":
+        current = max(0, current - 1)
+    else:
+        await app.answer_callback_query(callback_query["id"], "Invalid page.", show_alert=True)
+        return
+    state["page"] = current
+    # Keep the same message and edit its media/caption in place.
+    await _send_plstats_page(callback_query["message"]["chat"]["id"], user_id, token)
+    await app.answer_callback_query(callback_query["id"], f"Page {current + 1}/{len(players)}")
