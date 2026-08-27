@@ -21,6 +21,7 @@ from engines.playint_runtime import get_playint_session, get_playint_session_in_
 from engines.play_engine import pitch_label
 from utils.mentions import mention_html
 from utils.timers import cancel_timer
+from database.query import fetchrow
 
 
 NO_KEYBOARD = {"inline_keyboard": []}
@@ -124,6 +125,23 @@ async def _find_active(chat_id: int):
     match = await get_playint_match_in_chat(chat_id)
     if match:
         return dict(match), "playint"
+
+    # Last-resort authoritative DB lookup. This catches a live game even
+    # when its runtime session disappeared after a restart/reload or when
+    # the status is a newer non-terminal state not present in the helper's
+    # active-status list.
+    row = await fetchrow(
+        """SELECT 'play' AS engine, * FROM play_matches
+           WHERE chat_id=$1 AND status NOT IN ('completed','ended','declined')
+           UNION ALL
+           SELECT 'playint' AS engine, * FROM playint_matches
+           WHERE chat_id=$1 AND status NOT IN ('completed','ended','declined')
+           ORDER BY match_id DESC LIMIT 1;""",
+        chat_id,
+    )
+    if row:
+        data = dict(row)
+        return data, str(data.pop("engine"))
     return None, None
 
 
