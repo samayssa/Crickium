@@ -25,7 +25,21 @@ from database.query import fetchrow
 
 
 NO_KEYBOARD = {"inline_keyboard": []}
-_TERMINAL = {"declined", "completed", "ended"}
+# The DB fallback in _find_active() must never mistake a dead challenge for
+# a live one - these are every status a match can end up in that no longer
+# occupies the group's one-match slot.
+_TERMINAL = {"declined", "completed", "ended", "expired"}
+_GROUP_CHAT_TYPES = {"group", "supergroup", "chattype.group", "chattype.supergroup"}
+
+
+def _is_group_chat(chat_type_raw: str) -> bool:
+    """app.py/main.py store Pyrogram's raw ChatType enum as a string
+    (str(ChatType.SUPERGROUP) == 'ChatType.SUPERGROUP'), not the plain
+    Bot-API-style 'supergroup'. main.py's own bot-added-to-group handler
+    already has to check for both forms for the same reason - this does
+    the same so /abandon isn't rejected as \"not a group\" while actually
+    standing inside one."""
+    return str(chat_type_raw or "").lower() in _GROUP_CHAT_TYPES
 
 
 def _owner_only(user_id: int | None) -> bool:
@@ -130,18 +144,39 @@ async def _find_active(chat_id: int):
     # when its runtime session disappeared after a restart/reload or when
     # the status is a newer non-terminal state not present in the helper's
     # active-status list.
-    row = await fetchrow(
-        """SELECT 'play' AS engine, * FROM play_matches
-           WHERE chat_id=$1 AND status NOT IN ('completed','ended','declined')
-           UNION ALL
-           SELECT 'playint' AS engine, * FROM playint_matches
-           WHERE chat_id=$1 AND status NOT IN ('completed','ended','declined')
-           ORDER BY match_id DESC LIMIT 1;""",
-        chat_id,
+    #
+    # NOTE: play_matches and playint_matches do NOT have the same column
+    # set (playint_matches has extra team/XI columns), so `SELECT * ...
+    # UNION ALL SELECT * ...` across them is invalid SQL - Postgres
+    # rejects a UNION whose two sides don't have the same number of
+    # columns, and this raised on every single call that reached it. Two
+    # separate same-shape queries, merged in Python, sidesteps that
+    # entirely instead of trying to force both tables into one shape.
+    placeholders = ",".join(f"${i + 2}" for i in range(len(_TERMINAL)))
+    terminal_list = list(_TERMINAL)
+
+    play_row = await fetchrow(
+        f"""SELECT * FROM play_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
     )
-    if row:
-        data = dict(row)
-        return data, str(data.pop("engine"))
+    playint_row = await fetchrow(
+        f"""SELECT * FROM playint_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
+    )
+
+    candidates = [(dict(play_row), "play")] if play_row else []
+    if playint_row:
+        candidates.append((dict(playint_row), "playint"))
+    if candidates:
+        # If both somehow have a stray non-terminal row, the more recent
+        # match_id is the one actually occupying the group right now.
+        candidates.sort(key=lambda pair: int(pair[0].get("match_id") or 0), reverse=True)
+        return candidates[0]
+
     return None, None
 
 
@@ -191,7 +226,7 @@ async def abond_command(message):
         )
         return
 
-    if chat_type not in {"group", "supergroup"}:
+    if not _is_group_chat(chat_type):
         await app.send_message(
             chat_id,
             "<b>⚠️ /abandon can only be used inside a group game.</b>",
