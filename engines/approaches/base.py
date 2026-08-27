@@ -73,6 +73,9 @@ class BallContext:
     balls_remaining: int = 120
     wickets_in_hand: int = 10
     batting_position: int = 1
+    over_runs: int = 0
+    high_run_overs: int = 0
+    very_high_run_overs: int = 0
 
 
 @dataclass(slots=True)
