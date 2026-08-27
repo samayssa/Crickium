@@ -54,6 +54,13 @@ TABLES = {
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "bot_runtime_state": """
+        CREATE TABLE IF NOT EXISTS bot_runtime_state(
+            state_key TEXT PRIMARY KEY,
+            state_value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
     "users": """
         CREATE TABLE IF NOT EXISTS users(
             user_id BIGINT PRIMARY KEY,
