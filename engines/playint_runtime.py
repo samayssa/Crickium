@@ -56,6 +56,8 @@ class PlaySession:
     partnership_runs: int = 0
     partnership_balls: int = 0
     innings_history: list[dict[str, Any]] = field(default_factory=list)
+    high_run_overs: int = 0
+    very_high_run_overs: int = 0
 
 
 _PLAYINT_SESSIONS: dict[int, PlaySession] = {}
@@ -158,6 +160,17 @@ def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]
         player["_overs_left"] = bowler_overs_left(session, int(player.get("player_id") or 0))
 
     return eligible
+
+
+def _current_over_runs(tokens: list[str]) -> int:
+    total = 0
+    for token in tokens or []:
+        t = str(token or "").strip().lower()
+        if t.isdigit():
+            total += int(t)
+        elif t in {"wd", "nb", "b", "lb"}:
+            total += 1
+    return total
 
 
 def render_this_over(tokens: list[str]) -> str:
@@ -356,6 +369,9 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
         balls_remaining=max(0, 120 - legal_balls),
         wickets_in_hand=max(0, 10 - int(session.innings.score.wickets or 0)),
         batting_position=batting_position,
+        over_runs=_current_over_runs(session.this_over),
+        high_run_overs=session.high_run_overs,
+        very_high_run_overs=session.very_high_run_overs,
     )
 
 

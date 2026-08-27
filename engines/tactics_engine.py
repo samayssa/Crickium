@@ -162,15 +162,112 @@ PITCH_MATRIX: dict = {
 # Defensive/rotate-heavy innings can still finish below the lower band.
 # The engine uses these as a mild run-environment nudge only.
 PITCH_SCORE_BANDS: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {
-    "flat": ((175, 220), (220, 250)),
-    "hard": ((165, 205), (205, 230)),
-    "even": ((145, 175), (175, 210)),
+    "flat": ((185, 235), (235, 270)),
+    "hard": ((175, 215), (215, 240)),
+    "even": ((150, 180), (180, 220)),
     "green": ((130, 165), (165, 195)),
-    "dusty": ((125, 160), (160, 200)),
+    "dusty": ((125, 165), (165, 205)),
     "dry": ((135, 175), (175, 210)),
-    "slow": ((125, 160), (160, 195)),
+    "slow": ((125, 165), (165, 200)),
     "bouncy": ((140, 175), (175, 215)),
 }
+
+
+def _phase_modifiers_for_over(over_number: int) -> dict:
+    """Use the existing death profile in the final over, while softening
+    the death-over hitting boost in overs 16-19. This keeps the existing
+    20th-over finish intact and avoids making the whole death phase a
+    continuous boundary surge."""
+    phase = phase_key(over_number)
+    if phase != "overs_16_20" or int(over_number or 0) >= 20:
+        return PHASE_MATRIX[phase]
+
+    base = dict(PHASE_MATRIX[phase])
+    # Pull only the death amplification part 55% back toward neutral.
+    # Wicket pressure is also softened, but retained.
+    soften = {6: 0.70, 4: 0.76, 0: 0.86, 1: 0.98, 2: 0.98, "W": 0.82, "NB": 0.96, "WD": 0.96}
+    return {k: (1.0 + (float(v) - 1.0) * soften.get(k, 0.90)) for k, v in base.items()}
+
+
+def _apply_pitch_hitting_dampening(weights: dict, pitch: str) -> None:
+    """Small pitch-aware dampening of routine boundary conversion.
+
+    This does not replace PITCH_MATRIX. It only transfers a little 4/6 mass
+    into dots/singles so batting-friendly pitches do not become runaway
+    scoring environments while bowling-friendly pitches keep their identity.
+    """
+    name = str(pitch or "even").strip().lower()
+    reduction = {
+        "flat": 0.16, "hard": 0.12, "even": 0.10,
+        "bouncy": 0.07, "dry": 0.07, "green": 0.06,
+        "dusty": 0.06, "slow": 0.06,
+    }.get(name, 0.08)
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+    boundary = max(0.0, float(weights.get(4, 0.0))) + max(0.0, float(weights.get(6, 0.0)))
+    if boundary <= 0:
+        return
+    moved = min(boundary * reduction, boundary * 0.22)
+    if moved <= 0:
+        return
+    shares = {4: (max(0.0, float(weights.get(4, 0.0))) / boundary),
+              6: (max(0.0, float(weights.get(6, 0.0))) / boundary)}
+    weights[4] = max(0.0, float(weights.get(4, 0.0))) - moved * shares[4]
+    weights[6] = max(0.0, float(weights.get(6, 0.0))) - moved * shares[6]
+    # Prefer ordinary rotation, with the remainder going to dots.
+    weights[1] = max(0.0, float(weights.get(1, 0.0))) + moved * 0.72
+    weights[0] = max(0.0, float(weights.get(0, 0.0))) + moved * 0.28
+
+
+def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int) -> None:
+    """Keep 18+ and 20+ run overs uncommon without a hard inning score cap.
+
+    Once an over is already productive, the final balls are gently de-risked.
+    A completed 18+ over makes repeat high overs less likely, and a completed
+    20+ over makes another explosive over rarer still.
+    """
+    current = max(0, int(over_runs or 0))
+    high = max(0, int(high_run_overs or 0))
+    extreme = max(0, int(very_high_run_overs or 0))
+
+    repeat_scale = (0.75 ** high) * (0.45 ** extreme)
+    if repeat_scale < 1.0:
+        for key in (4, 6):
+            old = max(0.0, float(weights.get(key, 0.0)))
+            weights[key] = old * repeat_scale
+            freed = old - weights[key]
+            weights[1] = max(0.0, float(weights.get(1, 0.0))) + freed * 0.70
+            weights[0] = max(0.0, float(weights.get(0, 0.0))) + freed * 0.30
+
+    if current >= 18:
+        score_scale = 0.03
+    elif current >= 15:
+        score_scale = 0.15
+    elif current >= 12:
+        score_scale = 0.30
+    elif current >= 8:
+        score_scale = 0.55
+    else:
+        score_scale = 1.0
+
+    if score_scale >= 1.0:
+        return
+
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+    score_keys = (1, 2, 3, 4, 6, "WD", "NB", "LB", "BY")
+    source = sum(max(0.0, float(weights.get(k, 0.0))) for k in score_keys)
+    if source <= 0:
+        return
+    reduction = source * (1.0 - score_scale)
+    for key in score_keys:
+        old = max(0.0, float(weights.get(key, 0.0)))
+        weights[key] = old * score_scale
+    weights[0] = max(0.0, float(weights.get(0, 0.0))) + reduction * 0.80
+    weights[1] = max(0.0, float(weights.get(1, 0.0))) + reduction * 0.20
+
 
 
 def pitch_target_rpo(pitch: str) -> float:
@@ -260,28 +357,34 @@ def phase_key(over_number: int) -> str:
     return "overs_16_20"
 
 
-def _apply_pitch_score_environment(weights: dict, pitch: str) -> None:
+def _apply_pitch_score_environment(weights: dict, pitch: str, is_second_innings: bool = False) -> None:
     """Gently pull the ball-outcome distribution toward the pitch's desired
     first-innings scoring environment without imposing a hard score cap.
     The current tactical/pitch/phase choices still dominate each ball.
     """
     target_rpo = pitch_target_rpo(pitch)
+    # The chase has no pressure penalty. This is only a softer run-environment
+    # target for the second innings, capped at the requested 12.12 RPO.
+    if is_second_innings:
+        target_rpo = min(12.12, target_rpo)
     total = sum(max(0.0, float(v)) for v in weights.values())
     if total <= 0:
         return
     expected = sum((k if isinstance(k, int) else (1.0 if k in {"WD", "NB", "LB", "BY"} else 0.0)) * max(0.0, float(v)) for k, v in weights.items()) / total
     gap = target_rpo - expected
-    # Only make a gentle correction; this is deliberately not a score clamp.
-    if abs(gap) < 0.35:
+    # Strong enough to stop runaway scoring, but still a soft nudge rather
+    # than a score clamp. Defensive/rotate intent can naturally finish below
+    # the pitch band, and aggressive intent still has room to beat it.
+    if abs(gap) < 0.20:
         return
-    strength = min(0.10, 0.018 + abs(gap) * 0.035)
+    strength = min(0.24, 0.045 + abs(gap) * 0.085)
     probs = {k: max(0.0, float(v)) / total for k, v in weights.items()}
     scoring = (1, 2, 4, 6, "WD", "NB", "LB", "BY")
     containment = (0, "W")
 
     if gap > 0:
         source = sum(probs.get(k, 0.0) for k in containment)
-        moved = min(strength, source * 0.25)
+        moved = min(strength, source * 0.42)
         if moved <= 0:
             return
         for k in containment:
@@ -293,7 +396,7 @@ def _apply_pitch_score_environment(weights: dict, pitch: str) -> None:
                 probs[k] += moved * (probs.get(k, 0.0) / score_total)
     else:
         source = sum(probs.get(k, 0.0) for k in scoring)
-        moved = min(strength, source * 0.18)
+        moved = min(strength, source * 0.30)
         if moved <= 0:
             return
         for k in scoring:
@@ -387,11 +490,11 @@ def _apply_confidence_micro(weights: dict, confidence: float, balls_faced: int) 
         return
     value = max(0.0, min(100.0, float(confidence or 0.0)))
     if value < 25:
-        _apply(weights, {0: 1.025, "W": 1.015, 4: 0.985, 6: 0.975})
+        _apply(weights, {0: 1.012, "W": 1.006, 4: 0.994, 6: 0.990})
     elif value >= 80 and balls_faced >= 10:
-        _apply(weights, {1: 1.018, 2: 1.018, 4: 1.035, 6: 1.025, "W": 0.985})
+        _apply(weights, {1: 1.009, 2: 1.009, 4: 1.017, 6: 1.013, "W": 0.993})
     elif value >= 60 and balls_faced >= 6:
-        _apply(weights, {1: 1.012, 2: 1.012, 4: 1.018, 6: 1.010})
+        _apply(weights, {1: 1.006, 2: 1.006, 4: 1.009, 6: 1.005})
 
 
 def _apply_early_collapse_pressure(
@@ -480,42 +583,9 @@ def _apply_match_state(
     wickets_in_hand: int,
     batting_position: int,
 ) -> None:
-    """Apply chase pressure only where it belongs: the lower order.
-
-    A top-order batter is not punished merely because a chase is underway.
-    Pressure only becomes visible when the chase is genuinely behind and the
-    side has limited resources, or the current batter is already lower order.
-    """
-    if target is None or target <= 0:
-        return
-    need = max(0, int(target) - int(total_runs or 0))
-    balls = max(1, int(balls_remaining or 0))
-    required_rate = need * 6.0 / balls
-    if need <= 0 or required_rate < 10.0:
-        return
-    lower_order = int(batting_position or 1) >= 7
-    limited_resources = int(wickets_in_hand or 10) <= 3
-    if not (lower_order or limited_resources):
-        return
-
-    # Pressure creates volatility, not a scripted collapse. Keep this small
-    # and fund it from normal scoring outcomes rather than deleting boundaries.
-    if required_rate >= 14:
-        dot_wicket = 0.030 if lower_order else 0.014
-    else:
-        dot_wicket = 0.018 if lower_order else 0.008
-    source = max(0.0, float(weights.get(1, 0.0))) + max(0.0, float(weights.get(2, 0.0)))
-    source += max(0.0, float(weights.get(4, 0.0))) * 0.25
-    total = sum(max(0.0, float(v)) for v in weights.values())
-    if total <= 0 or source <= 0:
-        return
-    moved = min(dot_wicket * total, source * 0.20)
-    for key in (1, 2, 4):
-        available = max(0.0, float(weights.get(key, 0.0)))
-        share = available / source if source else 0.0
-        weights[key] = available - moved * share
-    weights[0] = max(0.0, float(weights.get(0, 0.0))) + moved * 0.72
-    weights["W"] = max(0.0, float(weights.get("W", 0.0))) + moved * 0.28
+    """Chase information is retained for display/state only; it does not
+    apply a scoring or wicket penalty to the chasing side."""
+    return
 
 
 def _redistribute_excess(weights: dict, source_key: Any, cap_probability: float, preferred: tuple[Any, ...]) -> None:
@@ -1066,6 +1136,9 @@ def resolve_weights(
     balls_remaining: int = 120,
     wickets_in_hand: int = 10,
     batting_position: int = 1,
+    over_runs: int = 0,
+    high_run_overs: int = 0,
+    very_high_run_overs: int = 0,
 ) -> dict:
     """Runs the full 6-layer algorithm and returns final weights, ready
     for a weighted-random pick."""
@@ -1079,9 +1152,10 @@ def resolve_weights(
     _apply(weights, tactical)
 
     _apply(weights, PITCH_MATRIX.get(pitch, {}))
-    _apply_pitch_score_environment(weights, pitch)
+    _apply_pitch_hitting_dampening(weights, pitch)
+    _apply_pitch_score_environment(weights, pitch, is_second_innings=(target is not None))
     pitch_match = _apply_pitch_edge(weights, pitch, batsman_balls_faced, bowler_style, bowler_role)
-    _apply(weights, PHASE_MATRIX[phase_key(over_number)])
+    _apply(weights, _phase_modifiers_for_over(over_number))
     if pitch_match:
         _cap_early_pitch_wicket_risk(weights, batsman_balls_faced)
         _cap_early_pitch_boundary_pressure(weights, batsman_balls_faced)
@@ -1115,6 +1189,7 @@ def resolve_weights(
             weights, batter_level, bowler_level, batsman_balls_faced, confidence,
         )
     _apply_tailender_micro(weights, batter_level)
+    _apply_over_run_rarity(weights, over_runs, high_run_overs, very_high_run_overs)
     _apply_final_wicket_cap(
         weights, pitch, batter_level, bowler_level, batsman_balls_faced,
         int(wickets_this_over or 0),
@@ -1159,7 +1234,8 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
              bowler_style: str | None = None, bowler_role: str | None = None,
              batter_role: str | None = None, target: int | None = None, total_runs: int = 0,
              balls_remaining: int = 120, wickets_in_hand: int = 10,
-             batting_position: int = 1):
+             batting_position: int = 1, over_runs: int = 0,
+             high_run_overs: int = 0, very_high_run_overs: int = 0):
     """Returns one sampled outcome code from OUTCOMES."""
     weights = resolve_weights(
         bowler_tactic, batter_mindset, pitch, over_number, batter_level, bowler_level, confidence,
@@ -1168,6 +1244,7 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
         bowler_style=bowler_style, bowler_role=bowler_role, batter_role=batter_role,
         target=target, total_runs=total_runs, balls_remaining=balls_remaining,
         wickets_in_hand=wickets_in_hand, batting_position=batting_position,
+        over_runs=over_runs, high_run_overs=high_run_overs, very_high_run_overs=very_high_run_overs,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
     return random.choices(OUTCOMES, weights=values, k=1)[0]

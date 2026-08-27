@@ -61,6 +61,9 @@ def resolve(strategy: str, context: BallContext) -> BallOutcome:
         balls_remaining=getattr(context, "balls_remaining", 120),
         wickets_in_hand=getattr(context, "wickets_in_hand", 10),
         batting_position=getattr(context, "batting_position", 1),
+        over_runs=getattr(context, "over_runs", 0),
+        high_run_overs=getattr(context, "high_run_overs", 0),
+        very_high_run_overs=getattr(context, "very_high_run_overs", 0),
     )
     outcome = _CODE_TO_OUTCOME.get(code, "dot")
 
