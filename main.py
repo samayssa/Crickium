@@ -6,6 +6,7 @@ import traceback
 from typing import Any
 
 from pyrogram import Client, idle
+from pyrogram.errors import FloodWait
 from pyrogram.handlers import CallbackQueryHandler, ChatMemberUpdatedHandler, MessageHandler
 
 from config import API_HASH, API_ID, BOT_TOKEN
@@ -18,6 +19,7 @@ from utils.group_notification import format_group_notification
 from utils.group_added_response import format_group_added_response
 from database.connection import connect, disconnect
 from database.broadcast_repo import upsert_chat
+from database.runtime_repo import clear_bot_session, get_bot_session, save_bot_session
 from database.migrate import migrate
 from engines.probability_engine import reload_probability_profile_cache
 
@@ -304,16 +306,106 @@ async def handle_callback_query(_, callback_query):
         traceback.print_exc()
 
 
-async def main():
-    client = Client(
-        "cricket_bot",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        bot_token=BOT_TOKEN,
-        in_memory=False,
-    )
-    app.bind_client(client)
+async def _build_client(session_string: str | None = None) -> Client:
+    """Build the single Telegram client.
 
+    Railway deployments are stateless between releases.  When a previously
+    exported session string exists in PostgreSQL, reuse it so Telegram does
+    not have to authorize the bot again on every deployment.  The first boot
+    still uses the normal bot-token authorization path and stores the session
+    for subsequent boots.
+    """
+    kwargs = {
+        "api_id": API_ID,
+        "api_hash": API_HASH,
+    }
+    if session_string:
+        kwargs.update({"session_string": session_string, "in_memory": True})
+    else:
+        kwargs.update({"bot_token": BOT_TOKEN, "in_memory": False})
+    return Client("cricket_bot", **kwargs)
+
+
+async def _start_client_with_persistent_session() -> Client:
+    stored_session: str | None = None
+    try:
+        stored_session = await get_bot_session()
+        if stored_session:
+            print("[main.py] Reusing persisted Telegram authorization session.")
+    except Exception as exc:
+        print(f"[main.py] Could not read persisted Telegram session; falling back to bot-token authorization: {exc!r}")
+
+    # Prefer the persisted session. If it is invalid/revoked, remove it once
+    # and fall back to a fresh bot-token authorization.
+    if stored_session:
+        client = await _build_client(stored_session)
+        try:
+            await client.start()
+            return client
+        except Exception as exc:
+            text = str(exc).lower()
+            invalid_session_markers = (
+                "auth key unregistered",
+                "session revoked",
+                "session expired",
+                "unauthorized",
+                "not authorized",
+                "authorization key",
+                "auth key",
+            )
+            if any(marker in text for marker in invalid_session_markers):
+                print("[main.py] Persisted Telegram session is invalid/revoked; clearing it and authorizing once with BOT_TOKEN.")
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+                try:
+                    await clear_bot_session()
+                except Exception as clear_exc:
+                    print(f"[main.py] Could not clear invalid persisted session: {clear_exc!r}")
+            else:
+                raise
+
+    # Fresh authorization. Telegram may temporarily rate-limit repeated bot
+    # authorizations with FLOOD_WAIT.  Wait for Telegram's exact server value
+    # instead of crashing Railway into a restart loop.
+    while True:
+        client = await _build_client(None)
+        try:
+            await client.start()
+            break
+        except FloodWait as exc:
+            wait_for = int(getattr(exc, "value", None) or getattr(exc, "x", 0) or 0)
+            wait_for = max(wait_for, 1)
+            print(f"[main.py] Telegram authorization is rate-limited (FLOOD_WAIT_{wait_for}). Waiting before retrying instead of crashing the service.")
+            try:
+                await client.stop()
+            except Exception:
+                pass
+            await asyncio.sleep(wait_for + 1)
+
+    # Export and persist the session so later Railway restarts/deployments do
+    # not trigger another Telegram bot authorization attempt.
+    try:
+        exporter = getattr(client, "export_session_string", None)
+        if exporter is not None:
+            exported = exporter()
+            if hasattr(exported, "__await__"):
+                exported = await exported
+            if exported:
+                try:
+                    await save_bot_session(str(exported))
+                    print("[main.py] Telegram authorization session persisted successfully.")
+                except Exception as exc:
+                    print(f"[main.py] Could not persist Telegram session; bot will still run: {exc!r}")
+    except Exception as exc:
+        print(f"[main.py] Session export unavailable/failed; bot will still run: {exc!r}")
+
+    return client
+
+
+async def main():
+    app_client = None
     try:
         print("Connecting Database...")
         await connect()
@@ -326,31 +418,31 @@ async def main():
         print("!! Database setup failed. Bot will still start, but DB-dependent features won't work until this is fixed. !!")
         traceback.print_exc()
 
-    await client.start()
+    app_client = await _start_client_with_persistent_session()
+    app.bind_client(app_client)
     me = await app.get_me()
     print(f"[main.py] Logged in as: id={me['id']} username=@{me.get('username')} is_bot={me.get('is_bot')}")
 
     # Pyrogram (unlike the raw Bot API) can only address a chat by a bare
     # numeric ID if it already knows that chat's access_hash. For a channel
     # where the bot was added as admin but has never received a message/
-    # update from it (e.g. -1004344161046, used by /upload_img), that hash
-    # is missing and sends fail with ChannelInvalid/PeerIdInvalid. Walking
-    # the dialog list once populates the cache for every chat the bot is
-    # actually a member/admin of, so ID-based sends work from here on.
-    print("[main.py] Bot account detected. Skipping get_dialogs() peer cache warm-up.")
+    # update from it, ID-based sends can fail. This warm-up is intentionally
+    # skipped here because it can create an unnecessary network burst on
+    # startup; normal event traffic populates peers as they are encountered.
+    print("[main.py] Skipping get_dialogs() peer cache warm-up.")
 
     print(f"[main.py] Registered commands: {list(COMMANDS.keys())}")
     print(f"[main.py] Registered callback actions: {list(CALLBACKS.keys())}")
 
-    client.add_handler(MessageHandler(handle_message))
-    client.add_handler(CallbackQueryHandler(handle_callback_query))
-    client.add_handler(ChatMemberUpdatedHandler(handle_my_chat_member))
+    app_client.add_handler(MessageHandler(handle_message))
+    app_client.add_handler(CallbackQueryHandler(handle_callback_query))
+    app_client.add_handler(ChatMemberUpdatedHandler(handle_my_chat_member))
 
     print("[main.py] Entering Pyrogram event loop. Waiting for updates...")
     try:
         await idle()
     finally:
-        await client.stop()
+        await app_client.stop()
         try:
             await disconnect()
         except Exception:
