@@ -192,7 +192,7 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
 async def completed_match_count() -> int:
     """Count completed matches across every supported game engine."""
     total = 0
-    for table in ("matches", "match_challenges", "play_matches", "playint_matches"):
+    for table in ("matches", "match_challenges", "play_matches", "playint_matches", "playipl_matches"):
         try:
             total += int(await fetchval(f"SELECT COUNT(*) FROM {table} WHERE status='completed';") or 0)
         except Exception:
