@@ -85,28 +85,68 @@ async def refresh_all_team_squads() -> tuple[int, int]:
     the special-edition namespace and map to abs(player_id)=special_player_id.
     Other squad metadata is preserved.
 
-    A squad entry's player_id can go dead without the entry ever being
-    removed - e.g. a special player gets deleted and then re-added, which
-    creates a brand new special_player_id. The old id no longer matches
-    anything, so a plain id-based refresh leaves that entry exactly as
-    stale as it was. When that happens here, the entry is re-linked by
-    name (and edition, for special players) to whatever currently holds
-    that name, and that user's historical /plstats rows for the dead id
-    are carried over to the new one so past performances aren't stranded
-    under an id nothing points to anymore.
+    A live player is always refreshed from its current authoritative row, so
+    edits to name, levels, role, country, hands, edition, etc. flow into every
+    owned squad. A dead global player is removed rather than being silently
+    rebound to a newly-created global record with the same name.
+
+    A dead special-edition player is allowed one intentional recovery path for
+    delete-then-recreate workflows: when exactly one current special player has
+    the same base name and the same non-edition player details (levels, role,
+    country, and batting/bowling hands), the old squad entry is swapped to the
+    new special_player_id and its historical /plstats ledger follows the swap.
+    Otherwise the dead special entry is removed from the squad.
     """
 
     async def _tx(conn):
-        # Every squad entry whose stored id no longer resolves, matched by
-        # name (+ edition for special players) to whatever currently holds
-        # that name. Only entries that actually need to move show up here.
+        # Special editions use negative squad IDs. If an old special row was
+        # deleted and re-uploaded with a new ID, identify one unambiguous
+        # replacement by matching everything except the edition itself.
         remap_rows = await conn.fetch(
             """
             SELECT DISTINCT
                 ts.user_id,
                 ids.player_id AS old_player_id,
-                CASE WHEN ids.player_id > 0 THEN gp_by_name.player_id
-                     ELSE -sp_by_name.special_player_id END AS new_player_id
+                -sp_match.special_player_id AS new_player_id
+            FROM team_squads ts
+            CROSS JOIN LATERAL jsonb_array_elements(ts.squad) AS x(elem)
+            CROSS JOIN LATERAL (
+                SELECT CASE WHEN (x.elem->>'player_id') ~ '^-?[0-9]+$'
+                            THEN (x.elem->>'player_id')::bigint END AS player_id
+            ) AS ids
+            LEFT JOIN special_edition_players sp
+                ON ids.player_id < 0
+               AND abs(ids.player_id) = sp.special_player_id
+            LEFT JOIN LATERAL (
+                SELECT
+                    MIN(candidate.special_player_id) AS special_player_id,
+                    COUNT(*) AS candidate_count
+                FROM special_edition_players candidate
+                WHERE ids.player_id < 0
+                  AND sp.special_player_id IS NULL
+                  AND LOWER(candidate.name) = LOWER(x.elem->>'name')
+                  AND candidate.bat_level = NULLIF(x.elem->>'bat_level', '')::integer
+                  AND candidate.bowl_level = NULLIF(x.elem->>'bowl_level', '')::integer
+                  AND LOWER(COALESCE(candidate.country, '')) = LOWER(COALESCE(x.elem->>'country', ''))
+                  AND LOWER(COALESCE(candidate.role, '')) = LOWER(COALESCE(x.elem->>'role', ''))
+                  AND LOWER(COALESCE(candidate.batting_hand, '')) = LOWER(COALESCE(x.elem->>'batting_hand', ''))
+                  AND LOWER(COALESCE(candidate.bowling_hand, '')) = LOWER(COALESCE(x.elem->>'bowling_hand', ''))
+            ) AS sp_match ON TRUE
+            WHERE ids.player_id < 0
+              AND sp.special_player_id IS NULL
+              AND sp_match.candidate_count = 1;
+            """
+        )
+
+        # Keep a second list of all dead entries that have no safe replacement.
+        # Those player IDs must disappear from both the squad and the personal
+        # stats ledger, otherwise /sell or other ownership-aware flows can see
+        # a stale card forever.
+        removed_rows = await conn.fetch(
+            """
+            SELECT DISTINCT
+                ts.user_id,
+                ids.player_id AS old_player_id
             FROM team_squads ts
             CROSS JOIN LATERAL jsonb_array_elements(ts.squad) AS x(elem)
             CROSS JOIN LATERAL (
@@ -115,107 +155,126 @@ async def refresh_all_team_squads() -> tuple[int, int]:
             ) AS ids
             LEFT JOIN players gp
                 ON ids.player_id > 0 AND ids.player_id = gp.player_id
-            LEFT JOIN players gp_by_name
-                ON ids.player_id > 0 AND gp.player_id IS NULL
-               AND LOWER(gp_by_name.name) = LOWER(x.elem->>'name')
             LEFT JOIN special_edition_players sp
                 ON ids.player_id < 0 AND abs(ids.player_id) = sp.special_player_id
-            LEFT JOIN special_edition_players sp_by_name
-                ON ids.player_id < 0 AND sp.special_player_id IS NULL
-               AND LOWER(sp_by_name.name) = LOWER(x.elem->>'name')
-               AND LOWER(sp_by_name.edition) = LOWER(COALESCE(x.elem->>'edition', ''))
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS candidate_count
+                FROM special_edition_players candidate
+                WHERE ids.player_id < 0
+                  AND sp.special_player_id IS NULL
+                  AND LOWER(candidate.name) = LOWER(x.elem->>'name')
+                  AND candidate.bat_level = NULLIF(x.elem->>'bat_level', '')::integer
+                  AND candidate.bowl_level = NULLIF(x.elem->>'bowl_level', '')::integer
+                  AND LOWER(COALESCE(candidate.country, '')) = LOWER(COALESCE(x.elem->>'country', ''))
+                  AND LOWER(COALESCE(candidate.role, '')) = LOWER(COALESCE(x.elem->>'role', ''))
+                  AND LOWER(COALESCE(candidate.batting_hand, '')) = LOWER(COALESCE(x.elem->>'batting_hand', ''))
+                  AND LOWER(COALESCE(candidate.bowling_hand, '')) = LOWER(COALESCE(x.elem->>'bowling_hand', ''))
+            ) AS sp_match ON TRUE
             WHERE ids.player_id IS NOT NULL
-              AND ((ids.player_id > 0 AND gp.player_id IS NULL AND gp_by_name.player_id IS NOT NULL)
-                OR (ids.player_id < 0 AND sp.special_player_id IS NULL AND sp_by_name.special_player_id IS NOT NULL));
+              AND (
+                    (ids.player_id > 0 AND gp.player_id IS NULL)
+                 OR (ids.player_id < 0 AND sp.special_player_id IS NULL AND sp_match.candidate_count <> 1)
+              );
             """
         )
 
+        # Build every user's refreshed squad from authoritative DB rows. A
+        # dead/replaced entry is omitted when no safe match exists.
         await conn.execute(
             """
-            WITH refreshed AS (
+            WITH element_rows AS (
                 SELECT
                     ts.user_id,
-                    COALESCE(
-                        jsonb_agg(
-                            CASE
-                                WHEN ids.player_id > 0 AND gp.player_id IS NOT NULL THEN
-                                    x.elem || jsonb_build_object(
-                                        'player_id', gp.player_id,
-                                        'name', gp.name,
-                                        'country', gp.country,
-                                        'role', gp.role,
-                                        'bat_level', gp.bat_level,
-                                        'bowl_level', gp.bowl_level,
-                                        'batting_hand', gp.batting_hand,
-                                        'bowling_hand', gp.bowling_hand,
-                                        'is_special', false,
-                                        'edition', NULL,
-                                        'special_edition_id', NULL
-                                    )
-                                WHEN ids.player_id > 0 AND gp.player_id IS NULL AND gp_by_name.player_id IS NOT NULL THEN
-                                    x.elem || jsonb_build_object(
-                                        'player_id', gp_by_name.player_id,
-                                        'name', gp_by_name.name,
-                                        'country', gp_by_name.country,
-                                        'role', gp_by_name.role,
-                                        'bat_level', gp_by_name.bat_level,
-                                        'bowl_level', gp_by_name.bowl_level,
-                                        'batting_hand', gp_by_name.batting_hand,
-                                        'bowling_hand', gp_by_name.bowling_hand,
-                                        'is_special', false,
-                                        'edition', NULL,
-                                        'special_edition_id', NULL
-                                    )
-                                WHEN ids.player_id < 0 AND sp.special_player_id IS NOT NULL THEN
-                                    x.elem || jsonb_build_object(
-                                        'player_id', -sp.special_player_id,
-                                        'name', sp.name,
-                                        'country', sp.country,
-                                        'role', sp.role,
-                                        'bat_level', sp.bat_level,
-                                        'bowl_level', sp.bowl_level,
-                                        'batting_hand', sp.batting_hand,
-                                        'bowling_hand', sp.bowling_hand,
-                                        'is_special', true,
-                                        'edition', sp.edition,
-                                        'special_edition_id', sp.special_player_id
-                                    )
-                                WHEN ids.player_id < 0 AND sp.special_player_id IS NULL AND sp_by_name.special_player_id IS NOT NULL THEN
-                                    x.elem || jsonb_build_object(
-                                        'player_id', -sp_by_name.special_player_id,
-                                        'name', sp_by_name.name,
-                                        'country', sp_by_name.country,
-                                        'role', sp_by_name.role,
-                                        'bat_level', sp_by_name.bat_level,
-                                        'bowl_level', sp_by_name.bowl_level,
-                                        'batting_hand', sp_by_name.batting_hand,
-                                        'bowling_hand', sp_by_name.bowling_hand,
-                                        'is_special', true,
-                                        'edition', sp_by_name.edition,
-                                        'special_edition_id', sp_by_name.special_player_id
-                                    )
-                                ELSE x.elem
-                            END
-                            ORDER BY x.ord
-                        ),
-                        '[]'::jsonb
-                    ) AS squad
+                    x.ord,
+                    CASE
+                        WHEN ids.player_id > 0 AND gp.player_id IS NOT NULL THEN
+                            x.elem || jsonb_build_object(
+                                'player_id', gp.player_id,
+                                'name', gp.name,
+                                'country', gp.country,
+                                'role', gp.role,
+                                'bat_level', gp.bat_level,
+                                'bowl_level', gp.bowl_level,
+                                'batting_hand', gp.batting_hand,
+                                'bowling_hand', gp.bowling_hand,
+                                'is_special', false,
+                                'edition', NULL,
+                                'special_edition_id', NULL
+                            )
+                        WHEN ids.player_id < 0 AND sp.special_player_id IS NOT NULL THEN
+                            x.elem || jsonb_build_object(
+                                'player_id', -sp.special_player_id,
+                                'name', sp.name,
+                                'country', sp.country,
+                                'role', sp.role,
+                                'bat_level', sp.bat_level,
+                                'bowl_level', sp.bowl_level,
+                                'batting_hand', sp.batting_hand,
+                                'bowling_hand', sp.bowling_hand,
+                                'is_special', true,
+                                'edition', sp.edition,
+                                'special_edition_id', sp.special_player_id
+                            )
+                        WHEN ids.player_id < 0 AND sp.special_player_id IS NULL
+                             AND sp_match.candidate_count = 1 THEN
+                            x.elem || jsonb_build_object(
+                                'player_id', -sp_match.special_player_id,
+                                'name', sp_match.name,
+                                'country', sp_match.country,
+                                'role', sp_match.role,
+                                'bat_level', sp_match.bat_level,
+                                'bowl_level', sp_match.bowl_level,
+                                'batting_hand', sp_match.batting_hand,
+                                'bowling_hand', sp_match.bowling_hand,
+                                'is_special', true,
+                                'edition', sp_match.edition,
+                                'special_edition_id', sp_match.special_player_id
+                            )
+                        ELSE NULL
+                    END AS refreshed_elem
                 FROM team_squads ts
                 CROSS JOIN LATERAL jsonb_array_elements(ts.squad) WITH ORDINALITY AS x(elem, ord)
-                CROSS JOIN LATERAL (SELECT CASE WHEN (x.elem->>'player_id') ~ '^-?[0-9]+$' THEN (x.elem->>'player_id')::bigint END AS player_id) AS ids
+                CROSS JOIN LATERAL (
+                    SELECT CASE WHEN (x.elem->>'player_id') ~ '^-?[0-9]+$'
+                                THEN (x.elem->>'player_id')::bigint END AS player_id
+                ) AS ids
                 LEFT JOIN players gp
                     ON ids.player_id > 0 AND ids.player_id = gp.player_id
-                LEFT JOIN players gp_by_name
-                    ON ids.player_id > 0 AND gp.player_id IS NULL
-                   AND LOWER(gp_by_name.name) = LOWER(x.elem->>'name')
                 LEFT JOIN special_edition_players sp
-                    ON ids.player_id < 0
-                   AND abs(ids.player_id) = sp.special_player_id
-                LEFT JOIN special_edition_players sp_by_name
-                    ON ids.player_id < 0 AND sp.special_player_id IS NULL
-                   AND LOWER(sp_by_name.name) = LOWER(x.elem->>'name')
-                   AND LOWER(sp_by_name.edition) = LOWER(COALESCE(x.elem->>'edition', ''))
-                GROUP BY ts.user_id
+                    ON ids.player_id < 0 AND abs(ids.player_id) = sp.special_player_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        MIN(candidate.special_player_id) AS special_player_id,
+                        COUNT(*) AS candidate_count,
+                        MIN(candidate.name) AS name,
+                        MIN(candidate.country) AS country,
+                        MIN(candidate.role) AS role,
+                        MIN(candidate.bat_level) AS bat_level,
+                        MIN(candidate.bowl_level) AS bowl_level,
+                        MIN(candidate.batting_hand) AS batting_hand,
+                        MIN(candidate.bowling_hand) AS bowling_hand,
+                        MIN(candidate.edition) AS edition
+                    FROM special_edition_players candidate
+                    WHERE ids.player_id < 0
+                      AND sp.special_player_id IS NULL
+                      AND LOWER(candidate.name) = LOWER(x.elem->>'name')
+                      AND candidate.bat_level = NULLIF(x.elem->>'bat_level', '')::integer
+                      AND candidate.bowl_level = NULLIF(x.elem->>'bowl_level', '')::integer
+                      AND LOWER(COALESCE(candidate.country, '')) = LOWER(COALESCE(x.elem->>'country', ''))
+                      AND LOWER(COALESCE(candidate.role, '')) = LOWER(COALESCE(x.elem->>'role', ''))
+                      AND LOWER(COALESCE(candidate.batting_hand, '')) = LOWER(COALESCE(x.elem->>'batting_hand', ''))
+                      AND LOWER(COALESCE(candidate.bowling_hand, '')) = LOWER(COALESCE(x.elem->>'bowling_hand', ''))
+                ) AS sp_match ON TRUE
+            )
+            , refreshed AS (
+                SELECT
+                    user_id,
+                    COALESCE(
+                        jsonb_agg(refreshed_elem ORDER BY ord) FILTER (WHERE refreshed_elem IS NOT NULL),
+                        '[]'::jsonb
+                    ) AS squad
+                FROM element_rows
+                GROUP BY user_id
             )
             UPDATE team_squads ts
             SET squad = refreshed.squad,
@@ -225,11 +284,8 @@ async def refresh_all_team_squads() -> tuple[int, int]:
             """
         )
 
-        # Carry that user's historical /plstats ledger over to the new id so a
-        # deleted-then-recreated player doesn't reset to zero after a refresh.
-        # Scoped to (user_id, old_id) -> (user_id, new_id) only, and skips any
-        # match_id the new id already has a row for, so the unique
-        # (match_id, user_id, player_id) constraint can never be violated.
+        # Carry historical /plstats rows across an unambiguous special-edition
+        # delete/recreate swap. Global deletions are never rebound by name.
         for row in remap_rows:
             await conn.execute(
                 """
@@ -237,7 +293,8 @@ async def refresh_all_team_squads() -> tuple[int, int]:
                 SET player_id = $3
                 WHERE old_row.user_id = $1 AND old_row.player_id = $2
                   AND NOT EXISTS (
-                      SELECT 1 FROM player_user_match_stats new_row
+                      SELECT 1
+                      FROM player_user_match_stats new_row
                       WHERE new_row.match_id = old_row.match_id
                         AND new_row.user_id = old_row.user_id
                         AND new_row.player_id = $3
@@ -245,9 +302,14 @@ async def refresh_all_team_squads() -> tuple[int, int]:
                 """,
                 int(row["user_id"]), int(row["old_player_id"]), int(row["new_player_id"]),
             )
-            # Any leftover old-id rows here were true duplicates of a match the
-            # new id already had a row for (rare) - drop them so no orphaned
-            # stats sit under a name/edition that no longer exists.
+            await conn.execute(
+                "DELETE FROM player_user_match_stats WHERE user_id = $1 AND player_id = $2;",
+                int(row["user_id"]), int(row["old_player_id"]),
+            )
+
+        # Remove stats belonging to dead global/special players that were not
+        # safely remapped into a current special edition.
+        for row in removed_rows:
             await conn.execute(
                 "DELETE FROM player_user_match_stats WHERE user_id = $1 AND player_id = $2;",
                 int(row["user_id"]), int(row["old_player_id"]),
