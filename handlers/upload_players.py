@@ -7,8 +7,8 @@ from database.players_repo import bulk_upload_players, parse_player_line
 from database.special_players_repo import parse_special_player_line, insert_special_player, split_player_edition
 from database.playint_repo import insert_playint_player, parse_playint_player_line
 from database.playint_teams_repo import normalize_team_keyword, team_name
-from database.playipl_repo import normalize_team_keyword as normalize_ipl_team_keyword, parse_playipl_player_line, upsert_playipl_player
-from database.playipl_teams_repo import team_name as ipl_team_name
+from database.playipl_repo import parse_playipl_player_line, upsert_playipl_player
+from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_team_keyword, team_name as ipl_team_name
 from database.access_repo import has_upload_access
 
 
