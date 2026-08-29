@@ -7,6 +7,8 @@ from database.players_repo import bulk_upload_players, parse_player_line
 from database.special_players_repo import parse_special_player_line, insert_special_player, split_player_edition
 from database.playint_repo import insert_playint_player, parse_playint_player_line
 from database.playint_teams_repo import normalize_team_keyword, team_name
+from database.playipl_repo import normalize_team_keyword as normalize_ipl_team_keyword, parse_playipl_player_line, upsert_playipl_player
+from database.playipl_teams_repo import team_name as ipl_team_name
 from database.access_repo import has_upload_access
 
 
@@ -25,6 +27,36 @@ async def upload_players_command(message):
             chat_id,
             "🚫 This command is restricted to the bot owner, or users the owner has granted access to via /access."
         )
+        return
+
+    # ---- PlayIPL franchise upload: /upload_pl IPL-RCB ----
+    parts = (message.get("text") or "").split()
+    ipl_keyword = parts[1] if len(parts) > 1 else None
+    ipl_code = normalize_ipl_team_keyword(ipl_keyword) if ipl_keyword else None
+    if ipl_keyword and ipl_code:
+        reply_to = message.get("reply_to_message")
+        if not reply_to or "text" not in reply_to:
+            await app.send_message(chat_id, "⚠️ Please use /upload_pl IPL-XXX as a reply to a message containing player data.")
+            return
+        raw_text = reply_to["text"]
+        uploaded = failed = 0
+        details = []
+        for line in [l for l in raw_text.splitlines() if l.strip()]:
+            player, error = parse_playipl_player_line(line)
+            if error:
+                failed += 1; details.append(error); continue
+            try:
+                ok, _row = await upsert_playipl_player(ipl_code, ipl_team_name(ipl_code), player, user_id)
+                if ok:
+                    uploaded += 1
+            except Exception as exc:
+                failed += 1; details.append(f"{player.get('name','Player')}: {exc}")
+        report = (f"📋 <b>PlayIPL Franchise Upload Report</b>\n\n"
+                  f"🏏 Franchise: <b>{ipl_team_name(ipl_code)} ({ipl_code})</b>\n"
+                  f"✅ Saved/Updated: {uploaded}\n❌ Failed: {failed}")
+        if details:
+            report += "\n\n<b>Failure details:</b>\n" + "\n".join(f"• {d}" for d in details[:15])
+        await app.send_message(chat_id, report, parse_mode="HTML")
         return
 
     # ---- Optional PlayInt team upload: /upload_pl T20I-IND ----
