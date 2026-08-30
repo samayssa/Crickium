@@ -58,6 +58,7 @@ class PlaySession:
     innings_history: list[dict[str, Any]] = field(default_factory=list)
     high_run_overs: int = 0
     very_high_run_overs: int = 0
+    free_hit_next_ball: bool = False
 
 
 _PLAYINT_SESSIONS: dict[int, PlaySession] = {}
@@ -372,6 +373,7 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
         over_runs=_current_over_runs(session.this_over),
         high_run_overs=session.high_run_overs,
         very_high_run_overs=session.very_high_run_overs,
+        free_hit_next_ball=bool(session.free_hit_next_ball),
     )
 
 
@@ -426,6 +428,9 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
             striker_before.boundary_streak = 0
         # wide/no_ball/bye/leg_bye leave the streak untouched - no legal
         # batted shot happened to either extend or break it.
+    # A no-ball creates exactly one immediate free-hit delivery. If that
+    # re-ball is itself a no-ball, the flag naturally carries forward.
+    session.free_hit_next_ball = outcome.outcome == "no_ball"
     register_ball(
         session.innings,
         outcome=outcome.outcome,

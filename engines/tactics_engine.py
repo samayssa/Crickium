@@ -1118,6 +1118,76 @@ def _apply_final_wicket_cap(
     _redistribute_excess(weights, "W", cap, (0, 1, 2, 4, 6))
 
 
+def _reduce_probability_into_rotation(weights: dict, source_key, reduction_fraction: float, targets: tuple = (1, 2)) -> None:
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    source = max(0.0, float(weights.get(source_key, 0.0)))
+    if total <= 0 or source <= 0:
+        return
+    reduction_fraction = max(0.0, min(1.0, float(reduction_fraction)))
+    moved = source * reduction_fraction
+    weights[source_key] = source - moved
+    target_total = sum(max(0.0, float(weights.get(k, 0.0))) for k in targets)
+    if target_total <= 0:
+        # Preserve the total if a target somehow becomes unavailable.
+        weights[source_key] = source
+        return
+    for key in targets:
+        current = max(0.0, float(weights.get(key, 0.0)))
+        weights[key] = current + moved * (current / target_total)
+
+
+def _increase_probability_relative(weights: dict, target_key, relative_increase: float) -> None:
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    current = max(0.0, float(weights.get(target_key, 0.0)))
+    if total <= 0 or current <= 0:
+        return
+    old_p = current / total
+    desired_p = min(0.99, old_p * (1.0 + max(0.0, float(relative_increase))))
+    delta = (desired_p - old_p) * total
+    non_target = total - current
+    if delta <= 0 or non_target <= 0:
+        return
+    scale = max(0.0, (non_target - delta) / non_target)
+    for key in list(weights):
+        if key == target_key:
+            continue
+        weights[key] = max(0.0, float(weights[key])) * scale
+    weights[target_key] = current + delta
+
+
+def _apply_requested_probability_tuning(
+    weights: dict,
+    *,
+    mindset: str,
+    pitch: str,
+    batsman_balls_faced: int,
+    free_hit_next_ball: bool = False,
+) -> None:
+    """Final, isolated tuning requested for all three public match engines.
+
+    • Defensive and rotate remain untouched.
+    • Neutral/aggressive/ultra-aggressive reduce the established dot mass by
+      37.5% only after the batter has faced more than five legal balls, then
+      redistribute that exact mass into singles/doubles.
+    • Wide/no-ball mass is reduced by 45% globally and returned to singles/
+      doubles, preventing the existing high-extra issue.
+    • Flat-pitch wicket probability is lifted by 7.5% relative.
+    • A no-ball's immediate free-hit is enforced with 0% wicket chance.
+    """
+    balls = max(0, int(batsman_balls_faced or 0))
+    if mindset in {"neutral", "aggressive", "ultra_aggressive"} and balls > 5:
+        _reduce_probability_into_rotation(weights, 0, 0.375, (1, 2))
+
+    _reduce_probability_into_rotation(weights, "WD", 0.45, (1, 2))
+    _reduce_probability_into_rotation(weights, "NB", 0.45, (1, 2))
+
+    if str(pitch or "even").strip().lower() == "flat":
+        _increase_probability_relative(weights, "W", 0.075)
+
+    if free_hit_next_ball:
+        _redistribute_excess(weights, "W", 0.0, (0, 1, 2, 3, 4, 6, "WD", "NB", "LB", "BY"))
+
+
 def resolve_weights(
     bowler_tactic: str,
     batter_mindset: str,
@@ -1139,6 +1209,7 @@ def resolve_weights(
     over_runs: int = 0,
     high_run_overs: int = 0,
     very_high_run_overs: int = 0,
+    free_hit_next_ball: bool = False,
 ) -> dict:
     """Runs the full 6-layer algorithm and returns final weights, ready
     for a weighted-random pick."""
@@ -1195,6 +1266,18 @@ def resolve_weights(
         int(wickets_this_over or 0),
     )
 
+    # Requested simulation tuning is applied only here, after all existing
+    # tactical/pitch/phase/level/confidence layers. This keeps every other
+    # rule intact and guarantees identical behavior across /play, /playint
+    # and /playipl because all three engines resolve through this module.
+    _apply_requested_probability_tuning(
+        weights,
+        mindset=mindset,
+        pitch=pitch,
+        batsman_balls_faced=batsman_balls_faced,
+        free_hit_next_ball=free_hit_next_ball,
+    )
+
     return {key: max(0.0, value) for key, value in weights.items()}
 
 
@@ -1235,7 +1318,8 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
              batter_role: str | None = None, target: int | None = None, total_runs: int = 0,
              balls_remaining: int = 120, wickets_in_hand: int = 10,
              batting_position: int = 1, over_runs: int = 0,
-             high_run_overs: int = 0, very_high_run_overs: int = 0):
+             high_run_overs: int = 0, very_high_run_overs: int = 0,
+             free_hit_next_ball: bool = False):
     """Returns one sampled outcome code from OUTCOMES."""
     weights = resolve_weights(
         bowler_tactic, batter_mindset, pitch, over_number, batter_level, bowler_level, confidence,
@@ -1245,6 +1329,7 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
         target=target, total_runs=total_runs, balls_remaining=balls_remaining,
         wickets_in_hand=wickets_in_hand, batting_position=batting_position,
         over_runs=over_runs, high_run_overs=high_run_overs, very_high_run_overs=very_high_run_overs,
+        free_hit_next_ball=free_hit_next_ball,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
     return random.choices(OUTCOMES, weights=values, k=1)[0]
