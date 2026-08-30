@@ -10,6 +10,11 @@ from database.play_repo import (
     get_match as get_play_match,
     update_status as update_play_status,
 )
+from database.playipl_repo import (
+    get_active_match_in_chat as get_playipl_match_in_chat,
+    get_match as get_playipl_match,
+    update_status as update_playipl_status,
+)
 from database.playint_repo import (
     get_active_match_in_chat as get_playint_match_in_chat,
     get_match as get_playint_match,
@@ -18,6 +23,7 @@ from database.playint_repo import (
 from buttons.endgame_buttons import abandon_confirm_keyboard
 from engines.play_runtime import get_session as get_play_session, get_session_in_chat as get_play_session_in_chat, clear_session
 from engines.playint_runtime import get_playint_session, get_playint_session_in_chat, clear_playint_session
+from engines.playipl_runtime import get_playipl_session, get_playipl_session_in_chat, clear_playipl_session
 from engines.play_engine import pitch_label
 from utils.mentions import mention_html
 from utils.timers import cancel_timer
@@ -89,12 +95,12 @@ def _game_summary(
 
     if engine == "play":
         mode = "PLAY • T20 1v1"
-        first_text = "Not yet played"
-        second_text = "Not yet played"
-    else:
+    elif engine == "playint":
         mode = "PLAYINT • T20 International"
-        first_text = "Not yet played"
-        second_text = "Not yet played"
+    else:
+        mode = "PLAYIPL • Indian Premier League"
+    first_text = "Not yet played"
+    second_text = "Not yet played"
 
     if session is not None:
         innings_number = int(getattr(getattr(session, "innings", None), "innings_number", 1) or 1)
@@ -133,12 +139,19 @@ async def _find_active(chat_id: int):
     if session is not None:
         return dict(session.match), "playint"
 
+    session = get_playipl_session_in_chat(chat_id)
+    if session is not None:
+        return dict(session.match), "playipl"
+
     match = await get_play_match_in_chat(chat_id)
     if match:
         return dict(match), "play"
     match = await get_playint_match_in_chat(chat_id)
     if match:
         return dict(match), "playint"
+    match = await get_playipl_match_in_chat(chat_id)
+    if match:
+        return dict(match), "playipl"
 
     # Last-resort authoritative DB lookup. This catches a live game even
     # when its runtime session disappeared after a restart/reload or when
@@ -167,10 +180,18 @@ async def _find_active(chat_id: int):
             ORDER BY match_id DESC LIMIT 1;""",
         chat_id, *terminal_list,
     )
+    playipl_row = await fetchrow(
+        f"""SELECT * FROM playipl_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
+    )
 
     candidates = [(dict(play_row), "play")] if play_row else []
     if playint_row:
         candidates.append((dict(playint_row), "playint"))
+    if playipl_row:
+        candidates.append((dict(playipl_row), "playipl"))
     if candidates:
         # If both somehow have a stray non-terminal row, the more recent
         # match_id is the one actually occupying the group right now.
@@ -181,7 +202,12 @@ async def _find_active(chat_id: int):
 
 
 async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None:
-    session = get_play_session(match_id) if engine == "play" else get_playint_session(match_id)
+    if engine == "play":
+        session = get_play_session(match_id)
+    elif engine == "playint":
+        session = get_playint_session(match_id)
+    else:
+        session = get_playipl_session(match_id)
 
     message_ids = set()
     if session is not None:
@@ -191,7 +217,12 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
             getattr(session, "short_message_id", None),
         })
     else:
-        match = await (get_play_match(match_id) if engine == "play" else get_playint_match(match_id))
+        if engine == "play":
+            match = await get_play_match(match_id)
+        elif engine == "playint":
+            match = await get_playint_match(match_id)
+        else:
+            match = await get_playipl_match(match_id)
         if match:
             message_ids.add(match.get("message_id"))
 
@@ -208,8 +239,10 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
 
     if engine == "play":
         clear_session(match_id)
-    else:
+    elif engine == "playint":
         clear_playint_session(match_id)
+    else:
+        clear_playipl_session(match_id)
 
 
 @register("abandon")
@@ -243,7 +276,12 @@ async def abond_command(message):
         )
         return
 
-    session = get_play_session(match["match_id"]) if engine == "play" else get_playint_session(match["match_id"])
+    if engine == "play":
+        session = get_play_session(match["match_id"])
+    elif engine == "playint":
+        session = get_playint_session(match["match_id"])
+    else:
+        session = get_playipl_session(match["match_id"])
     text = _game_summary(match, engine=engine, session=session)
     await app.send_message(
         chat_id,
@@ -287,8 +325,10 @@ async def abandon_yes(callback_query):
     try:
         if engine == "play":
             await update_play_status(mid, "ended")
-        else:
+        elif engine == "playint":
             await update_playint_status(mid, "ended")
+        else:
+            await update_playipl_status(mid, "ended")
         cancel_timer("challenge", mid)
         cancel_timer("toss_call", mid)
         cancel_timer("decision", mid)
