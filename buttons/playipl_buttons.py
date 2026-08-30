@@ -24,12 +24,12 @@ def challenge_keyboard(match_id):
 
 def team_keyboard(match_id):
     from database.playipl_teams_repo import TEAM_ORDER, team_button_label
-    # Ten franchises: five compact buttons per row, no pagination.
+    # Ten franchises: two compact buttons per row, no pagination.
     rows = []
-    for i in range(0, len(TEAM_ORDER), 5):
+    for i in range(0, len(TEAM_ORDER), 2):
         rows.append([
             _b(team_button_label(code), f'playipl_team:{match_id}:{code}', 'primary')
-            for code in TEAM_ORDER[i:i + 5]
+            for code in TEAM_ORDER[i:i + 2]
         ])
     return InlineKeyboardMarkup(rows)
 
@@ -118,15 +118,20 @@ def strategy_keyboard(match_id):
 
 def impact_out_keyboard(match_id, team_code, players, selected_id=None):
     rows = []
+    buttons = []
     for index, player in enumerate(players, start=1):
         pid = int(player.get('player_id') or 0)
         name = str(player.get('name') or 'Player')
         style = 'success' if pid == int(selected_id or -1) else 'danger'
-        rows.append([_b(
+        buttons.append(_b(
             f'{index}. {name}',
             f'playipl_impact_out:{match_id}:{team_code}:{pid}',
             style,
-        )])
+        ))
+        if len(buttons) == 2:
+            rows.append(buttons); buttons = []
+    if buttons:
+        rows.append(buttons)
     if selected_id is not None:
         rows.append([_b(
             '✅ Confirm Out Player',
@@ -138,15 +143,20 @@ def impact_out_keyboard(match_id, team_code, players, selected_id=None):
 
 def impact_in_keyboard(match_id, team_code, players, selected_id=None):
     rows = []
+    buttons = []
     for player in players:
         pid = int(player.get('player_id') or 0)
         name = str(player.get('name') or 'Player')
         style = 'success' if pid == int(selected_id or -1) else 'danger'
-        rows.append([_b(
+        buttons.append(_b(
             name,
             f'playipl_impact_in:{match_id}:{team_code}:{pid}',
             style,
-        )])
+        ))
+        if len(buttons) == 2:
+            rows.append(buttons); buttons = []
+    if buttons:
+        rows.append(buttons)
     if selected_id is not None:
         rows.append([_b(
             '✅ Confirm In Player',
@@ -154,3 +164,11 @@ def impact_in_keyboard(match_id, team_code, players, selected_id=None):
             'danger',
         )])
     return rows
+
+
+
+def exit_confirm_keyboard(match_id):
+    return InlineKeyboardMarkup([[
+        _b('✅ Yes, Exit Game', f'playipl_exit_yes:{match_id}', 'success'),
+        _b('❌ No, Cancel', f'playipl_exit_cancel:{match_id}', 'danger'),
+    ]])
