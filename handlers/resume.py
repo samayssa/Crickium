@@ -8,6 +8,7 @@ from handlers.registry import register
 
 from database.play_repo import get_active_match_for_user as get_play_active_for_user, set_message_id as set_play_message_id
 from database.playint_repo import get_active_match_for_user as get_playint_active_for_user, set_message_id as set_playint_message_id
+from database.playipl_repo import get_active_match_for_user as get_playipl_active_for_user, set_message_id as set_playipl_message_id
 
 
 RESUME_NOTICE = "<b>🔄 Game resuming...</b>"
@@ -34,6 +35,7 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
     if chat_id is not None:
         from engines.play_runtime import get_session_in_chat
         from engines.playint_runtime import get_playint_session_in_chat
+        from engines.playipl_runtime import get_playipl_session_in_chat
 
         play_session = get_session_in_chat(int(chat_id))
         if play_session is not None and uid in {
@@ -48,6 +50,13 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
             int(playint_session.match.get("opponent_id") or 0),
         }:
             return "PLAYINT", playint_session
+
+        playipl_session = get_playipl_session_in_chat(int(chat_id))
+        if playipl_session is not None and uid in {
+            int(playipl_session.match.get("challenger_id") or 0),
+            int(playipl_session.match.get("opponent_id") or 0),
+        }:
+            return "PLAYIPL", playipl_session
 
     # A user may issue /resume from DM while their match is running in a
     # group. DB resolves the match, then the live session supplies the exact
@@ -70,6 +79,15 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
             return "PLAYINT", session
         return "PLAYINT_UNAVAILABLE", playint_match
 
+    playipl_match = await get_playipl_active_for_user(uid)
+    if playipl_match:
+        match_id = int(playipl_match["match_id"])
+        from engines.playipl_runtime import get_playipl_session
+        session = get_playipl_session(match_id)
+        if session is not None:
+            return "PLAYIPL", session
+        return "PLAYIPL_UNAVAILABLE", playipl_match
+
     return None, None
 
 
@@ -82,13 +100,20 @@ def _resume_markup(engine: str, session: Any):
             strategy_keyboard,
         )
         from engines.play_runtime import next_bowler_card
-    else:
+    elif engine == "PLAYINT":
         from buttons.playint_buttons import (
             bowler_selection_keyboard,
             bowler_tactic_keyboard,
             strategy_keyboard,
         )
         from engines.playint_runtime import next_bowler_card
+    else:
+        from buttons.playipl_buttons import (
+            bowler_selection_keyboard,
+            bowler_tactic_keyboard,
+            strategy_keyboard,
+        )
+        from engines.playipl_runtime import next_bowler_card
 
     stage = str(session.stage or "choose_bowler")
     if stage == "choose_bowler":
@@ -103,8 +128,10 @@ def _resume_markup(engine: str, session: Any):
 def _render_resume_scorecard(engine: str, session: Any) -> str:
     if engine == "PLAY":
         from engines.play_runtime import render_live_scorecard
-    else:
+    elif engine == "PLAYINT":
         from engines.playint_runtime import render_live_scorecard
+    else:
+        from engines.playipl_runtime import render_live_scorecard
     return render_live_scorecard(
         session,
         bowler_prompt=(str(session.stage or "") == "choose_bowler"),
@@ -115,8 +142,10 @@ async def _update_live_message_id(engine: str, session: Any, message_id: int) ->
     try:
         if engine == "PLAY":
             await set_play_message_id(int(session.match_id), int(message_id))
-        else:
+        elif engine == "PLAYINT":
             await set_playint_message_id(int(session.match_id), int(message_id))
+        else:
+            await set_playipl_message_id(int(session.match_id), int(message_id))
     except Exception as exc:
         # The in-memory session remains authoritative for the running match;
         # DB message-id persistence is a best-effort recovery aid.
