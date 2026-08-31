@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 
 from handlers.registry import register
@@ -8,6 +9,9 @@ from config import ADMIN_USER_ID
 from database.access_repo import has_upload_access
 from database.players_repo import normalize_role
 from database.squads_repo import sync_player_snapshot
+from database.playint_repo import get_engine_team_player, update_engine_team_player
+from database.playint_teams_repo import normalize_team_keyword as normalize_t20i_team
+from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_team
 from database.special_players_repo import (
     split_player_edition,
     get_special_player,
@@ -119,6 +123,56 @@ async def _resolve_target(identity: str, changes: dict):
     return "global", global_player, changes
 
 
+def _engine_team_arg(text: str):
+    parts = str(text or "").split()
+    if len(parts) < 2:
+        return None
+    raw = parts[1].strip()
+    if raw.upper().startswith("T20I-"):
+        code = normalize_t20i_team(raw)
+        return ("T20I", code) if code else None
+    if raw.upper().startswith("IPL-"):
+        code = normalize_ipl_team(raw)
+        return ("IPL", code) if code else None
+    return None
+
+
+async def _edit_engine_team(message, engine: str, team_code: str) -> bool:
+    chat_id = int(message["chat"]["id"])
+    reply_to = message.get("reply_to_message")
+    if not reply_to or not reply_to.get("text"):
+        await app.send_message(chat_id, "⚠️ Please use /editp ENGINE-TEAM as a reply to the player edit line(s).", parse_mode="HTML")
+        return True
+    errors, success = [], []
+    for line in [x for x in str(reply_to["text"]).splitlines() if x.strip()]:
+        parsed, parse_error = _parse_line(line)
+        if parse_error:
+            errors.append(parse_error)
+            continue
+        try:
+            player = await get_engine_team_player(engine, team_code, parsed["identity"])
+            if not player:
+                raise ValueError(f"{parsed['identity']}: player was not found in {engine}-{team_code}.")
+            if "edition" in parsed["changes"]:
+                raise ValueError("edition is only available for special/global players, not engine squad players.")
+            normalized = {field: _normalize_value(field, value) for field, value in parsed["changes"].items()}
+            updated = await update_engine_team_player(engine, team_code, int(player["player_id"]), normalized)
+            if not updated:
+                raise ValueError(f"{parsed['identity']}: player disappeared before update.")
+            success.append((parsed["identity"], player, updated, normalized))
+        except Exception as exc:
+            errors.append(str(exc))
+    lines_out = ["✅ <b>Player Edit Complete</b>", "", f"🎮 Engine ➤ <b>{html.escape(engine)}</b>", f"🏏 Team ➤ <b>{html.escape(team_code)}</b>"]
+    for identity, old_player, updated, changed in success:
+        lines_out.append(f"\n✅ <b>{html.escape(identity)}</b>")
+        for field, value in changed.items():
+            lines_out.append(f"• {field} ➤ <code>{html.escape(str(old_player.get(field)))}</code> → <code>{html.escape(str(value))}</code>")
+    if errors:
+        lines_out.extend(["", "⚠️ <b>Not changed</b>"] + [f"• {html.escape(e)}" for e in errors[:20]])
+    await app.send_message(chat_id, "\n".join(lines_out), parse_mode="HTML")
+    return True
+
+
 @register("editp")
 async def editp_command(message):
     chat_id = message["chat"]["id"]
@@ -126,6 +180,10 @@ async def editp_command(message):
     if not await _has_access(user_id):
         await app.send_message(chat_id, "🚫 This command is restricted to the bot owner or users granted admin player access via /access.")
         return
+    text = str(message.get("text") or "").strip()
+    engine_team = _engine_team_arg(text)
+    if engine_team:
+        return await _edit_engine_team(message, *engine_team)
     reply_to = message.get("reply_to_message")
     if not reply_to or not reply_to.get("text"):
         await app.send_message(chat_id, "⚠️ Please use /editp as a reply to the player edit line(s).")

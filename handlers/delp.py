@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import html
+import re
 import uuid
 
 from handlers.registry import register, register_callback
 from app import app
 from database.access_repo import has_upload_access
 from database.players_repo import parse_player_line
+from database.playint_repo import get_engine_team_player, delete_engine_team_player
+from database.playint_teams_repo import normalize_team_keyword as normalize_t20i_team, team_name as t20i_team_name
+from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_team, team_name as ipl_team_name
 from database.special_players_repo import (
     split_player_edition,
     get_delete_targets,
@@ -79,7 +83,12 @@ async def _delete_candidates_from_name(query: str) -> list[dict]:
 async def _show_single_confirmation(chat_id: int, user_id: int, target: dict):
     player = target["player"]
     label = _candidate_label(player)
-    scope = "special edition" if target["kind"] == "special" else "global pool"
+    if target["kind"] == "special":
+        scope = "special edition"
+    elif target["kind"] == "engine_team":
+        scope = f"{target.get('engine')} • {target.get('team_code')} squad"
+    else:
+        scope = "global pool"
     token = uuid.uuid4().hex[:12]
     _PENDING[token] = {"owner_id": user_id, "targets": [target]}
     text = (
@@ -111,6 +120,82 @@ async def _show_multiple_matches(chat_id: int, query: str, targets: list[dict]):
     await app.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
 
 
+def _engine_team_arg(text: str):
+    parts = str(text or "").split()
+    if len(parts) < 2:
+        return None
+    raw = parts[1].strip()
+    if raw.upper().startswith("T20I-"):
+        code = normalize_t20i_team(raw)
+        return ("T20I", code, t20i_team_name(code)) if code else None
+    if raw.upper().startswith("IPL-"):
+        code = normalize_ipl_team(raw)
+        return ("IPL", code, ipl_team_name(code)) if code else None
+    return None
+
+
+def _plain_player_name(line: str) -> str:
+    text = str(line or "").strip()
+    bracketed = re.findall(r"\[([^\[\]]*)\]", text)
+    if bracketed:
+        return str(bracketed[0]).strip()
+    text = re.sub(r"^\s*(?:[-•]\s*)?\d+\.\s*", "", text)
+    text = re.sub(r"^\s*[•-]\s*", "", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    # Team reports use 'Name • Role • BAT x • BOWL y'.
+    return text.split(" • ", 1)[0].strip()
+
+
+async def _show_engine_team_confirmation(chat_id: int, user_id: int, engine: str, code: str, full_name: str, targets: list[dict]):
+    token = uuid.uuid4().hex[:12]
+    _PENDING[token] = {"owner_id": user_id, "targets": targets}
+    lines = [
+        "⚠️ <b>DELETE PLAYERS</b>",
+        "",
+        f"🎮 Engine ➤ <b>{html.escape(engine)}</b>",
+        f"🏏 Team ➤ <b>{html.escape(full_name)} ({html.escape(code)})</b>",
+        "",
+        f"Are you sure you want to delete <b>{len(targets)} player(s)</b> from this squad?",
+        "",
+        "This action cannot be undone.",
+    ]
+    await app.send_message(chat_id, "\n".join(lines), parse_mode="HTML", reply_markup=delete_confirm_keyboard(token))
+
+
+async def _del_engine_team(message, engine: str, team_code: str, full_name: str) -> bool:
+    chat_id = int(message["chat"]["id"])
+    user_id = int((message.get("from") or {}).get("id") or 0)
+    reply_to = message.get("reply_to_message")
+    if not reply_to or not reply_to.get("text"):
+        await app.send_message(chat_id, "⚠️ Please use /delp ENGINE-TEAM as a reply to the player list you want to delete.", parse_mode="HTML")
+        return True
+    found, missing = [], []
+    for raw_line in str(reply_to["text"]).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("🏏") or line.startswith("<"):
+            continue
+        name = _plain_player_name(line)
+        if not name or name.lower() in {"squad", "engine"}:
+            continue
+        row = await get_engine_team_player(engine, team_code, name)
+        if row:
+            found.append({"kind": "engine_team", "engine": engine, "team_code": team_code, "team_name": full_name, "player": dict(row), "name": str(row["name"]), "edition": None})
+        else:
+            missing.append(name)
+    if not found:
+        await app.send_message(chat_id, "⚠️ No matching squad players were found in the database.", parse_mode="HTML")
+        return True
+    if len(found) == 1 and not missing:
+        await _show_single_confirmation(chat_id, user_id, found[0])
+        return True
+    if missing:
+        # Keep the same confirmation workflow and simply report the skipped rows.
+        pass
+    await _show_engine_team_confirmation(chat_id, user_id, engine, team_code, full_name, found)
+    return True
+
+
 @register("delp")
 async def delp_command(message):
     chat_id = message["chat"]["id"]
@@ -120,6 +205,9 @@ async def delp_command(message):
         return
 
     text = str(message.get("text") or "").strip()
+    engine_team = _engine_team_arg(text)
+    if engine_team:
+        return await _del_engine_team(message, *engine_team)
     parts = text.split(maxsplit=1)
     arg = parts[1].strip() if len(parts) > 1 else ""
     reply_to = message.get("reply_to_message")
@@ -225,10 +313,16 @@ async def delp_confirm(callback_query):
 
     deleted_global = 0
     deleted_special = 0
+    deleted_engine = 0
     missing_now = 0
     for target in state["targets"]:
         try:
-            if target["kind"] == "global":
+            if target["kind"] == "engine_team":
+                if await delete_engine_team_player(target["engine"], target["team_code"], int(target["player"]["player_id"])):
+                    deleted_engine += 1
+                else:
+                    missing_now += 1
+            elif target["kind"] == "global":
                 player = await get_delete_targets({"name": target["name"]})
                 current = player.get("player")
                 if not current:
@@ -254,7 +348,8 @@ async def delp_confirm(callback_query):
     text = (
         f"✅ <b>Players Deleted</b>\n\n"
         f"🌍 Global Pool ➤ <b>{deleted_global}</b>\n"
-        f"✨ Special Edition ➤ <b>{deleted_special}</b>"
+        f"✨ Special Edition ➤ <b>{deleted_special}</b>\n"
+        f"🎮 Engine Squad ➤ <b>{deleted_engine}</b>"
     )
     if missing_now:
         text += f"\n⚠️ Already missing ➤ <b>{missing_now}</b>"
