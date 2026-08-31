@@ -164,3 +164,33 @@ async def insert_playint_player(team_code, team_name, player, uploaded_by, engin
         engine_key, team_code, player['name'],
     )
     return False, dict(existing) if existing else None
+
+
+async def get_engine_team_player(engine_key: str, team_code: str, name: str):
+    return await fetchrow(
+        "SELECT * FROM playint_players WHERE engine_key=$1 AND team_code=$2 AND LOWER(name)=LOWER($3) LIMIT 1;",
+        str(engine_key).upper(), str(team_code).upper(), str(name).strip(),
+    )
+
+
+async def update_engine_team_player(engine_key: str, team_code: str, player_id: int, changes: dict):
+    allowed = {"name", "country", "role", "bat_level", "bowl_level", "batting_hand", "bowling_hand"}
+    clean = {k: v for k, v in changes.items() if k in allowed}
+    if not clean:
+        return None
+    parts, args = [], [str(engine_key).upper(), str(team_code).upper(), int(player_id)]
+    for key, value in clean.items():
+        args.append(value)
+        parts.append(f"{key}=${len(args)}")
+    return await fetchrow(
+        f"UPDATE playint_players SET {', '.join(parts)} WHERE engine_key=$1 AND team_code=$2 AND player_id=$3 RETURNING *;",
+        *args,
+    )
+
+
+async def delete_engine_team_player(engine_key: str, team_code: str, player_id: int) -> bool:
+    result = await execute(
+        "DELETE FROM playint_players WHERE engine_key=$1 AND team_code=$2 AND player_id=$3;",
+        str(engine_key).upper(), str(team_code).upper(), int(player_id),
+    )
+    return bool(result) and result.split()[-1] != "0"
