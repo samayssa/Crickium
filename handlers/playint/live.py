@@ -12,6 +12,7 @@ from database.user_stats_repo import add_match_xp, record_match_result
 from database.player_user_stats_repo import record_match_player_stats
 from services.player_match_stats import record_session_player_stats
 from engines.level_engine import WIN_XP, LOSS_XP, TIE_XP
+from services.match_rewards import award_competitive_rewards, build_result_caption
 from database.stadium_images_repo import get_stadium_image, save_stadium_image
 from engines.play_engine import pitch_label
 from engines.playint_runtime import (
@@ -354,10 +355,7 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
             await record_match_result(opponent_id, won=None)
         else:
             loser_id = opponent_id if int(winner_id) == int(challenger_id) else challenger_id
-            await add_match_xp(winner_id, WIN_XP)
-            await add_match_xp(loser_id, LOSS_XP)
-            await record_match_result(winner_id, won=True)
-            await record_match_result(loser_id, won=False)
+            await award_competitive_rewards(winner_id, loser_id)
     except Exception as exc:
         print(f"[playint] Failed to award match XP/stats for match_id={session.match_id}: {exc!r}")
 
@@ -418,16 +416,31 @@ async def _finish_over_and_prompt_next(session) -> None:
         potm_name = player_of_the_match(innings_1_snapshot, innings_2_snapshot)
         match_result_text = _match_result_text(innings_1_snapshot, innings_2_snapshot)
         await _safe_send(session.chat_id, match_result_text, parse_mode="HTML")
+        await _record_player_squad_stats(session, innings_1_snapshot, innings_2_snapshot)
+        await _award_match_xp_and_stats(session, innings_1_snapshot, innings_2_snapshot)
         try:
             await send_match_summary(
                 app, session.chat_id, [innings_1_snapshot, innings_2_snapshot],
                 winner=winner, margin=margin, potm=player_details(
                     [innings_1_snapshot, innings_2_snapshot], potm_name),
+                caption=(
+                    build_result_caption(
+                        mention_html(
+                            int(winner_id),
+                            match.get("challenger_username") if int(winner_id) == int(match.get("challenger_id") or 0) else match.get("opponent_username"),
+                            match.get("challenger_name") if int(winner_id) == int(match.get("challenger_id") or 0) else match.get("opponent_name"),
+                        ),
+                        mention_html(
+                            int(opponent_id if int(winner_id) == int(challenger_id) else challenger_id),
+                            match.get("opponent_username") if int(winner_id) == int(challenger_id) else match.get("challenger_username"),
+                            match.get("opponent_name") if int(winner_id) == int(challenger_id) else match.get("challenger_name"),
+                        ),
+                    )
+                    if winner_id is not None else "<b>🏏 MATCH REWARDS</b>\n\nMatch tied. No winner/loser reward applied."
+                ),
             )
         except Exception as exc:
             print(f"[playint] Summary card failed after match-result text was sent: {exc!r}")
-        await _record_player_squad_stats(session, innings_1_snapshot, innings_2_snapshot)
-        await _award_match_xp_and_stats(session, innings_1_snapshot, innings_2_snapshot)
         try:
             await update_status(session.match_id, "completed")
         except Exception as exc:
