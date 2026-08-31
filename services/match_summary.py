@@ -202,10 +202,11 @@ async def completed_match_count() -> int:
 
 
 async def send_match_summary(app, chat_id: int, innings: list[dict], *,
-                             winner: str, margin: str, potm: dict | None = None):
+                             winner: str, margin: str, potm: dict | None = None,
+                             caption: str = "MATCH SUMMARY"):
     card = render_match_summary(innings, winner=winner, margin=margin,
                                 potm=potm, match_number=await completed_match_count() + 1)
-    return await app.send_photo(chat_id, photo=card, caption="MATCH SUMMARY", parse_mode="HTML")
+    return await app.send_photo(chat_id, photo=card, caption=caption, parse_mode="HTML")
 
 
 def player_details(innings: list[dict], name: str) -> dict:
