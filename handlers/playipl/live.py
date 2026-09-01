@@ -688,6 +688,9 @@ async def _finish_over_and_prompt_next(session) -> None:
         await _safe_send(session.chat_id, match_result_text, parse_mode="HTML")
         await _record_player_squad_stats(session, innings_1_snapshot, innings_2_snapshot)
         await _award_match_xp_and_stats(session, innings_1_snapshot, innings_2_snapshot)
+        match = session.match
+        challenger_id = int(match.get("challenger_id") or 0)
+        opponent_id = int(match.get("opponent_id") or 0)
         try:
             await send_match_summary(
                 app, session.chat_id, [innings_1_snapshot, innings_2_snapshot],
