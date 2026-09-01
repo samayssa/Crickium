@@ -256,7 +256,7 @@ def best_player(innings: list[dict]) -> str:
     candidates = []
     for snap in innings:
         candidates.extend((p.get("name"), int(p.get("runs") or 0))
-                          for p in snap.get("batters") or [])
+                          for p in snap.get("batters") or []) b
         candidates.extend((p.get("name"), int(p.get("wickets") or 0) * 25 - int(p.get("runs") or 0) * 0.2)
                           for p in snap.get("bowlers") or [])
     return max(candidates, key=lambda item: item[1])[0] if candidates else "—"
