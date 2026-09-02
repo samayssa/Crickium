@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio, json
 from handlers.registry import register_callback
 from app import app
-from database.playipl_repo import get_match,set_xi,set_xi_confirmed
+from database.playipl_repo import get_match,set_xi,set_xi_confirmed,get_recent_playing_xi,save_recent_playing_xi
 from database.playipl_repo import get_team_players
 from database.playipl_teams_repo import team_name,team_label
 from buttons.playipl_challenger_buttons import challenger_xi_keyboard
@@ -60,6 +60,45 @@ async def send_build_messages(chat_id,match):
         if is_ch:
             await app.send_message(chat_id,'<b>🏏 Select your 11 players.</b>',parse_mode='HTML')
 
+@register_callback('playipl_recent_xi')
+async def playipl_recent_xi(callback_query):
+    parts=callback_query['data'].split(':')
+    if len(parts) != 3:
+        await app.answer_callback_query(callback_query['id'],'Invalid Playing 11 request.',show_alert=True)
+        return
+    _,mid_s,code=parts
+    mid=int(mid_s)
+    uid=int(callback_query['from']['id'])
+    match=await get_match(mid)
+    if not match:
+        await app.answer_callback_query(callback_query['id'],'This match is no longer active.',show_alert=True)
+        return
+    if uid not in {int(match['challenger_id']),int(match['opponent_id'])}:
+        await app.answer_callback_query(callback_query['id'],'You are not part of this match.',show_alert=True)
+        return
+    is_ch = uid == int(match['challenger_id'])
+    expected = match.get('challenger_team_code') if is_ch else match.get('opponent_team_code')
+    if code != expected:
+        await app.answer_callback_query(callback_query['id'],'Invalid team.',show_alert=True)
+        return
+    saved = await get_recent_playing_xi(uid, code)
+    if not saved:
+        await app.answer_callback_query(callback_query['id'],"You don't have any Playing 11 record. You need to make first.",show_alert=True)
+        return
+    players=await _players(code)
+    current_ids={int(p.get('player_id') or 0) for p in players}
+    if len(saved) != 11 or len(set(saved)) != 11 or any(pid not in current_ids for pid in saved):
+        await app.answer_callback_query(callback_query['id'],'Your saved Playing 11 is no longer available. You need to make a new one.',show_alert=True)
+        return
+    chosen=_chosen_in_order(players,saved)
+    if not _valid(chosen):
+        await app.answer_callback_query(callback_query['id'],'Your saved Playing 11 is no longer valid. You need to make a new one.',show_alert=True)
+        return
+    field='challenger_xi' if is_ch else 'opponent_xi'
+    await set_xi(mid,uid,saved,is_challenger=is_ch)
+    await app.answer_callback_query(callback_query['id'],'Last Playing 11 restored.')
+    await app.edit_message_text(callback_query['message']['chat']['id'],callback_query['message']['message_id'],_build_text(code,players,saved),parse_mode='HTML',reply_markup=_xi_keyboard(mid,code,players,saved,is_ch))
+
 @register_callback('playipl_xi')
 async def playipl_xi(callback_query):
     _,mid_s,code,pid_s=callback_query['data'].split(':'); mid=int(mid_s); pid=int(pid_s); uid=int(callback_query['from']['id']); match=await get_match(mid)
@@ -98,7 +137,8 @@ async def playipl_xi_confirm(callback_query):
     field='challenger_xi' if is_ch else 'opponent_xi'; selected=_decode_ids(match.get(field)); players=await _players(code); chosen=_chosen_in_order(players, selected)
     if not _valid(chosen):
         await app.answer_callback_query(callback_query['id'],'Team is invalid. Complete the required role limits first.',show_alert=True); return
-    await set_xi_confirmed(mid,uid); await app.answer_callback_query(callback_query['id'],'Playing XI confirmed!')
+    await set_xi_confirmed(mid,uid); await save_recent_playing_xi(uid,code,selected)
+    await app.answer_callback_query(callback_query['id'],'Playing XI confirmed!')
     await app.delete_message(callback_query['message']['chat']['id'],callback_query['message']['message_id'])
     role_emoji={'Batsman':'🏏','Bowler':'⚡','AllRounder':'🔄','Wicketkeeper':'🧤'}
     preview='<b>🏏 PLAYING XI</b>\n\n'+'\n'.join(f"{i+1}. {role_emoji.get(str(p.get('role')),'🏏')} {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for i,p in enumerate(chosen))
