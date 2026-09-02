@@ -13,7 +13,7 @@ def _b(text, data, style='primary'):
 
 def _build(match_id, team_code, player_list, selected_ids, button_style):
     selected = set(int(x) for x in (selected_ids or []))
-    rows=[]
+    rows=[[_b('▶️ Play with your last Playing 11',f'playipl_recent_xi:{match_id}:{team_code}',button_style)]]
     for i in range(0,len(player_list),2):
         row=[]
         for p in player_list[i:i+2]:
