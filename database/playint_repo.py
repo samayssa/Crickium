@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from database.recent_lineups_repo import get_recent_xi as _get_recent_xi, save_recent_xi as _save_recent_xi
+
 from database.query import execute, fetch, fetchrow, fetchval
 import re
 
@@ -87,6 +89,14 @@ async def set_xi_confirmed(match_id, user_id):
         return
     field = 'challenger_xi_confirmed' if int(user_id) == int(row['challenger_id']) else 'opponent_xi_confirmed'
     await execute(f"UPDATE playint_matches SET {field}=TRUE WHERE match_id=$1;", match_id)
+
+
+async def get_recent_playing_xi(user_id: int, team_code: str):
+    return await _get_recent_xi(user_id, 'T20I', team_code)
+
+
+async def save_recent_playing_xi(user_id: int, team_code: str, player_ids):
+    await _save_recent_xi(user_id, 'T20I', team_code, player_ids)
 
 
 async def set_pitch(match_id, pitch):

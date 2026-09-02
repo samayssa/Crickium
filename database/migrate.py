@@ -72,6 +72,16 @@ TABLES = {
             last_seen_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "recent_playing_xis": """
+        CREATE TABLE IF NOT EXISTS recent_playing_xis(
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            engine_key TEXT NOT NULL,
+            team_code TEXT NOT NULL,
+            player_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            updated_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (user_id, engine_key, team_code)
+        );
+    """,
     "matches": """
         CREATE TABLE IF NOT EXISTS matches(
             match_id SERIAL PRIMARY KEY,
