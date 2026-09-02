@@ -37,7 +37,7 @@ from engines.play_runtime import (
 )
 from services.search import find_stadium_image_url
 from services.match_summary import send_match_summary, player_details
-from utils.mentions import display_name
+from utils.mentions import display_name, mention_html
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
 from handlers.registry import register_callback
