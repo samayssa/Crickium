@@ -163,6 +163,17 @@ async def _expected_users(engine: str, match: Any) -> list[int]:
         if status == "toss_done": return [int(m.get("toss_winner_id") or 0)] if m.get("toss_winner_id") else []
         return []
 
+    # A pending (not yet accepted) or declined challenge has no one "on the
+    # clock" - team selection, pitch, toss etc. only begin once the
+    # opponent accepts, so no inactivity timer should exist before then.
+    # (The PLAY branch above already gates on status the same way; this
+    # mirrors it for PLAYINT/PLAYIPL instead of falling straight into the
+    # team-code checks below regardless of whether the challenge was ever
+    # accepted.)
+    status = str(m.get("status") or "")
+    if status in {"", "pending", "declined", "expired"}:
+        return []
+
     cc, oc = m.get("challenger_team_code"), m.get("opponent_team_code")
     if not cc: return [c]
     if not oc: return [o]
@@ -171,8 +182,8 @@ async def _expected_users(engine: str, match: Any) -> list[int]:
     if not cxi or not oxi:
         return [uid for uid, ok in ((c, cxi), (o, oxi)) if not ok]
     if not m.get("pitch"): return [c]
-    if str(m.get("status") or "") == "pitch_selected": return [o]
-    if str(m.get("status") or "") == "toss_done": return [int(m.get("toss_winner_id") or 0)] if m.get("toss_winner_id") else []
+    if status == "pitch_selected": return [o]
+    if status == "toss_done": return [int(m.get("toss_winner_id") or 0)] if m.get("toss_winner_id") else []
     return []
 
 
