@@ -375,6 +375,24 @@ async def migrate():
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_template_card_image_type ON template_card_image(card_type);")
     print("[migrate] 'template_card_image' upgrade OK.")
 
+    # --- Ruby -> Coin exchange request ledger (one-time callback guard) ---
+    print("[migrate] Ensuring table 'coin_exchange_requests' exists...")
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS coin_exchange_requests(
+            request_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            rubies BIGINT NOT NULL CHECK (rubies > 0),
+            coins BIGINT NOT NULL CHECK (coins > 0),
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT NOW(),
+            processed_at TIMESTAMP
+        );
+        """
+    )
+    await execute("CREATE INDEX IF NOT EXISTS idx_coin_exchange_requests_user ON coin_exchange_requests(user_id, created_at DESC);")
+    print("[migrate] coin_exchange_requests OK.")
+
     # --- Level system (Level 1-30, 6 tiers) + franchise identity for /profile ---
     print("[migrate] Ensuring 'users.level' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1;")
