@@ -4,6 +4,7 @@ print("profile.py loaded")
 
 from handlers.registry import register
 from app import app
+from database.captain_repo import get_captain_id
 from database.query import execute
 from database.squads_repo import get_team_squad
 from database.tier_card_images_repo import get_tier_card_image
@@ -26,11 +27,15 @@ async def _ensure_user_row(user_id, username, first_name):
     )
 
 
-def _pick_captain(squad: list[dict]) -> str:
-    if not squad:
+async def _resolve_captain_name(user_id: int, squad: list[dict]) -> str:
+    # /teamcap stores the assigned captain's player_id on the user row - the
+    # profile card must read that same value (like /squad and /pxl already
+    # do), not guess a "best player" from the squad.
+    captain_id = await get_captain_id(user_id)
+    if captain_id is None:
         return "Not assigned"
-    best = max(squad, key=lambda p: (p.get("bat_level") or 0) + (p.get("bowl_level") or 0))
-    return best.get("name") or "Unknown"
+    match = next((p for p in squad if int(p.get("player_id") or 0) == int(captain_id)), None)
+    return str(match.get("name")) if match and match.get("name") else "Not assigned"
 
 
 def _profile_caption(*, player_mention, tier_emoji, tier_key, snapshot, franchise_name, global_rank, captain_name, squad_len):
@@ -89,7 +94,7 @@ async def profile_command(message):
     snapshot = await get_profile_snapshot(user_id)
     global_rank = await get_global_rank(user_id)
     squad = await get_team_squad(user_id) or []
-    captain_name = _pick_captain(squad)
+    captain_name = await _resolve_captain_name(user_id, squad)
 
     # Tier is derived from the player's current level, so the card image
     # (and the tier line itself) automatically switches the moment they
