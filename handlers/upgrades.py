@@ -201,6 +201,7 @@ async def on_upgrade_filter(callback_query):
 
 @register_callback("upgrade_page")
 async def on_upgrade_page(callback_query):
+    uid = int((callback_query.get("from") or {}).get("id") or 0)
     parts = str(callback_query.get("data") or "").split(":")
     if len(parts) != 4 or parts[1] not in {"batting", "bowling"} or not parts[2].isdigit() or not parts[3].isdigit():
         await app.answer_callback_query(callback_query["id"], "Invalid upgrade page.", show_alert=True)
