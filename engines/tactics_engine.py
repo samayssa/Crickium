@@ -1210,6 +1210,8 @@ def resolve_weights(
     high_run_overs: int = 0,
     very_high_run_overs: int = 0,
     free_hit_next_ball: bool = False,
+    batting_upgrade_context: dict | None = None,
+    bowling_upgrade_context: dict | None = None,
 ) -> dict:
     """Runs the full 6-layer algorithm and returns final weights, ready
     for a weighted-random pick."""
@@ -1278,6 +1280,28 @@ def resolve_weights(
         free_hit_next_ball=free_hit_next_ball,
     )
 
+    # Player upgrades are a final, isolated relative-probability layer.
+    # They only consume the already-shaped weights and cannot replace the
+    # existing tactics, pitch, phase, level, confidence, or realism logic.
+    from services.player_upgrades import apply_upgrade_layer, bowler_family, phase_for_over
+    weights = apply_upgrade_layer(
+        weights,
+        batting_upgrade=batting_upgrade_context,
+        bowling_upgrade=bowling_upgrade_context,
+        phase=phase_for_over(over_number),
+        tactic=tactic,
+        mindset=mindset,
+        pitch=pitch,
+        bowler_family_name=bowler_family(bowler_role, bowler_style),
+        batsman_balls_faced=batsman_balls_faced,
+        target=target,
+        total_runs=total_runs,
+        balls_remaining=balls_remaining,
+        confidence=confidence,
+        batter_role=batter_role,
+        bowler_role=bowler_role,
+    )
+
     return {key: max(0.0, value) for key, value in weights.items()}
 
 
@@ -1319,7 +1343,9 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
              balls_remaining: int = 120, wickets_in_hand: int = 10,
              batting_position: int = 1, over_runs: int = 0,
              high_run_overs: int = 0, very_high_run_overs: int = 0,
-             free_hit_next_ball: bool = False):
+             free_hit_next_ball: bool = False,
+             batting_upgrade_context: dict | None = None,
+             bowling_upgrade_context: dict | None = None):
     """Returns one sampled outcome code from OUTCOMES."""
     weights = resolve_weights(
         bowler_tactic, batter_mindset, pitch, over_number, batter_level, bowler_level, confidence,
@@ -1330,6 +1356,8 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
         wickets_in_hand=wickets_in_hand, batting_position=batting_position,
         over_runs=over_runs, high_run_overs=high_run_overs, very_high_run_overs=very_high_run_overs,
         free_hit_next_ball=free_hit_next_ball,
+        batting_upgrade_context=batting_upgrade_context,
+        bowling_upgrade_context=bowling_upgrade_context,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
     return random.choices(OUTCOMES, weights=values, k=1)[0]

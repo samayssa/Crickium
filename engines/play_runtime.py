@@ -59,6 +59,8 @@ class PlaySession:
     high_run_overs: int = 0
     very_high_run_overs: int = 0
     free_hit_next_ball: bool = False
+    upgrade_snapshot: dict[str, dict[str, Any]] = field(default_factory=dict)
+    upgrade_snapshot_restored: bool = False
 
 
 _SESSIONS: dict[int, PlaySession] = {}
@@ -122,6 +124,28 @@ def get_session_in_chat(chat_id: int) -> PlaySession | None:
 
 def clear_session(match_id: int) -> None:
     _SESSIONS.pop(int(match_id), None)
+
+
+def _player_kind_for_session(session: PlaySession, user_id: int, player_id: int) -> str:
+    if int(user_id) == int(session.batting_team_id):
+        candidates = session.batting_squad
+    elif int(user_id) == int(session.bowling_team_id):
+        candidates = session.bowling_squad
+    else:
+        candidates = session.batting_squad + session.bowling_squad
+    for player in candidates:
+        if int(player.get("player_id") or 0) == int(player_id):
+            return "special" if bool(player.get("is_special")) else "global"
+    return "special" if int(player_id) < 0 else "global"
+
+
+def upgrade_context_for(session: PlaySession, user_id: int, player_id: int, slot: str) -> dict[str, Any] | None:
+    kind = _player_kind_for_session(session, user_id, player_id)
+    item = session.upgrade_snapshot.get(f"{int(user_id)}:{kind}:{int(player_id)}")
+    if not item:
+        return None
+    context = item.get(slot)
+    return dict(context) if context else None
 
 
 # Standard T20 rule: no bowler may bowl more than a fifth of the innings.
@@ -400,6 +424,12 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
         high_run_overs=session.high_run_overs,
         very_high_run_overs=session.very_high_run_overs,
         free_hit_next_ball=bool(session.free_hit_next_ball),
+        batting_upgrade_context=upgrade_context_for(
+            session, session.batting_team_id or 0, int(striker.player_id or 0), "batting"
+        ),
+        bowling_upgrade_context=upgrade_context_for(
+            session, session.bowling_team_id or 0, int(bowler.get("player_id") or 0), "bowling"
+        ),
     )
 
 
