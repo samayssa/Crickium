@@ -12,6 +12,7 @@ from database.user_stats_repo import add_match_xp, record_match_result
 from database.player_user_stats_repo import record_match_player_stats
 from services.player_match_stats import record_session_player_stats
 from engines.level_engine import WIN_XP, LOSS_XP, TIE_XP
+from database.player_upgrades_repo import load_snapshot_players, persist_snapshot, restore_snapshot
 from services.match_rewards import award_competitive_rewards, build_result_caption
 from database.stadium_images_repo import get_stadium_image, save_stadium_image
 from engines.lineup_engine import load_current_xi
@@ -171,6 +172,23 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         batting_squad=batting_squad,
         bowling_squad=bowling_squad,
     )
+    try:
+        from database.player_upgrades_repo import restore_snapshot
+        existing_snapshot = await restore_snapshot(int(match["match_id"]))
+        if existing_snapshot:
+            session.upgrade_snapshot = existing_snapshot
+            session.upgrade_snapshot_restored = True
+        else:
+            snapshot = await load_snapshot_players(
+                [challenger_id, opponent_id],
+                {challenger_id: await load_current_xi(challenger_id) or [], opponent_id: await load_current_xi(opponent_id) or []},
+            )
+            session.upgrade_snapshot = snapshot
+            await persist_snapshot(int(match["match_id"]), snapshot)
+    except Exception as exc:
+        print(f"[play] Upgrade snapshot unavailable; continuing without upgrades: {exc!r}")
+        session.upgrade_snapshot = {}
+
     start_new_partnership(session)
 
     ready = await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match))
