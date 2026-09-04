@@ -468,4 +468,125 @@ async def migrate():
     await execute("ALTER TABLE player_user_match_stats DROP CONSTRAINT IF EXISTS player_user_match_stats_player_id_fkey;")
     print("[migrate] player_user_match_stats player identity constraint OK.")
 
+
+
+    # --- Player upgrade system ---
+    print("[migrate] Ensuring player upgrade tables exist...")
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS upgrade_catalog(
+            upgrade_id SERIAL PRIMARY KEY,
+            upgrade_key TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL UNIQUE,
+            category TEXT NOT NULL,
+            description TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            eligible_roles JSONB NOT NULL DEFAULT '[]'::jsonb,
+            eligible_family TEXT,
+            eligible_tactics JSONB NOT NULL DEFAULT '[]'::jsonb,
+            eligible_phases JSONB NOT NULL DEFAULT '[]'::jsonb,
+            target_approaches JSONB NOT NULL DEFAULT '[]'::jsonb,
+            effect_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS upgrade_catalog_tiers(
+            upgrade_id INTEGER NOT NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE CASCADE,
+            tier SMALLINT NOT NULL CHECK (tier BETWEEN 1 AND 4),
+            strength NUMERIC(5,4) NOT NULL,
+            cost BIGINT NOT NULL CHECK (cost > 0),
+            PRIMARY KEY (upgrade_id, tier)
+        );
+        """
+    )
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_player_upgrades(
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            player_id BIGINT NULL,
+            player_kind TEXT NULL CHECK (player_kind IS NULL OR player_kind IN ('global','special')),
+            upgrade_id INTEGER NOT NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE CASCADE,
+            tier SMALLINT NOT NULL CHECK (tier BETWEEN 1 AND 4),
+            owned_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            source TEXT NOT NULL DEFAULT 'shop',
+            UNIQUE(user_id, upgrade_id, tier)
+        );
+        """
+    )
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_player_loadouts(
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            player_id BIGINT NOT NULL,
+            player_kind TEXT NOT NULL CHECK (player_kind IN ('global','special')),
+            batting_upgrade_id INTEGER NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE SET NULL,
+            bowling_upgrade_id INTEGER NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE SET NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(user_id, player_id, player_kind)
+        );
+        """
+    )
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS match_player_upgrade_snapshots(
+            match_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            player_id BIGINT NOT NULL,
+            player_kind TEXT NOT NULL,
+            batting_upgrade_key TEXT,
+            batting_tier SMALLINT,
+            bowling_upgrade_key TEXT,
+            bowling_tier SMALLINT,
+            snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(match_id, user_id, player_id, player_kind)
+        );
+        """
+    )
+    await execute("CREATE INDEX IF NOT EXISTS idx_user_player_upgrades_user_active ON user_player_upgrades(user_id, upgrade_id, tier);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_user_player_upgrades_user_player ON user_player_upgrades(user_id, player_id, player_kind);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_user_player_loadouts_user_player ON user_player_loadouts(user_id, player_id, player_kind);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_match_player_upgrade_snapshots_match_user ON match_player_upgrade_snapshots(match_id, user_id);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_upgrade_catalog_key_active ON upgrade_catalog(upgrade_key, active);")
+    print("[migrate] Player upgrade tables OK.")
+
+    from services.player_upgrades import UPGRADES
+    from utils.upgrade_prices import UPGRADE_RUBY_PRICES, TIER_STRENGTHS
+    import json as _json
+    for upgrade in UPGRADES:
+        await execute(
+            """
+            INSERT INTO upgrade_catalog(
+                upgrade_key,name,category,description,detail,eligible_roles,eligible_family,eligible_tactics,eligible_phases,target_approaches,effect_config,active
+            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11::jsonb,TRUE)
+            ON CONFLICT (upgrade_key) DO UPDATE SET
+                name=EXCLUDED.name, category=EXCLUDED.category, description=EXCLUDED.description, detail=EXCLUDED.detail,
+                eligible_roles=EXCLUDED.eligible_roles, eligible_family=EXCLUDED.eligible_family, eligible_tactics=EXCLUDED.eligible_tactics,
+                eligible_phases=EXCLUDED.eligible_phases, target_approaches=EXCLUDED.target_approaches, effect_config=EXCLUDED.effect_config,
+                updated_at=NOW();
+            """,
+            upgrade.key, upgrade.name, upgrade.category, upgrade.description, upgrade.detail,
+            _json.dumps(sorted(upgrade.roles)), upgrade.family, _json.dumps(sorted(upgrade.tactics)),
+            _json.dumps(sorted(upgrade.phases)), _json.dumps(sorted(upgrade.approaches)),
+            _json.dumps({"effect_kind": upgrade.effect_kind, "outcomes": list(upgrade.outcomes), "fund_from": list(upgrade.fund_from), "counter_approaches": sorted(upgrade.counter_approaches)}),
+        )
+        # Read the seeded catalogue ID through fetchval before inserting tier rows.
+        from database.query import fetchval
+        upgrade_id = await fetchval("SELECT upgrade_id FROM upgrade_catalog WHERE upgrade_key=$1;", upgrade.key)
+        for tier, strength in TIER_STRENGTHS.items():
+            await execute(
+                """
+                INSERT INTO upgrade_catalog_tiers(upgrade_id,tier,strength,cost) VALUES($1,$2,$3,$4)
+                ON CONFLICT (upgrade_id,tier) DO UPDATE SET strength=EXCLUDED.strength,cost=EXCLUDED.cost;
+                """,
+                int(upgrade_id), int(tier), float(strength), int(UPGRADE_RUBY_PRICES[tier]),
+            )
+    print("[migrate] Player upgrade catalogue seeded.")
+
     print("Migration Complete.")
