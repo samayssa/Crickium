@@ -17,34 +17,34 @@ def styled(text: str, data: str, style: str) -> InlineKeyboardButton:
 
 def shop_filters(filter_name: str, page: int, total_pages: int, user_id: int) -> InlineKeyboardMarkup:
     rows = [[
-        styled("🏏 BATTING", f"upgrade_filter:batting:{page}:{int(user_id)}", "primary"),
-        styled("🎯 BOWLING", f"upgrade_filter:bowling:{page}:{int(user_id)}", "success"),
+        styled("🏏 BATTING", f"upgrade_filter:batting:{page}:{int(user_id)}", "success"),
+        styled("🎯 BOWLING", f"upgrade_filter:bowling:{page}:{int(user_id)}", "danger"),
     ]]
-    nav = []
-    if page > 0:
-        nav.append(styled("◀ PREVIOUS", f"upgrade_page:{filter_name}:{page-1}:{int(user_id)}", "primary"))
-    if page + 1 < total_pages:
-        nav.append(styled("NEXT ▶", f"upgrade_page:{filter_name}:{page+1}:{int(user_id)}", "primary"))
-    if nav:
-        rows.append(nav)
+    if total_pages > 1:
+        previous_page = max(0, page - 1)
+        next_page = min(total_pages - 1, page + 1)
+        rows.append([
+            styled("◀ PREVIOUS", f"upgrade_page:{filter_name}:{previous_page}:{int(user_id)}", "primary"),
+            styled("NEXT ▶", f"upgrade_page:{filter_name}:{next_page}:{int(user_id)}", "primary"),
+        ])
     return InlineKeyboardMarkup(rows)
 
 
 def category_upgrade_buttons(items: list[dict], category: str, page: int, total_pages: int, token: str, token_user_id: int) -> InlineKeyboardMarkup:
     rows = [[
-        styled("🏏 BATTING", f"upgrade_filter:{category}:0:{int(token_user_id)}", "primary"),
-        styled("🎯 BOWLING", f"upgrade_filter:{'bowling' if category == 'batting' else 'batting'}:0:{int(token_user_id)}", "success"),
+        styled("🏏 BATTING", f"upgrade_filter:{category}:0:{int(token_user_id)}", "success"),
+        styled("🎯 BOWLING", f"upgrade_filter:{'bowling' if category == 'batting' else 'batting'}:0:{int(token_user_id)}", "danger"),
     ]]
     for item in items:
         label = f"{item['name']} • {item['price']:,} 💎"
         rows.append([styled(label, f"ubuy_select:{token}:{item['upgrade_key']}:{item['tier']}", "danger")])
-    nav = []
-    if page > 0:
-        nav.append(styled("◀ PREVIOUS", f"upgrade_page:{category}:{page-1}:{int(token_user_id)}", "primary"))
-    if page + 1 < total_pages:
-        nav.append(styled("NEXT ▶", f"upgrade_page:{category}:{page+1}:{int(token_user_id)}", "primary"))
-    if nav:
-        rows.append(nav)
+    if total_pages > 1:
+        previous_page = max(0, page - 1)
+        next_page = min(total_pages - 1, page + 1)
+        rows.append([
+            styled("◀ PREVIOUS", f"upgrade_page:{category}:{previous_page}:{int(token_user_id)}", "primary"),
+            styled("NEXT ▶", f"upgrade_page:{category}:{next_page}:{int(token_user_id)}", "primary"),
+        ])
     return InlineKeyboardMarkup(rows)
 
 
