@@ -77,6 +77,8 @@ class BallContext:
     high_run_overs: int = 0
     very_high_run_overs: int = 0
     free_hit_next_ball: bool = False
+    batting_upgrade_context: dict[str, Any] | None = None
+    bowling_upgrade_context: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
