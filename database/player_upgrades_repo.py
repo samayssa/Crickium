@@ -157,7 +157,14 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
         raw_squad = squad_row["squad"]
         if isinstance(raw_squad, str):
             raw_squad = json.loads(raw_squad)
-        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and ("special" if p.get("is_special") else "global") == player_kind), None)
+        def _player_kind(player_row: dict[str, Any]) -> str:
+            value = player_row.get("is_special")
+            is_special = value is True or (
+                isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
+            )
+            return "special" if is_special or int(player_row.get("player_id") or 0) < 0 else "global"
+
+        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and _player_kind(p) == player_kind), None)
         if not player:
             return "player_not_owned"
 
@@ -166,7 +173,15 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
             return "upgrade_missing"
         from services.player_upgrades import bowler_family, role_key
         role = role_key(player.get("role"))
-        eligible_roles = set(catalog["eligible_roles"] or [])
+        eligible_roles = catalog["eligible_roles"] or []
+        # asyncpg commonly returns JSON/JSONB columns as text unless a custom
+        # codec is installed. Treat both decoded arrays and JSON text alike.
+        if isinstance(eligible_roles, str):
+            try:
+                eligible_roles = json.loads(eligible_roles)
+            except (TypeError, ValueError):
+                eligible_roles = []
+        eligible_roles = {str(item).strip().lower() for item in (eligible_roles or [])}
         if role not in eligible_roles:
             return "role_ineligible"
         family = catalog["eligible_family"]
@@ -207,7 +222,14 @@ async def unequip_upgrade(user_id: int, player_id: int, player_kind: str, slot: 
         raw_squad = squad_row["squad"]
         if isinstance(raw_squad, str):
             raw_squad = json.loads(raw_squad)
-        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and ("special" if p.get("is_special") else "global") == player_kind), None)
+        def _player_kind(player_row: dict[str, Any]) -> str:
+            value = player_row.get("is_special")
+            is_special = value is True or (
+                isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
+            )
+            return "special" if is_special or int(player_row.get("player_id") or 0) < 0 else "global"
+
+        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and _player_kind(p) == player_kind), None)
         if not player:
             return "player_not_owned"
         row = await conn.fetchrow(
@@ -291,6 +313,11 @@ async def restore_snapshot(match_id: int) -> dict[str, dict[str, Any]]:
     result = {}
     for row in rows:
         raw = row["snapshot_json"]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = None
         result_key = f"{raw['user_id']}:{raw['player_kind']}:{raw['player_id']}" if isinstance(raw, dict) else None
         if result_key:
             result[result_key] = dict(raw)
