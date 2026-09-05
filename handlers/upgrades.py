@@ -144,7 +144,7 @@ async def _player_from_owned_squad(user_id: int, query: str) -> tuple[dict | Non
 
 
 def _kind(player: dict) -> str:
-    return "special" if bool(player.get("is_special")) else "global"
+    return "special" if bool(player.get("is_special")) or int(player.get("player_id") or 0) < 0 else "global"
 
 
 def _player_identity_text(player: dict) -> str:
@@ -215,6 +215,51 @@ async def on_upgrade_page(callback_query):
     await app.answer_callback_query(callback_query["id"])
 
 
+@register_callback("ubuy_filter")
+async def on_ubuy_filter(callback_query):
+    """Keep category filters inside the purchase flow."""
+    uid = int((callback_query.get("from") or {}).get("id") or 0)
+    parts = str(callback_query.get("data") or "").split(":")
+    if len(parts) != 4 or parts[1] not in {"batting", "bowling"} or not parts[2].isdigit() or not parts[3].isdigit():
+        await app.answer_callback_query(callback_query["id"], "Invalid upgrade filter.", show_alert=True)
+        return
+    category, page, owner_id = parts[1], int(parts[2]), int(parts[3])
+    if owner_id != uid:
+        await app.answer_callback_query(callback_query["id"], "This upgrade menu belongs to another user.", show_alert=True)
+        return
+    text, total_pages, rows = await _ubuy_category_text(uid, category, page)
+    token = _state_put({"kind": "shop_list", "user_id": uid, "category": category, "page": page})
+    await app.edit_message_text(
+        callback_query["message"]["chat"]["id"],
+        callback_query["message"]["message_id"],
+        text, parse_mode="HTML",
+        reply_markup=category_upgrade_buttons(rows, category, page, total_pages, token, uid),
+    )
+    await app.answer_callback_query(callback_query["id"])
+
+
+@register_callback("ubuy_page")
+async def on_ubuy_page(callback_query):
+    uid = int((callback_query.get("from") or {}).get("id") or 0)
+    parts = str(callback_query.get("data") or "").split(":")
+    if len(parts) != 4 or parts[1] not in {"batting", "bowling"} or not parts[2].isdigit() or not parts[3].isdigit():
+        await app.answer_callback_query(callback_query["id"], "Invalid upgrade page.", show_alert=True)
+        return
+    category, page, owner_id = parts[1], int(parts[2]), int(parts[3])
+    if owner_id != uid:
+        await app.answer_callback_query(callback_query["id"], "This upgrade menu belongs to another user.", show_alert=True)
+        return
+    text, total_pages, rows = await _ubuy_category_text(uid, category, page)
+    token = _state_put({"kind": "shop_list", "user_id": uid, "category": category, "page": page})
+    await app.edit_message_text(
+        callback_query["message"]["chat"]["id"],
+        callback_query["message"]["message_id"],
+        text, parse_mode="HTML",
+        reply_markup=category_upgrade_buttons(rows, category, page, total_pages, token, uid),
+    )
+    await app.answer_callback_query(callback_query["id"])
+
+
 @register("ubuy")
 async def ubuy_command(message):
     uid = int((message.get("from") or {}).get("id") or 0)
@@ -236,11 +281,11 @@ async def ubuy_command(message):
     if not u:
         await app.send_message(chat_id, "<b>⚠️ Upgrade not found. Use /ushop to view available upgrades.</b>", parse_mode="HTML")
         return
-    next_tier = await next_owned_tier(uid, int(u["upgrade_id"])) or 0
-    if next_tier >= 4 and await next_owned_tier(uid, int(u["upgrade_id"])) is None:
+    next_tier = await next_owned_tier(uid, int(u["upgrade_id"]))
+    if next_tier is None:
         await app.send_message(chat_id, "<b>✅ This upgrade is already at Tier IV.</b>", parse_mode="HTML")
         return
-    tier = next_tier or 1
+    tier = int(next_tier)
     definition = UPGRADE_BY_KEY.get(str(u["upgrade_key"]))
     token = _state_put({"kind": "buy", "user_id": uid, "upgrade_key": u["upgrade_key"], "upgrade_id": int(u["upgrade_id"]), "tier": tier, "source": "direct"})
     await app.send_message(chat_id, _upgrade_detail(definition, tier, purchase=True), parse_mode="HTML", reply_markup=direct_purchase_keyboard(token))
@@ -328,6 +373,45 @@ async def on_ubuy_confirm(callback_query):
         await app.answer_callback_query(callback_query["id"], "That tier is already owned.", show_alert=True)
     else:
         await app.answer_callback_query(callback_query["id"], "Purchase failed. No Rubies were deducted.", show_alert=True)
+
+
+@register("inventory")
+async def inventory_command(message):
+    """Show owned upgrades that are not active on any owned player."""
+    uid = int((message.get("from") or {}).get("id") or 0)
+    chat_id = int((message.get("chat") or {}).get("id") or 0)
+    owned = await user_owned_upgrades(uid)
+    equipped = await list_equipped(uid)
+    active_keys = {
+        str(row.get("batting_key") or "") for row in equipped
+    } | {
+        str(row.get("bowling_key") or "") for row in equipped
+    }
+    highest: dict[str, dict[str, Any]] = {}
+    for row in owned:
+        key = str(row.get("upgrade_key") or "")
+        current = highest.get(key)
+        if current is None or int(row.get("tier") or 0) > int(current.get("tier") or 0):
+            highest[key] = row
+    available = [
+        row for key, row in highest.items()
+        if key and key not in active_keys
+    ]
+    lines = ["<b>╭━━〔 ⚡ UPGRADE INVENTORY 〕━━╮</b>", ""]
+    if not available:
+        lines.append("<blockquote expandable><b>No owned upgrades are currently unequipped.</b></blockquote>")
+    else:
+        lines.append("<blockquote expandable>")
+        for row in available:
+            lines.append(f"<b>⚡ {_esc(row.get('name'))} • Tier {int(row.get('tier') or 1)}</b>")
+            lines.append(f"<b>{_esc(row.get('description'))}</b>")
+        lines.append("</blockquote>")
+    lines += [
+        "",
+        "<b>These upgrades are owned by you and not active on a player.</b>",
+        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
+    ]
+    await app.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
 
 
 @register("equip")
