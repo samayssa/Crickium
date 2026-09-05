@@ -32,8 +32,8 @@ def shop_filters(filter_name: str, page: int, total_pages: int, user_id: int) ->
 
 def category_upgrade_buttons(items: list[dict], category: str, page: int, total_pages: int, token: str, token_user_id: int) -> InlineKeyboardMarkup:
     rows = [[
-        styled("🏏 BATTING", f"upgrade_filter:{category}:0:{int(token_user_id)}", "success"),
-        styled("🎯 BOWLING", f"upgrade_filter:{'bowling' if category == 'batting' else 'batting'}:0:{int(token_user_id)}", "danger"),
+        styled("🏏 BATTING", f"ubuy_filter:batting:0:{int(token_user_id)}", "success"),
+        styled("🎯 BOWLING", f"ubuy_filter:bowling:0:{int(token_user_id)}", "danger"),
     ]]
     for item in items:
         label = f"{item['name']} • {item['price']:,} 💎"
@@ -42,8 +42,8 @@ def category_upgrade_buttons(items: list[dict], category: str, page: int, total_
         previous_page = max(0, page - 1)
         next_page = min(total_pages - 1, page + 1)
         rows.append([
-            styled("◀ PREVIOUS", f"upgrade_page:{category}:{previous_page}:{int(token_user_id)}", "primary"),
-            styled("NEXT ▶", f"upgrade_page:{category}:{next_page}:{int(token_user_id)}", "primary"),
+            styled("◀ PREVIOUS", f"ubuy_page:{category}:{previous_page}:{int(token_user_id)}", "primary"),
+            styled("NEXT ▶", f"ubuy_page:{category}:{next_page}:{int(token_user_id)}", "primary"),
         ])
     return InlineKeyboardMarkup(rows)
 
