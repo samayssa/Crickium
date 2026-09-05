@@ -1301,6 +1301,14 @@ def resolve_weights(
         batter_role=batter_role,
         bowler_role=bowler_role,
     )
+    # Upgrade effects are intentionally the last relative-probability layer.
+    # Re-run the existing final wicket guardrail after them so a pressure
+    # upgrade can never rebuild a wicket spike that the base engine capped.
+    if batting_upgrade_context or bowling_upgrade_context:
+        _apply_final_wicket_cap(
+            weights, pitch, batter_level, bowler_level, batsman_balls_faced,
+            int(wickets_this_over or 0),
+        )
 
     return {key: max(0.0, value) for key, value in weights.items()}
 
