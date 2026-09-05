@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from database.query import execute, fetch, fetchrow, transaction
+from database.query import execute, fetch, fetchrow, fetchval, transaction
 from services.player_upgrades import UPGRADES
 from utils.upgrade_prices import UPGRADE_RUBY_PRICES
 
@@ -70,6 +70,9 @@ async def next_owned_tier(user_id: int, upgrade_id: int) -> int | None:
 
 
 async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int) -> str:
+    if int(tier) not in UPGRADE_RUBY_PRICES or int(price) != int(UPGRADE_RUBY_PRICES[int(tier)]):
+        return "invalid_purchase"
+
     async def _tx(conn):
         # Lock the user's row so two concurrent purchases cannot both spend the same balance.
         row = await conn.fetchrow("SELECT rubies FROM users WHERE user_id = $1 FOR UPDATE;", int(user_id))
@@ -78,6 +81,12 @@ async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int)
         current = int(row["rubies"] or 0)
         if current < int(price):
             return "insufficient"
+        highest = int(await conn.fetchval(
+            "SELECT MAX(tier) FROM user_player_upgrades WHERE user_id = $1 AND upgrade_id = $2;",
+            int(user_id), int(upgrade_id),
+        ) or 0)
+        if int(tier) != highest + 1:
+            return "already_owned" if int(tier) <= highest else "invalid_purchase"
         exists = await conn.fetchval(
             "SELECT 1 FROM user_player_upgrades WHERE user_id = $1 AND upgrade_id = $2 AND tier = $3;",
             int(user_id), int(upgrade_id), int(tier),
