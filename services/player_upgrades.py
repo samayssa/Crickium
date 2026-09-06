@@ -196,6 +196,7 @@ def apply_upgrade_layer(weights: Mapping[Any, float], *, batting_upgrade: Mappin
         role = role_key(batter_role if is_batting else bowler_role)
         if role not in upgrade.roles:
             return
+        # Tier strength is centralized in utils.upgrade_prices: 5%, 7.5%, 10%, 12.5%, 15%.
         strength = activation_strength(
             upgrade, tier=tier, phase=phase, tactic=tactic, mindset=mindset,
             bowler_family_name=bowler_family_name, batsman_balls_faced=batsman_balls_faced,
