@@ -12,7 +12,7 @@ from buttons.playint_buttons import exit_confirm_keyboard as playint_exit_confir
 from buttons.playipl_buttons import exit_confirm_keyboard as playipl_exit_confirm_keyboard
 from engines.playint_runtime import get_playint_session, clear_playint_session
 from engines.playipl_runtime import get_playipl_session, clear_playipl_session, get_playipl_session_in_chat
-from database.user_stats_repo import add_match_xp, record_match_result
+from database.user_stats_repo import add_match_xp, record_match_result, record_h2h_result
 from engines.level_engine import WIN_XP, EXIT_PENALTY_XP
 from engines.play_runtime import clear_session, get_session
 from services.player_match_stats import record_session_player_stats
@@ -118,6 +118,7 @@ async def on_play_exit_yes(callback_query):
         await add_match_xp(stayed_id, WIN_XP)
         await record_match_result(presser["id"], won=False)
         await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
     except Exception as exc:
         print(f"[exitgame_play] Failed to award XP/stats for match_id={match_id}: {exc!r}")
 
@@ -177,6 +178,7 @@ async def on_playint_exit_yes(callback_query):
         await add_match_xp(stayed_id, WIN_XP)
         await record_match_result(presser["id"], won=False)
         await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
     except Exception as exc:
         print(f"[exitgame_play] PlayInt XP/stats failed: {exc!r}")
     session = playint_session
@@ -271,6 +273,7 @@ async def on_playipl_exit_yes(callback_query):
         await add_match_xp(stayed_id, WIN_XP)
         await record_match_result(presser["id"], won=False)
         await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
     except Exception as exc:
         print(f"[exitgame_play] PlayIPL XP/stats failed: {exc!r}")
 

@@ -85,7 +85,7 @@ async def _ubuy_category_text(user_id: int, category: str, page: int) -> tuple[s
     for index, u in enumerate(items[page * 5:(page + 1) * 5], start=1):
         dbu = await get_upgrade(u.key)
         next_tier = await next_owned_tier(user_id, int(dbu["upgrade_id"]))
-        tier = next_tier or 4
+        tier = next_tier or 5
         price = upgrade_price(tier)
         rows.append({"upgrade_key": u.key, "name": u.name, "price": price, "tier": tier})
         status = "MAX" if next_tier is None else f"Tier {tier}"
@@ -122,7 +122,7 @@ def _upgrade_detail(u: Any, tier: int, *, purchase: bool = False) -> str:
 
 
 def tier_strength_text(tier: int) -> float:
-    return {1: 5.0, 2: 7.5, 3: 10.0, 4: 15.0}.get(int(tier), 5.0)
+    return {1: 5.0, 2: 7.5, 3: 10.0, 4: 12.5, 5: 15.0}.get(int(tier), 5.0)
 
 
 async def _player_from_owned_squad(user_id: int, query: str) -> tuple[dict | None, list[dict]]:
@@ -283,7 +283,7 @@ async def ubuy_command(message):
         return
     next_tier = await next_owned_tier(uid, int(u["upgrade_id"]))
     if next_tier is None:
-        await app.send_message(chat_id, "<b>✅ This upgrade is already at Tier IV.</b>", parse_mode="HTML")
+        await app.send_message(chat_id, "<b>✅ This upgrade is already at Tier V.</b>", parse_mode="HTML")
         return
     tier = int(next_tier)
     definition = UPGRADE_BY_KEY.get(str(u["upgrade_key"]))
