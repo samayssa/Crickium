@@ -1082,7 +1082,7 @@ async def trade_recipient_yes(callback_query):
         return
 
     chat_id, message_id = _chat_message(callback_query)
-    if result in {"stale", "expired", "squad_missing", "card_missing"}:
+    if isinstance(result, str) and result in {"stale", "expired", "squad_missing", "card_missing"}:
         reason = {
             "stale": "This trade has already been processed.",
             "expired": "The trade offer has expired.",
