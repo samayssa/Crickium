@@ -497,7 +497,7 @@ async def migrate():
         """
         CREATE TABLE IF NOT EXISTS upgrade_catalog_tiers(
             upgrade_id INTEGER NOT NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE CASCADE,
-            tier SMALLINT NOT NULL CHECK (tier BETWEEN 1 AND 4),
+            tier SMALLINT NOT NULL CHECK (tier BETWEEN 1 AND 5),
             strength NUMERIC(5,4) NOT NULL,
             cost BIGINT NOT NULL CHECK (cost > 0),
             PRIMARY KEY (upgrade_id, tier)
@@ -512,7 +512,7 @@ async def migrate():
             player_id BIGINT NULL,
             player_kind TEXT NULL CHECK (player_kind IS NULL OR player_kind IN ('global','special')),
             upgrade_id INTEGER NOT NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE CASCADE,
-            tier SMALLINT NOT NULL CHECK (tier BETWEEN 1 AND 4),
+            tier SMALLINT NOT NULL CHECK (tier BETWEEN 1 AND 5),
             owned_at TIMESTAMP NOT NULL DEFAULT NOW(),
             source TEXT NOT NULL DEFAULT 'shop',
             UNIQUE(user_id, upgrade_id, tier)
@@ -554,6 +554,49 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_user_player_loadouts_user_player ON user_player_loadouts(user_id, player_id, player_kind);")
     await execute("CREATE INDEX IF NOT EXISTS idx_match_player_upgrade_snapshots_match_user ON match_player_upgrade_snapshots(match_id, user_id);")
     await execute("CREATE INDEX IF NOT EXISTS idx_upgrade_catalog_key_active ON upgrade_catalog(upgrade_key, active);")
+    # Existing deployments were created with four-tier CHECK constraints.
+    # Replace them in-place so old data remains valid while Tier V becomes available.
+    await execute("ALTER TABLE upgrade_catalog_tiers DROP CONSTRAINT IF EXISTS upgrade_catalog_tiers_tier_check;")
+    await execute("ALTER TABLE upgrade_catalog_tiers ADD CONSTRAINT upgrade_catalog_tiers_tier_check CHECK (tier BETWEEN 1 AND 5);")
+    await execute("ALTER TABLE user_player_upgrades DROP CONSTRAINT IF EXISTS user_player_upgrades_tier_check;")
+    await execute("ALTER TABLE user_player_upgrades ADD CONSTRAINT user_player_upgrades_tier_check CHECK (tier BETWEEN 1 AND 5);")
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS h2h_matches(
+            match_id BIGINT PRIMARY KEY,
+            user_low_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            user_high_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            winner_id BIGINT NULL REFERENCES users(user_id) ON DELETE SET NULL,
+            recorded_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            CHECK (user_low_id < user_high_id),
+            CHECK (winner_id IS NULL OR winner_id = user_low_id OR winner_id = user_high_id)
+        );
+        """
+    )
+    await execute("CREATE INDEX IF NOT EXISTS idx_h2h_pair ON h2h_matches(user_low_id, user_high_id);")
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS trade_requests(
+            trade_id BIGSERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            sender_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            recipient_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            sender_player_id BIGINT NOT NULL,
+            sender_player_kind TEXT NOT NULL CHECK (sender_player_kind IN ('global','special')),
+            recipient_player_id BIGINT NULL,
+            recipient_player_kind TEXT NULL CHECK (recipient_player_kind IS NULL OR recipient_player_kind IN ('global','special')),
+            sender_player_json JSONB NOT NULL,
+            recipient_player_json JSONB NULL,
+            status TEXT NOT NULL DEFAULT 'awaiting_sender' CHECK (status IN ('awaiting_sender','awaiting_recipient','completed','declined','cancelled','expired')),
+            message_id BIGINT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMP NOT NULL,
+            completed_at TIMESTAMP
+        );
+        """
+    )
+    await execute("CREATE INDEX IF NOT EXISTS idx_trade_sender_status ON trade_requests(sender_id, status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_trade_recipient_status ON trade_requests(recipient_id, status);")
     print("[migrate] Player upgrade tables OK.")
 
     from services.player_upgrades import UPGRADES

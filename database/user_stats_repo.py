@@ -8,7 +8,7 @@ Database operations backing the level/XP system and the /profile command:
 """
 from __future__ import annotations
 
-from database.query import execute, fetchrow, fetchval
+from database.query import execute, fetch, fetchrow, fetchval, transaction
 from engines.level_engine import add_xp
 
 
@@ -100,3 +100,29 @@ async def get_profile_snapshot(user_id: int) -> dict:
         "wins": wins,
         "win_pct": win_pct,
     }
+
+
+async def record_h2h_result(match_id: int, user1_id: int, user2_id: int, winner_id: int | None) -> None:
+    """Record one finished head-to-head match exactly once."""
+    a, b = sorted((int(user1_id), int(user2_id)))
+    winner = int(winner_id) if winner_id is not None else None
+    await execute(
+        """
+        INSERT INTO h2h_matches(match_id, user_low_id, user_high_id, winner_id)
+        VALUES ($1,$2,$3,$4) ON CONFLICT (match_id) DO NOTHING;
+        """, int(match_id), a, b, winner,
+    )
+
+
+async def get_h2h_stats(user1_id: int, user2_id: int) -> dict:
+    a, b = sorted((int(user1_id), int(user2_id)))
+    rows = await fetch(
+        "SELECT winner_id FROM h2h_matches WHERE user_low_id=$1 AND user_high_id=$2 ORDER BY match_id;", a, b
+    )
+    u1, u2 = int(user1_id), int(user2_id)
+    wins1 = sum(1 for r in rows if r["winner_id"] is not None and int(r["winner_id"]) == u1)
+    wins2 = sum(1 for r in rows if r["winner_id"] is not None and int(r["winner_id"]) == u2)
+    total = len(rows)
+    return {"total": total, "wins1": wins1, "losses1": wins2, "wins2": wins2, "losses2": wins1,
+            "win_rate1": round((wins1 / total) * 100, 1) if total else 0.0,
+            "win_rate2": round((wins2 / total) * 100, 1) if total else 0.0}

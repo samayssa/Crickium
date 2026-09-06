@@ -66,7 +66,7 @@ async def next_owned_tier(user_id: int, upgrade_id: int) -> int | None:
         int(user_id), int(upgrade_id),
     )
     highest = int(highest or 0)
-    return highest + 1 if highest < 4 else None
+    return highest + 1 if highest < 5 else None
 
 
 async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int) -> str:
