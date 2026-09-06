@@ -1205,6 +1205,29 @@ def _apply_requested_probability_tuning(
         _redistribute_excess(weights, "W", 0.0, (0, 1, 2, 3, 4, 6, "WD", "NB", "LB", "BY"))
 
 
+def _increase_single_probability_relative(weights: dict, increase: float = 0.12) -> None:
+    """Increase the normalized probability of outcome `1` by a relative 12%.
+
+    The adjustment is isolated to outcome `1` and preserves total probability
+    mass by scaling every other outcome proportionally. Existing tactical,
+    pitch, phase, level, confidence, realism and upgrade rules remain intact.
+    """
+    factor = max(0.0, 1.0 + float(increase))
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+    p1 = max(0.0, float(weights.get(1, 0.0))) / total
+    if p1 <= 0.0 or p1 >= 1.0:
+        return
+    new_p1 = min(1.0, p1 * factor)
+    other_scale = (1.0 - new_p1) / max(1e-12, 1.0 - p1)
+    for key in list(weights):
+        if key == 1:
+            weights[key] = new_p1 * total
+        else:
+            weights[key] = max(0.0, float(weights[key])) * other_scale
+
+
 def resolve_weights(
     bowler_tactic: str,
     batter_mindset: str,
@@ -1333,6 +1356,10 @@ def resolve_weights(
             weights, pitch, batter_level, bowler_level, batsman_balls_faced,
             int(wickets_this_over or 0),
         )
+
+    # Isolated tuning requested for the standard outcome `1` across every
+    # pitch condition. No existing matrix or probability rule is rewritten.
+    _increase_single_probability_relative(weights, 0.12)
 
     return {key: max(0.0, value) for key, value in weights.items()}
 
