@@ -357,16 +357,33 @@ def phase_key(over_number: int) -> str:
     return "overs_16_20"
 
 
-def _apply_pitch_score_environment(weights: dict, pitch: str, is_second_innings: bool = False) -> None:
+def _apply_pitch_score_environment(
+    weights: dict,
+    pitch: str,
+    is_second_innings: bool = False,
+    *,
+    target: int | None = None,
+    total_runs: int = 0,
+    balls_remaining: int = 120,
+) -> None:
     """Gently pull the ball-outcome distribution toward the pitch's desired
     first-innings scoring environment without imposing a hard score cap.
     The current tactical/pitch/phase choices still dominate each ball.
     """
     target_rpo = pitch_target_rpo(pitch)
-    # The chase has no pressure penalty. This is only a softer run-environment
-    # target for the second innings, capped at the requested 12.12 RPO.
+    # The chase has no pressure penalty. Keep the existing first-innings/pitch
+    # target untouched. In the second innings only, when required RPO rises
+    # above the normal environment ceiling, extend that ceiling to required
+    # RPO + 0.50 runs/over. This changes only the soft target ceiling; the
+    # underlying probability matrices and modifiers remain unchanged.
     if is_second_innings:
         target_rpo = min(12.12, target_rpo)
+        remaining_balls = max(0, int(balls_remaining or 0))
+        if target is not None and remaining_balls > 0:
+            runs_needed = max(0, int(target) - int(total_runs or 0))
+            required_rpo = (runs_needed * 6.0) / remaining_balls
+            if required_rpo > 12.12:
+                target_rpo = max(target_rpo, required_rpo + 0.50)
     total = sum(max(0.0, float(v)) for v in weights.values())
     if total <= 0:
         return
@@ -1226,7 +1243,14 @@ def resolve_weights(
 
     _apply(weights, PITCH_MATRIX.get(pitch, {}))
     _apply_pitch_hitting_dampening(weights, pitch)
-    _apply_pitch_score_environment(weights, pitch, is_second_innings=(target is not None))
+    _apply_pitch_score_environment(
+        weights,
+        pitch,
+        is_second_innings=(target is not None),
+        target=target,
+        total_runs=total_runs,
+        balls_remaining=balls_remaining,
+    )
     pitch_match = _apply_pitch_edge(weights, pitch, batsman_balls_faced, bowler_style, bowler_role)
     _apply(weights, _phase_modifiers_for_over(over_number))
     if pitch_match:
