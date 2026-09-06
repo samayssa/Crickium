@@ -24,6 +24,8 @@ from buttons.social_trade_buttons import (
 
 NO_KEYBOARD = {"inline_keyboard": []}
 ACTIVE_TRADE_STATUSES = {"awaiting_sender", "awaiting_recipient"}
+# TEMPORARY TEST SWITCH: change False to True to restore the one-trade-per-day limit.
+DAILY_TRADE_LIMIT_ENABLED = False
 
 
 def _kind(player: dict[str, Any]) -> str:
@@ -421,7 +423,7 @@ async def _ensure_creation_guards(sender_id: int, recipient_id: int) -> str | No
         return "You cannot trade with yourself."
     if await _active_match(sender_id) or await _active_match(recipient_id):
         return "Trade is unavailable while either user is in an active match. Finish the match first."
-    if await _used_trade_today(sender_id) or await _used_trade_today(recipient_id):
+    if DAILY_TRADE_LIMIT_ENABLED and (await _used_trade_today(sender_id) or await _used_trade_today(recipient_id)):
         return "Daily trade limit reached. Each user can complete only one trade per day."
     if await _pending_for_user(sender_id) or await _pending_for_user(recipient_id):
         return "One of these users already has a pending trade. Finish it before starting another."
@@ -963,6 +965,33 @@ async def trade_recipient_accept(callback_query):
     await app.answer_callback_query(callback_query["id"], "Choose the player you want to trade.")
 
 
+async def _finalize_trade_message(callback_query: dict, text: str) -> bool:
+    """Show the final trade result even when Telegram refuses an edit.
+
+    The database exchange is already committed before this helper runs. An
+    edit failure must therefore never leave the user with the old
+    confirmation screen and must never trigger a second exchange. We first
+    try to edit the callback message, then fall back to a fresh message in
+    the same chat.
+    """
+    chat_id, message_id = _chat_message(callback_query)
+    try:
+        await app.edit_message_text(
+            chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+        )
+        return True
+    except Exception as exc:
+        print(f"[trade] final result edit failed for trade message {message_id}: {exc!r}")
+        try:
+            await app.send_message(
+                chat_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+            )
+            return True
+        except Exception as send_exc:
+            print(f"[trade] final result fallback send failed for trade message {message_id}: {send_exc!r}")
+            return False
+
+
 @register_callback("trade_recipient_yes")
 async def trade_recipient_yes(callback_query):
     parts = _callback_parts(callback_query)
@@ -986,7 +1015,7 @@ async def trade_recipient_yes(callback_query):
     if await _active_match(int(trade["sender_id"])) or await _active_match(int(trade["recipient_id"])):
         await app.answer_callback_query(callback_query["id"], "Trade blocked because a participant is in an active match.", show_alert=True)
         return
-    if await _used_trade_today(int(trade["sender_id"])) or await _used_trade_today(int(trade["recipient_id"])):
+    if DAILY_TRADE_LIMIT_ENABLED and (await _used_trade_today(int(trade["sender_id"])) or await _used_trade_today(int(trade["recipient_id"]))):
         await app.answer_callback_query(callback_query["id"], "Daily trade limit has been reached.", show_alert=True)
         return
 
@@ -1064,8 +1093,16 @@ async def trade_recipient_yes(callback_query):
         await app.answer_callback_query(callback_query["id"], reason, show_alert=True)
         return
 
-    await app.edit_message_text(chat_id, message_id, _complete_text(sender, recipient, result["sent"], result["received"]), parse_mode="HTML", reply_markup=NO_KEYBOARD)
-    await app.answer_callback_query(callback_query["id"], "Trade completed successfully.")
+    final_text = _complete_text(sender, recipient, result["sent"], result["received"])
+    displayed = await _finalize_trade_message(callback_query, final_text)
+    if displayed:
+        await app.answer_callback_query(callback_query["id"], "Trade completed successfully.")
+    else:
+        await app.answer_callback_query(
+            callback_query["id"],
+            "Trade completed. The result message could not be displayed in this chat.",
+            show_alert=True,
+        )
 
 
 @register_callback("trade_recipient_cancel")
