@@ -244,6 +244,27 @@ async def _pending_for_user(user_id: int) -> bool:
     return bool(row)
 
 
+async def expire_all_active_trades_for_refresh() -> int:
+    """Expire every live trade session.
+
+    /refresh is the owner-only operational reset. The trade table is the
+    source of truth for all pending UI sessions, so one DB operation clears
+    the entire trade state without touching squads, matches, or other
+    commands.
+    """
+    from database.query import execute
+    result = await execute(
+        """UPDATE trade_requests
+           SET status='expired'
+           WHERE status = ANY($1::text[]);""",
+        list(ACTIVE_TRADE_STATUSES),
+    )
+    try:
+        return int(str(result).split()[-1])
+    except Exception:
+        return 0
+
+
 async def _resolve_target(message: dict) -> dict | None:
     reply = message.get("reply_to_message") or {}
     user = reply.get("from") or {}
@@ -304,6 +325,36 @@ def _find_exact_identity(squad: list[dict], player_id: int, kind: str) -> dict |
         (dict(p) for p in squad if int(p.get("player_id") or 0) == int(player_id) and _kind(p) == kind),
         None,
     )
+
+
+def _callback_actor_status(trade: dict | None, uid: int) -> str:
+    """Return an actor-first callback decision.
+
+    The actor check intentionally happens before the trade-status check so a
+    third party never gets a misleading "trade is no longer active" alert.
+    """
+    if not trade:
+        return "missing"
+    if uid not in {int(trade["sender_id"]), int(trade["recipient_id"])}:
+        return "not_for_user"
+    return "ok"
+
+
+async def _get_trade_for_callback(trade_id: int, uid: int, allowed_statuses: set[str] | None = None):
+    """Fetch the latest persisted trade and classify callback ownership/state."""
+    trade = await _get_trade(trade_id)
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status != "ok":
+        return trade, actor_status
+    if allowed_statuses is not None and trade.get("status") not in allowed_statuses:
+        return trade, "inactive"
+    expires_at = trade.get("expires_at")
+    if expires_at is not None:
+        expiry = expires_at if getattr(expires_at, "tzinfo", None) else expires_at.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            await _update_trade(trade_id, status="expired")
+            return trade, "expired"
+    return trade, "ok"
 
 
 async def _get_trade(trade_id: int):
@@ -503,24 +554,28 @@ async def trade_pick(callback_query):
 
     uid = int((callback_query.get("from") or {}).get("id") or 0)
     trade = await _get_trade(trade_id)
-    if not trade or trade["status"] not in ACTIVE_TRADE_STATUSES:
-        await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
         return
-
-    expires_at = trade.get("expires_at")
-    if expires_at is not None:
-        expiry = expires_at if getattr(expires_at, "tzinfo", None) else expires_at.replace(tzinfo=timezone.utc)
-        if expiry <= datetime.now(timezone.utc):
-            await _update_trade(trade_id, status="expired")
-            chat_id, message_id = _chat_message(callback_query)
-            await app.edit_message_text(chat_id, message_id, _expired_text(), parse_mode="HTML", reply_markup=NO_KEYBOARD)
-            await app.answer_callback_query(callback_query["id"], "This trade has expired.", show_alert=True)
-            return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
+        return
 
     stage = parts[2]
     expected = int(trade["sender_id"] if stage == "s" else trade["recipient_id"])
     if uid != expected:
-        await app.answer_callback_query(callback_query["id"], "This player selection belongs to another user.", show_alert=True)
+        await app.answer_callback_query(callback_query["id"], "This trade step is not for you.", show_alert=True)
+        return
+
+    trade, state = await _get_trade_for_callback(trade_id, uid, ACTIVE_TRADE_STATUSES)
+    if state == "expired":
+        chat_id, message_id = _chat_message(callback_query)
+        await app.edit_message_text(chat_id, message_id, _expired_text(), parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        await app.answer_callback_query(callback_query["id"], "This trade has expired.", show_alert=True)
+        return
+    if state != "ok":
+        await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
 
     squad = await get_team_squad(uid) or []
@@ -622,12 +677,25 @@ async def trade_confirm_pick(callback_query):
     stage = parts[2]
     uid = int((callback_query.get("from") or {}).get("id") or 0)
     trade = await _get_trade(trade_id)
-    if not trade or trade["status"] not in ACTIVE_TRADE_STATUSES:
-        await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
+        return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
         return
     expected = int(trade["sender_id"] if stage == "s" else trade["recipient_id"])
     if uid != expected:
-        await app.answer_callback_query(callback_query["id"], "Only the active trader can confirm this selection.", show_alert=True)
+        await app.answer_callback_query(callback_query["id"], "This trade step is not for you.", show_alert=True)
+        return
+    trade, state = await _get_trade_for_callback(trade_id, uid, ACTIVE_TRADE_STATUSES)
+    if state == "expired":
+        chat_id, message_id = _chat_message(callback_query)
+        await app.edit_message_text(chat_id, message_id, _expired_text(), parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        await app.answer_callback_query(callback_query["id"], "This trade has expired.", show_alert=True)
+        return
+    if state != "ok":
+        await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
     if stage == "s":
         sender, recipient = await _load_users(trade)
@@ -673,7 +741,14 @@ async def trade_sender_yes(callback_query):
         return
     trade_id = int(parts[1]); uid = int((callback_query.get("from") or {}).get("id") or 0)
     trade = await _get_trade(trade_id)
-    if not trade or trade["status"] != "awaiting_sender" or int(trade["sender_id"]) != uid:
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
+        return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
+        return
+    if trade["status"] != "awaiting_sender" or int(trade["sender_id"]) != uid:
         await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
 
@@ -776,7 +851,14 @@ async def trade_sender_cancel(callback_query):
         await app.answer_callback_query(callback_query["id"], "Invalid trade action.", show_alert=True)
         return
     trade_id = int(parts[1]); uid = int((callback_query.get("from") or {}).get("id") or 0); trade = await _get_trade(trade_id)
-    if not trade or trade["status"] != "awaiting_sender" or int(trade["sender_id"]) != uid:
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
+        return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
+        return
+    if trade["status"] != "awaiting_sender" or int(trade["sender_id"]) != uid:
         await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
     await _update_trade(trade_id, status="cancelled")
@@ -793,7 +875,14 @@ async def trade_sender_back(callback_query):
         await app.answer_callback_query(callback_query["id"], "Invalid trade action.", show_alert=True)
         return
     trade_id = int(parts[1]); uid = int((callback_query.get("from") or {}).get("id") or 0); trade = await _get_trade(trade_id)
-    if not trade or int(trade["sender_id"]) != uid or trade["status"] != "awaiting_sender":
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
+        return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
+        return
+    if int(trade["sender_id"]) != uid or trade["status"] != "awaiting_sender":
         await app.answer_callback_query(callback_query["id"], "This trade step is no longer active.", show_alert=True)
         return
     sender, recipient = await _load_users(trade)
@@ -823,12 +912,43 @@ async def trade_recipient_accept(callback_query):
         await app.answer_callback_query(callback_query["id"], "Invalid trade action.", show_alert=True)
         return
     trade_id = int(parts[1]); uid = int((callback_query.get("from") or {}).get("id") or 0); trade = await _get_trade(trade_id)
-    if not trade or trade["status"] != "awaiting_recipient" or int(trade["recipient_id"]) != uid:
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
+        return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
+        return
+    if trade["status"] != "awaiting_recipient" or int(trade["recipient_id"]) != uid:
         await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
-    # If a fixed requested card is already stored, accept means complete.
+    # A fixed return card has already been selected. "Accept Trade" still
+    # advances to the recipient's final confirmation step; the actual swap is
+    # performed only by the explicit "Yes, Confirm" action.
     if trade.get("recipient_player_id"):
-        await trade_recipient_yes(callback_query)
+        sender, recipient = await _load_users(trade)
+        offered = _find_exact_identity(
+            await get_team_squad(int(sender["user_id"])) or [],
+            int(trade["sender_player_id"]),
+            trade["sender_player_kind"],
+        )
+        requested = _find_exact_identity(
+            await get_team_squad(uid) or [],
+            int(trade["recipient_player_id"]),
+            trade["recipient_player_kind"],
+        )
+        if not offered or not requested:
+            await app.answer_callback_query(callback_query["id"], "One of the selected players is no longer available.", show_alert=True)
+            return
+        chat_id, message_id = _chat_message(callback_query)
+        await app.edit_message_text(
+            chat_id,
+            message_id,
+            _recipient_confirm_text(sender, recipient, offered, requested),
+            parse_mode="HTML",
+            reply_markup=recipient_confirm_keyboard(trade_id),
+        )
+        await app.answer_callback_query(callback_query["id"], "Review the trade and confirm it.")
         return
     sender, recipient = await _load_users(trade)
     offered = _find_exact_identity(await get_team_squad(int(sender["user_id"])) or [], int(trade["sender_player_id"]), trade["sender_player_kind"])
@@ -850,7 +970,14 @@ async def trade_recipient_yes(callback_query):
         await app.answer_callback_query(callback_query["id"], "Invalid trade action.", show_alert=True)
         return
     trade_id = int(parts[1]); uid = int((callback_query.get("from") or {}).get("id") or 0); trade = await _get_trade(trade_id)
-    if not trade or trade["status"] != "awaiting_recipient" or int(trade["recipient_id"]) != uid:
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
+        return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
+        return
+    if trade["status"] != "awaiting_recipient" or int(trade["recipient_id"]) != uid:
         await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
     if not trade.get("recipient_player_id"):
@@ -948,7 +1075,14 @@ async def trade_recipient_cancel(callback_query):
         await app.answer_callback_query(callback_query["id"], "Invalid trade action.", show_alert=True)
         return
     trade_id = int(parts[1]); uid = int((callback_query.get("from") or {}).get("id") or 0); trade = await _get_trade(trade_id)
-    if not trade or int(trade["recipient_id"]) != uid or trade["status"] != "awaiting_recipient":
+    actor_status = _callback_actor_status(trade, uid)
+    if actor_status == "missing":
+        await app.answer_callback_query(callback_query["id"], "This trade no longer exists.", show_alert=True)
+        return
+    if actor_status == "not_for_user":
+        await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
+        return
+    if int(trade["recipient_id"]) != uid or trade["status"] != "awaiting_recipient":
         await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
     sender, recipient = await _load_users(trade)

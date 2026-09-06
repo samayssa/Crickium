@@ -3,6 +3,7 @@ from __future__ import annotations
 from app import app
 from config import ADMIN_USER_ID
 from database.squads_repo import refresh_all_team_squads
+from handlers.trade import expire_all_active_trades_for_refresh
 from handlers.registry import register
 
 
@@ -19,12 +20,14 @@ async def refresh_command(message):
         return
 
     try:
+        expired_trades = await expire_all_active_trades_for_refresh()
         updated_users, updated_players = await refresh_all_team_squads()
         await app.send_message(
             chat_id,
             f"✅ <b>Player Data Refresh Complete</b>\n\n"
             f"👥 Squads checked ➤ <b>{updated_users}</b>\n"
-            f"🔄 Player snapshots synced ➤ <b>{updated_players}</b>",
+            f"🔄 Player snapshots synced ➤ <b>{updated_players}</b>\n"
+            f"🔄 Active trade sessions cleared ➤ <b>{expired_trades}</b>",
             parse_mode="HTML",
         )
     except Exception as exc:
