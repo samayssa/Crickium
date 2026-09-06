@@ -9,13 +9,15 @@ UPGRADE_RUBY_PRICES: dict[int, int] = {
     2: 500,
     3: 1_000,
     4: 2_000,
+    5: 4_000,
 }
 
 TIER_STRENGTHS: dict[int, float] = {
     1: 0.05,
     2: 0.075,
     3: 0.10,
-    4: 0.15,
+    4: 0.125,
+    5: 0.15,
 }
 
 
@@ -23,9 +25,9 @@ def upgrade_price(tier: int) -> int:
     try:
         tier = int(tier)
     except (TypeError, ValueError):
-        raise ValueError("tier must be 1-4")
+        raise ValueError("tier must be 1-5")
     if tier not in UPGRADE_RUBY_PRICES:
-        raise ValueError("tier must be 1-4")
+        raise ValueError("tier must be 1-5")
     return UPGRADE_RUBY_PRICES[tier]
 
 
@@ -33,7 +35,7 @@ def tier_strength(tier: int) -> float:
     try:
         tier = int(tier)
     except (TypeError, ValueError):
-        raise ValueError("tier must be 1-4")
+        raise ValueError("tier must be 1-5")
     if tier not in TIER_STRENGTHS:
-        raise ValueError("tier must be 1-4")
+        raise ValueError("tier must be 1-5")
     return TIER_STRENGTHS[tier]
