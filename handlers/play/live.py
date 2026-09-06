@@ -8,7 +8,7 @@ from typing import Any
 from app import app
 from buttons.play_buttons import bowler_selection_keyboard, bowler_tactic_keyboard, strategy_keyboard
 from database.play_repo import get_match, update_status
-from database.user_stats_repo import add_match_xp, record_match_result
+from database.user_stats_repo import add_match_xp, record_match_result, record_h2h_result
 from database.player_user_stats_repo import record_match_player_stats
 from services.player_match_stats import record_session_player_stats
 from engines.level_engine import WIN_XP, LOSS_XP, TIE_XP
@@ -418,6 +418,18 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
             await award_competitive_rewards(winner_id, loser_id)
     except Exception as exc:
         print(f"[play] Failed to award match XP/stats for match_id={session.match_id}: {exc!r}")
+
+    # H2H persistence is independent from rewards/stats. A reward failure must
+    # never prevent a finished match from appearing in head-to-head history.
+    try:
+        await record_h2h_result(
+            int(session.match_id),
+            int(challenger_id),
+            int(opponent_id),
+            None if winner_id is None else int(winner_id),
+        )
+    except Exception as exc:
+        print(f"[play] Failed to record H2H history for match_id={session.match_id}: {exc!r}")
 
 
 async def _finish_over_and_prompt_next(session) -> None:
