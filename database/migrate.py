@@ -301,6 +301,10 @@ async def migrate():
         await execute(ddl)
         print(f"[migrate] Table '{table_name}' OK.")
 
+    print("[migrate] Ensuring 'users.claim_attempt_at' column exists...")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS claim_attempt_at TIMESTAMP;")
+    print("[migrate] 'users.claim_attempt_at' OK.")
+
     print("[migrate] Ensuring 'users.last_seen_at' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();")
     print("[migrate] 'users.last_seen_at' OK.")
@@ -313,6 +317,14 @@ async def migrate():
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_special_edition_identity ON special_edition_players(LOWER(name), LOWER(edition));")
     await execute("CREATE INDEX IF NOT EXISTS idx_special_edition_name ON special_edition_players(LOWER(name));")
     print("[migrate] special-edition indexes OK.")
+
+    print("[migrate] Ensuring 'player_claims.chat_id' column exists...")
+    await execute("ALTER TABLE player_claims ADD COLUMN IF NOT EXISTS chat_id BIGINT;")
+    print("[migrate] 'player_claims.chat_id' OK.")
+
+    print("[migrate] Ensuring 'player_claims.message_id' column exists...")
+    await execute("ALTER TABLE player_claims ADD COLUMN IF NOT EXISTS message_id BIGINT;")
+    print("[migrate] 'player_claims.message_id' OK.")
 
     print("[migrate] Ensuring index on player_claims.user_id exists...")
     await execute("CREATE INDEX IF NOT EXISTS idx_player_claims_user ON player_claims(user_id, claimed_at);")
