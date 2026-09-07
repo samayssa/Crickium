@@ -22,6 +22,7 @@ from database.broadcast_repo import upsert_chat
 from database.runtime_repo import clear_bot_session, get_bot_session, save_bot_session
 from database.migrate import migrate
 from engines.probability_engine import reload_probability_profile_cache
+from handlers.claim import start_claim_maintenance
 
 MAX_CONCURRENT_UPDATES = 12
 MAX_PENDING_UPDATES = 100
@@ -414,6 +415,8 @@ async def main():
         await migrate()
         await reload_probability_profile_cache()
         print("[main.py] Probability profile cache loaded.")
+        await start_claim_maintenance()
+        print("[main.py] Claim maintenance worker started.")
     except Exception:
         print("!! Database setup failed. Bot will still start, but DB-dependent features won't work until this is fixed. !!")
         traceback.print_exc()
