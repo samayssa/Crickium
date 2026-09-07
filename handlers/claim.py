@@ -2,6 +2,7 @@ from __future__ import annotations
 
 print("claim.py loaded")
 
+import asyncio
 import html
 
 from handlers.registry import register, register_callback
@@ -22,8 +23,11 @@ from utils.debut_gate import has_completed_debut
 from utils.randomiser import get_random_claim_player
 
 CLAIM_COOLDOWN_SECONDS = 3600
+CLAIM_ATTEMPT_COOLDOWN_SECONDS = 10
+CLAIM_PENDING_TIMEOUT_SECONDS = 60
 MAX_SQUAD_SIZE = 25
 NO_KEYBOARD = {"inline_keyboard": []}
+_CLAIM_AUTO_RELEASE_TASK = None
 
 
 def _format_remaining(seconds: float) -> str:
@@ -103,6 +107,117 @@ def _player_card_text(
     return "\n".join(parts)
 
 
+async def _claim_attempt_gate(conn, user_id: int):
+    row = await conn.fetchrow("""
+        SELECT claim_attempt_at,
+               EXTRACT(EPOCH FROM (NOW() - claim_attempt_at)) AS elapsed
+        FROM users
+        WHERE user_id = $1
+        FOR UPDATE;
+    """, user_id)
+    if row and row["claim_attempt_at"] is not None:
+        elapsed = float(row["elapsed"] or 0)
+        if elapsed < CLAIM_ATTEMPT_COOLDOWN_SECONDS:
+            return CLAIM_ATTEMPT_COOLDOWN_SECONDS - elapsed
+    await conn.execute("UPDATE users SET claim_attempt_at = NOW() WHERE user_id = $1;", user_id)
+    return None
+
+
+async def _auto_release_pending_claims_once() -> int:
+    async def _tx(conn):
+        rows = await conn.fetch("""
+            SELECT claim_id, user_id, player_id, chat_id, message_id
+            FROM player_claims
+            WHERE status = 'pending'
+              AND claimed_at <= NOW() - INTERVAL '60 seconds'
+            FOR UPDATE SKIP LOCKED;
+        """)
+        if not rows:
+            return []
+
+        released_rows = []
+        for row in rows:
+            player_row = await conn.fetchrow(
+                "SELECT * FROM players WHERE player_id = $1;", int(row["player_id"])
+            )
+            if player_row:
+                ovr = overall_rating(
+                    int(player_row.get("bat_level") or 0),
+                    int(player_row.get("bowl_level") or 0),
+                )
+                _buy_price, sell_price = get_price(ovr)
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1, last_seen_at = NOW() WHERE user_id = $2;",
+                    int(sell_price), int(row["user_id"]),
+                )
+
+            updated = await conn.execute(
+                "UPDATE player_claims SET status = 'released' WHERE claim_id = $1 AND status = 'pending';",
+                int(row["claim_id"]),
+            )
+            if updated.endswith(" 1"):
+                released_rows.append({
+                    "claim_id": int(row["claim_id"]),
+                    "chat_id": int(row["chat_id"]) if row["chat_id"] is not None else None,
+                    "message_id": int(row["message_id"]) if row["message_id"] is not None else None,
+                })
+        return released_rows
+
+    try:
+        released_rows = await transaction(_tx)
+        for row in released_rows:
+            if row["chat_id"] is None or row["message_id"] is None:
+                continue
+            text = (
+                "<b>⏱️ CLAIM EXPIRED</b>\n\n"
+                "<b>⏳ You didn't choose Retain or Release within 1 minute.</b>\n\n"
+                "<b>🔄 The player was automatically released.</b>"
+            )
+            try:
+                await app.edit_message_text(
+                    row["chat_id"], row["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+                )
+            except Exception:
+                try:
+                    await app.edit_message_caption(
+                        row["chat_id"], row["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+                    )
+                except Exception as exc:
+                    print(f"[claim] Could not update expired claim message claim_id={row['claim_id']}: {exc!r}")
+        if released_rows:
+            print(f"[claim] Auto-released {len(released_rows)} unanswered claim(s) after 60 seconds.")
+        return len(released_rows)
+    except Exception as exc:
+        print(f"[claim] Auto-release sweep failed: {exc!r}")
+        return 0
+
+
+async def _claim_auto_release_worker():
+    while True:
+        try:
+            await asyncio.sleep(15)
+            await _auto_release_pending_claims_once()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            print(f"[claim] Auto-release worker error: {exc!r}")
+
+
+def _ensure_claim_auto_release_worker():
+    global _CLAIM_AUTO_RELEASE_TASK
+    if _CLAIM_AUTO_RELEASE_TASK is None or _CLAIM_AUTO_RELEASE_TASK.done():
+        try:
+            _CLAIM_AUTO_RELEASE_TASK = asyncio.create_task(_claim_auto_release_worker())
+        except RuntimeError:
+            _CLAIM_AUTO_RELEASE_TASK = None
+
+
+async def start_claim_maintenance():
+    """Start the claim-expiry worker after the application's event loop exists."""
+    _ensure_claim_auto_release_worker()
+    await _auto_release_pending_claims_once()
+
+
 @register("claim")
 async def claim_command(message):
     chat_id = message["chat"]["id"]
@@ -129,13 +244,17 @@ async def claim_command(message):
         user_id, from_user.get("username"), from_user.get("first_name"),
     )
 
-    elapsed = await seconds_since_last_claim(user_id)
-    if elapsed is not None and elapsed < CLAIM_COOLDOWN_SECONDS:
-        remaining_text = _format_remaining(elapsed)
+    _ensure_claim_auto_release_worker()
+
+    async def _attempt_tx(conn):
+        return await _claim_attempt_gate(conn, int(user_id))
+
+    attempt_remaining = await transaction(_attempt_tx)
+    if attempt_remaining is not None:
+        remaining_text = f"{max(1, int(attempt_remaining + 0.999))}s"
         await app.send_message(
             chat_id,
-            f"<b>⏳ You've already claimed a player recently!</b>\n\n"
-            f"<b>Try again in {html.escape(remaining_text)}.</b>",
+            f"<b>⏳ Claim cooldown active.</b>\n\n<b>You can use /claim again in {html.escape(remaining_text)}.</b>",
             parse_mode="HTML",
         )
         return
@@ -150,8 +269,47 @@ async def claim_command(message):
         )
         return
 
-    player = await get_random_claim_player()
-    if not player:
+    async def _claim_reservation_tx(conn):
+        # Serialize all claim attempts for the same user at the database level.
+        # The latest claim check and the reservation are therefore one atomic
+        # decision: concurrent requests cannot both earn the same hourly slot.
+        await conn.execute("SELECT pg_advisory_xact_lock($1);", int(user_id))
+        row = await conn.fetchrow(
+            """SELECT EXTRACT(EPOCH FROM (NOW() - claimed_at)) AS elapsed
+                 FROM player_claims
+                WHERE user_id = $1
+                ORDER BY claimed_at DESC LIMIT 1;""",
+            int(user_id),
+        )
+        if row and row["elapsed"] is not None and float(row["elapsed"]) < CLAIM_COOLDOWN_SECONDS:
+            return max(0.0, float(row["elapsed"]))
+        player = await get_random_claim_player()
+        if not player:
+            return "no_player"
+        claim_row = await conn.fetchrow(
+            """INSERT INTO player_claims (user_id, player_id, status, chat_id, message_id)
+               VALUES ($1, $2, 'pending', $3, $4) RETURNING *;""",
+            int(user_id), int(player["player_id"]), int(chat_id), None,
+        )
+        updated = await conn.execute(
+            "UPDATE users SET balance = balance + 1000, last_seen_at = NOW() WHERE user_id = $1;",
+            int(user_id),
+        )
+        if not updated.endswith(" 1"):
+            raise RuntimeError(f"Could not credit claim reward for user_id={user_id}")
+        return {"claim": dict(claim_row), "player": player}
+
+    reservation = await transaction(_claim_reservation_tx)
+    if isinstance(reservation, (int, float)):
+        remaining_text = _format_remaining(float(reservation))
+        await app.send_message(
+            chat_id,
+            f"<b>⏳ You've already claimed a player recently!</b>\n\n"
+            f"<b>Try again in {html.escape(remaining_text)}.</b>",
+            parse_mode="HTML",
+        )
+        return
+    if reservation == "no_player":
         await app.send_message(
             chat_id,
             "<b>⚠️ No players available to claim yet.</b>\n"
@@ -160,26 +318,8 @@ async def claim_command(message):
         )
         return
 
-    # Create the claim and credit its reward in one transaction so a DB error
-    # cannot leave a pending claim without its coins, or vice versa.
-    async def _claim_tx(conn):
-        claim_row = await conn.fetchrow(
-            """
-            INSERT INTO player_claims (user_id, player_id, status)
-            VALUES ($1, $2, 'pending')
-            RETURNING *;
-            """,
-            user_id, player["player_id"],
-        )
-        updated = await conn.execute(
-            "UPDATE users SET balance = balance + 1000 WHERE user_id = $1;",
-            user_id,
-        )
-        if not updated.endswith(" 1"):
-            raise RuntimeError(f"Could not credit claim reward for user_id={user_id}")
-        return dict(claim_row)
-
-    claim = await transaction(_claim_tx)
+    claim = reservation["claim"]
+    player = reservation["player"]
 
     squad = current_squad
     text = _player_card_text(
@@ -193,12 +333,27 @@ async def claim_command(message):
     )
 
     keyboard = retain_release_keyboard(claim["claim_id"])
+    sent_message = None
     try:
         image_bytes, _is_custom = await get_player_card_bytes(player)
-        await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML", reply_markup=keyboard)
+        sent_message = await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML", reply_markup=keyboard)
     except Exception as exc:
         print(f"[claim] Card image failed ({exc!r}), falling back to a text-only message.")
-        await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+        sent_message = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+
+    sent_message_id = None
+    if isinstance(sent_message, dict):
+        sent_message_id = sent_message.get("message_id")
+    else:
+        sent_message_id = getattr(sent_message, "id", None)
+    if sent_message_id:
+        try:
+            await execute(
+                "UPDATE player_claims SET message_id = $1 WHERE claim_id = $2;",
+                int(sent_message_id), int(claim["claim_id"]),
+            )
+        except Exception as exc:
+            print(f"[claim] Could not save claim message_id for auto-expiry claim_id={claim['claim_id']}: {exc!r}")
 
     print(f"[claim] user_id={user_id} claimed player_id={player['player_id']} ({player['name']}), claim_id={claim['claim_id']}, +1000 coins")
 
