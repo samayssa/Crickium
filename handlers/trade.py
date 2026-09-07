@@ -25,7 +25,7 @@ from buttons.social_trade_buttons import (
 NO_KEYBOARD = {"inline_keyboard": []}
 ACTIVE_TRADE_STATUSES = {"awaiting_sender", "awaiting_recipient"}
 # TEMPORARY TEST SWITCH: change False to True to restore the one-trade-per-day limit.
-DAILY_TRADE_LIMIT_ENABLED = False
+DAILY_TRADE_LIMIT_ENABLED = True
 
 
 def _kind(player: dict[str, Any]) -> str:
