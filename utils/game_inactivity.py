@@ -97,6 +97,8 @@ def _status_claim_sql(engine: str) -> str:
         table, statuses = "play_matches", "ARRAY['accepted','pitch_selected','toss_done','lineup']"
     elif engine == "PLAYINT":
         table, statuses = "playint_matches", "ARRAY['accepted','team_selection','pitch_selected','toss_done','lineup']"
+    elif engine == "PLAYSO":
+        table, statuses = "playso_matches", "ARRAY['accepted','pitch_selected','toss_done','lineup','live','innings_break']"
     else:
         table, statuses = "playipl_matches", "ARRAY['accepted','team_selection','pitch_selected','toss_done','lineup','live']"
     return f"UPDATE {table} SET status='timed_out' WHERE match_id=$1 AND status=ANY({statuses}::text[]) RETURNING *;"
@@ -107,6 +109,8 @@ async def _current_match(engine: str, match_id: int):
         return await fetchrow("SELECT * FROM play_matches WHERE match_id=$1;", match_id)
     if engine == "PLAYINT":
         return await fetchrow("SELECT * FROM playint_matches WHERE match_id=$1;", match_id)
+    if engine == "PLAYSO":
+        return await fetchrow("SELECT * FROM playso_matches WHERE match_id=$1;", match_id)
     return await fetchrow("SELECT * FROM playipl_matches WHERE match_id=$1;", match_id)
 
 
@@ -126,6 +130,8 @@ async def _expected_users(engine: str, match: Any) -> list[int]:
             session = get_playint_session(int(m["match_id"]))
         except Exception:
             session = None
+    elif engine == "PLAYSO":
+        session = None
     else:
         try:
             from engines.playipl_runtime import get_playipl_session
@@ -156,6 +162,38 @@ async def _expected_users(engine: str, match: Any) -> list[int]:
 
     c = int(m.get("challenger_id") or 0)
     o = int(m.get("opponent_id") or 0)
+    if engine == "PLAYSO":
+        status = str(m.get("status") or "")
+        if status in {"", "pending", "declined", "expired", "completed", "ended", "timed_out"}:
+            return []
+        state = m.get("state") or {}
+        stage = str(state.get("stage") or "")
+        if status == "accepted" or stage == "pitch":
+            return [c]
+        if status == "pitch_selected" or stage == "toss_call":
+            return [o]
+        if status == "toss_done" or stage == "decision":
+            winner = int(m.get("toss_winner_id") or 0)
+            return [winner] if winner else []
+        if status == "lineup":
+            if stage == "bowler_select":
+                uid = int(state.get("bowling_user") or 0)
+                return [uid] if uid else []
+            if stage == "batter_select":
+                uid = int(state.get("batting_user") or 0)
+                return [uid] if uid else []
+            return []
+        if status == "live":
+            if stage in {"length", "delivery", "line"}:
+                uid = int(state.get("bowling_user") or 0)
+                return [uid] if uid else []
+            if stage in {"foot", "intent", "shot"}:
+                uid = int(state.get("batting_user") or 0)
+                return [uid] if uid else []
+            return []
+        if status == "innings_break":
+            return []
+        return []
     if engine == "PLAY":
         status = str(m.get("status") or "")
         if status == "accepted": return [c]
@@ -211,6 +249,8 @@ async def game_signature(engine: str, match_id: int):
         elif engine == "PLAYINT":
             from engines.playint_runtime import get_playint_session
             s = get_playint_session(match_id)
+        elif engine == "PLAYSO":
+            s = None
         else:
             from engines.playipl_runtime import get_playipl_session
             s = get_playipl_session(match_id)
@@ -227,6 +267,11 @@ async def game_signature(engine: str, match_id: int):
                 session_state["impact"] = _signature_value(getattr(s, "match", {}).get("_impact"))
     except Exception:
         pass
+    if engine == "PLAYSO":
+        state = md.get("state") or {}
+        return tuple(_signature_value(md.get(f)) for f in ["status", "pitch", "toss_winner_id", "decision", "innings_no"]) + (
+            _signature_value({k: state.get(k) for k in ("stage", "batting_user", "bowling_user", "selected_bowler", "selected_batters", "legal_balls", "runs", "wickets", "target")}),
+        )
     fields = ["status", "challenger_team_code", "opponent_team_code", "challenger_xi", "opponent_xi",
               "challenger_xi_confirmed", "opponent_xi_confirmed", "pitch", "toss_winner_id", "decision"]
     return tuple(_signature_value(md.get(f)) for f in fields) + (_signature_value(session_state),)
@@ -322,6 +367,8 @@ async def _clear_engine_messages(match):
 
 async def _clear_engine_session(engine: str, match_id: int):
     try:
+        if engine == "PLAYSO":
+            return
         if engine == "PLAY":
             from engines.play_runtime import get_session, clear_session
             s = get_session(match_id)
