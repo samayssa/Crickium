@@ -5,6 +5,8 @@ print("claim.py loaded")
 import asyncio
 import html
 
+from pyrogram.errors import ChatWriteForbidden
+
 from handlers.registry import register, register_callback
 from app import app
 from database.query import execute, fetchrow, transaction
@@ -28,6 +30,15 @@ CLAIM_PENDING_TIMEOUT_SECONDS = 60
 MAX_SQUAD_SIZE = 25
 NO_KEYBOARD = {"inline_keyboard": []}
 _CLAIM_AUTO_RELEASE_TASK = None
+
+
+async def _safe_claim_send_message(chat_id, text, **kwargs):
+    """Avoid a handler traceback when Telegram has revoked write rights in a chat."""
+    try:
+        return await app.send_message(chat_id, text, **kwargs)
+    except ChatWriteForbidden as exc:
+        print(f"[claim] Telegram denied message write in chat_id={chat_id}: {exc!r}")
+        return None
 
 
 def _format_remaining(seconds: float) -> str:
@@ -228,7 +239,7 @@ async def claim_command(message):
     print(f"[claim] /claim invoked by user_id={user_id}")
 
     if not await has_completed_debut(int(user_id)):
-        await app.send_message(
+        await _safe_claim_send_message(
             chat_id,
             "<b>⚠️ Complete your /debut first to unlock player collection.</b>",
             parse_mode="HTML",
@@ -252,7 +263,7 @@ async def claim_command(message):
     attempt_remaining = await transaction(_attempt_tx)
     if attempt_remaining is not None:
         remaining_text = f"{max(1, int(attempt_remaining + 0.999))}s"
-        await app.send_message(
+        await _safe_claim_send_message(
             chat_id,
             f"<b>⏳ Claim cooldown active.</b>\n\n<b>You can use /claim again in {html.escape(remaining_text)}.</b>",
             parse_mode="HTML",
@@ -261,7 +272,7 @@ async def claim_command(message):
 
     current_squad = await get_team_squad(user_id) or []
     if len(current_squad) >= MAX_SQUAD_SIZE:
-        await app.send_message(
+        await _safe_claim_send_message(
             chat_id,
             f"<b>⚠️ Your squad is full ({MAX_SQUAD_SIZE}/{MAX_SQUAD_SIZE}).</b>\n"
             "Sell a player before claiming another one.",
@@ -302,7 +313,7 @@ async def claim_command(message):
     reservation = await transaction(_claim_reservation_tx)
     if isinstance(reservation, (int, float)):
         remaining_text = _format_remaining(float(reservation))
-        await app.send_message(
+        await _safe_claim_send_message(
             chat_id,
             f"<b>⏳ You've already claimed a player recently!</b>\n\n"
             f"<b>Try again in {html.escape(remaining_text)}.</b>",
@@ -310,7 +321,7 @@ async def claim_command(message):
         )
         return
     if reservation == "no_player":
-        await app.send_message(
+        await _safe_claim_send_message(
             chat_id,
             "<b>⚠️ No players available to claim yet.</b>\n"
             "Ask the bot admin to /upload_pl players first.",
@@ -339,7 +350,7 @@ async def claim_command(message):
         sent_message = await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML", reply_markup=keyboard)
     except Exception as exc:
         print(f"[claim] Card image failed ({exc!r}), falling back to a text-only message.")
-        sent_message = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+        sent_message = await _safe_claim_send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
 
     sent_message_id = None
     if isinstance(sent_message, dict):
