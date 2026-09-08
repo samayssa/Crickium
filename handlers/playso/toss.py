@@ -30,7 +30,10 @@ async def playso_toss(callback_query):
         await app.answer_callback_query(callback_query["id"], "Only the challenged player calls the toss.", show_alert=True); return
     async with match_lock(mid):
         winner = flip_coin()
-        fresh, status = await update_locked(mid, {"pitch_selected"}, lambda d,s: ({"call":call,"result":winner}, "toss_done"))
+        def updater(data, state):
+            state["stage"] = "decision"
+            return {"call":call,"result":winner}, "toss_done"
+        fresh, status = await update_locked(mid, {"pitch_selected"}, updater)
         if status == "stale" or fresh is None:
             await app.answer_callback_query(callback_query["id"], "This action is no longer active.", show_alert=True); return
         winner_id = int(match["opponent_id"] if winner == call else match["challenger_id"])
@@ -55,7 +58,10 @@ async def playso_decision(callback_query):
     if uid != int(match["toss_winner_id"]):
         await app.answer_callback_query(callback_query["id"], "Only the toss winner can decide.", show_alert=True); return
     async with match_lock(mid):
-        fresh, status = await update_locked(mid, {"toss_done"}, lambda d,s: ({"decision":decision}, "lineup"))
+        def updater(data, state):
+            state["stage"] = "setup"
+            return {"decision":decision}, "lineup"
+        fresh, status = await update_locked(mid, {"toss_done"}, updater)
         if status == "stale":
             await app.answer_callback_query(callback_query["id"], "This action is no longer active.", show_alert=True); return
         from database.playso_repo import set_basic

@@ -115,7 +115,10 @@ async def playso_accept(callback_query):
         if match.get("expires_at") and match["expires_at"] <= __import__("datetime").datetime.now(__import__("datetime").timezone.utc).replace(tzinfo=None):
             await app.answer_callback_query(callback_query["id"], "This challenge is no longer active.", show_alert=True); return
         try:
-            await update_locked(match_id, {"pending"}, lambda d,s: ({"accepted": True}, "accepted"))
+            def updater(data, state):
+                state["stage"] = "pitch"
+                return {"accepted": True}, "accepted"
+            await update_locked(match_id, {"pending"}, updater)
         except Exception:
             await app.answer_callback_query(callback_query["id"], "Unable to accept this challenge right now.", show_alert=True); return
         cancel_timer("playso_challenge", match_id)
