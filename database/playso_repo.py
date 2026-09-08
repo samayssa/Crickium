@@ -10,6 +10,24 @@ _SCHEMA_READY = False
 ACTIVE = ("pending", "accepted", "pitch_selected", "toss_done", "lineup", "live", "innings_break")
 
 
+def _coerce_state(value: Any) -> dict[str, Any]:
+    """Return PLAYSO state as a mutable dict regardless of JSONB codec behavior."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return dict(decoded) if isinstance(decoded, dict) else {}
+    try:
+        return dict(value)
+    except (TypeError, ValueError):
+        return {}
+
+
 async def ensure_schema() -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
@@ -55,19 +73,30 @@ async def create_match(chat_id: int, challenger: dict, opponent: dict):
     )
 
 
+async def _normalized_row(row):
+    if row is None:
+        return None
+    data = dict(row)
+    data["state"] = _coerce_state(data.get("state"))
+    return data
+
+
 async def get_match(match_id: int):
     await ensure_schema()
-    return await fetchrow("SELECT * FROM playso_matches WHERE match_id=$1;", match_id)
+    row = await fetchrow("SELECT * FROM playso_matches WHERE match_id=$1;", match_id)
+    return await _normalized_row(row)
 
 
 async def get_active_match_in_chat(chat_id: int):
     await ensure_schema()
-    return await fetchrow("SELECT * FROM playso_matches WHERE chat_id=$1 AND status = ANY($2::text[]) ORDER BY match_id DESC LIMIT 1;", chat_id, list(ACTIVE))
+    row = await fetchrow("SELECT * FROM playso_matches WHERE chat_id=$1 AND status = ANY($2::text[]) ORDER BY match_id DESC LIMIT 1;", chat_id, list(ACTIVE))
+    return await _normalized_row(row)
 
 
 async def get_active_match_for_user(user_id: int):
     await ensure_schema()
-    return await fetchrow("SELECT * FROM playso_matches WHERE (challenger_id=$1 OR opponent_id=$1) AND status = ANY($2::text[]) ORDER BY match_id DESC LIMIT 1;", user_id, list(ACTIVE))
+    row = await fetchrow("SELECT * FROM playso_matches WHERE (challenger_id=$1 OR opponent_id=$1) AND status = ANY($2::text[]) ORDER BY match_id DESC LIMIT 1;", user_id, list(ACTIVE))
+    return await _normalized_row(row)
 
 
 async def set_message_id(match_id: int, message_id: int):
@@ -104,7 +133,7 @@ async def mutate_locked(match_id: int, actor_id: int, expected_statuses: set[str
         data = dict(row)
         if data["status"] not in expected_statuses:
             return None, "stale"
-        state = data.get("state") or {}
+        state = _coerce_state(data.get("state"))
         out = await mutator(data, state) if hasattr(mutator, "__await__") else mutator(data, state)
         if isinstance(out, tuple):
             value, status = out
@@ -122,7 +151,7 @@ async def update_locked(match_id: int, expected_statuses: set[str], updater: Cal
         row = await conn.fetchrow("SELECT * FROM playso_matches WHERE match_id=$1 FOR UPDATE;", match_id)
         if not row:
             return None, "missing"
-        data = dict(row); state = data.get("state") or {}
+        data = dict(row); state = _coerce_state(data.get("state"))
         if data["status"] not in expected_statuses:
             return None, "stale"
         result, status = updater(data, state)
