@@ -20,6 +20,11 @@ from database.playint_repo import (
     get_match as get_playint_match,
     update_status as update_playint_status,
 )
+from database.playso_repo import (
+    get_active_match_in_chat as get_playso_match_in_chat,
+    get_match as get_playso_match,
+    set_state as set_playso_state,
+)
 from buttons.endgame_buttons import abandon_confirm_keyboard
 from engines.play_runtime import get_session as get_play_session, get_session_in_chat as get_play_session_in_chat, clear_session
 from engines.playint_runtime import get_playint_session, get_playint_session_in_chat, clear_playint_session
@@ -97,6 +102,8 @@ def _game_summary(
         mode = "PLAY • T20 1v1"
     elif engine == "playint":
         mode = "PLAYINT • T20 International"
+    elif engine == "playso":
+        mode = "PLAYSO • Super Over"
     else:
         mode = "PLAYIPL • Indian Premier League"
     first_text = "Not yet played"
@@ -153,6 +160,10 @@ async def _find_active(chat_id: int):
     if match:
         return dict(match), "playipl"
 
+    match = await get_playso_match_in_chat(chat_id)
+    if match:
+        return dict(match), "playso"
+
     # Last-resort authoritative DB lookup. This catches a live game even
     # when its runtime session disappeared after a restart/reload or when
     # the status is a newer non-terminal state not present in the helper's
@@ -186,12 +197,20 @@ async def _find_active(chat_id: int):
             ORDER BY match_id DESC LIMIT 1;""",
         chat_id, *terminal_list,
     )
+    playso_row = await fetchrow(
+        f"""SELECT * FROM playso_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
+    )
 
     candidates = [(dict(play_row), "play")] if play_row else []
     if playint_row:
         candidates.append((dict(playint_row), "playint"))
     if playipl_row:
         candidates.append((dict(playipl_row), "playipl"))
+    if playso_row:
+        candidates.append((dict(playso_row), "playso"))
     if candidates:
         # If both somehow have a stray non-terminal row, the more recent
         # match_id is the one actually occupying the group right now.
@@ -206,6 +225,8 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
         session = get_play_session(match_id)
     elif engine == "playint":
         session = get_playint_session(match_id)
+    elif engine == "playso":
+        session = None
     else:
         session = get_playipl_session(match_id)
 
@@ -221,6 +242,8 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
             match = await get_play_match(match_id)
         elif engine == "playint":
             match = await get_playint_match(match_id)
+        elif engine == "playso":
+            match = await get_playso_match(match_id)
         else:
             match = await get_playipl_match(match_id)
         if match:
@@ -241,6 +264,8 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
         clear_session(match_id)
     elif engine == "playint":
         clear_playint_session(match_id)
+    elif engine == "playso":
+        return
     else:
         clear_playipl_session(match_id)
 
@@ -280,6 +305,8 @@ async def abond_command(message):
         session = get_play_session(match["match_id"])
     elif engine == "playint":
         session = get_playint_session(match["match_id"])
+    elif engine == "playso":
+        session = None
     else:
         session = get_playipl_session(match["match_id"])
     text = _game_summary(match, engine=engine, session=session)
@@ -327,11 +354,15 @@ async def abandon_yes(callback_query):
             await update_play_status(mid, "ended")
         elif engine == "playint":
             await update_playint_status(mid, "ended")
+        elif engine == "playso":
+            await set_playso_state(mid, match.get("state") or {}, status="ended")
         else:
             await update_playipl_status(mid, "ended")
         cancel_timer("challenge", mid)
         cancel_timer("toss_call", mid)
         cancel_timer("decision", mid)
+        from utils.game_inactivity import cancel_match as cancel_inactivity_match
+        cancel_inactivity_match("PLAYSO", mid)
     except Exception as exc:
         print(f"[abandon] Failed to mark {engine} match_id={mid} ended: {exc!r}")
         await app.answer_callback_query(
