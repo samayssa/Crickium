@@ -135,3 +135,10 @@ def shot_keyboard(match_id: int, shots: list[str]) -> InlineKeyboardMarkup:
             row.append(_styled(shots[i + 1], f"playso_shot:{match_id}:{i+1}", "primary"))
         rows.append(row)
     return InlineKeyboardMarkup(rows)
+
+
+def exit_confirm_keyboard(match_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        _styled("✅ Yes, I want", f"playso_exit_yes:{match_id}", "success"),
+        _styled("❌ Cancel", f"playso_exit_cancel:{match_id}", "danger"),
+    ]])
