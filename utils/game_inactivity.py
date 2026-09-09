@@ -167,6 +167,13 @@ async def _expected_users(engine: str, match: Any) -> list[int]:
         if status in {"", "pending", "declined", "expired", "completed", "ended", "timed_out"}:
             return []
         state = m.get("state") or {}
+        if isinstance(state, str):
+            try:
+                state = json.loads(state)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                state = {}
+            if not isinstance(state, dict):
+                state = {}
         stage = str(state.get("stage") or "")
         if status == "accepted" or stage == "pitch":
             return [c]
