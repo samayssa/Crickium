@@ -63,7 +63,7 @@ def bowler_selection_keyboard(match_id: int, players: list[dict], selected_id: i
         role = str(p.get("role") or "")
         eligible = role in {"Bowler", "AllRounder"}
         locked = locked_id is not None and pid == int(locked_id)
-        style = "danger" if (locked or not eligible) else "success"
+        style = "success" if (selected_id is not None and pid == int(selected_id)) else "danger"
         if locked:
             label = f"🚫 {p.get('name', 'Player')} • OVR {int(p.get('bowl_level') or 0)}"
         else:
