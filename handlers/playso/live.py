@@ -273,7 +273,6 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
         # Keep the teams in the same roles they had in the last innings; next over starts with last innings' batting team.
         st=dict(fresh.get("state") or {}); st["previous_bowlers"]=state.get("previous_bowlers") or {}; st["innings_history"]=[]; st["ball_no"]=0
         st["next_super_over_batting_user"]=int(second["batting_team_id"]); st["next_super_over_bowling_user"]=int(second["bowling_team_id"])
-        from database.playso_repo import set_state, set_basic
         await set_state(int(match["match_id"]),st,status="lineup"); await set_basic(int(match["match_id"]),innings_no=1)
         stmatch=await get_match(int(match["match_id"]))
         # Override setup role users with explicit next-over roles.
