@@ -24,12 +24,7 @@ SESSION_UNAVAILABLE_MESSAGE = (
 
 
 async def _get_session_for_user(user_id: int, chat_id: int | None = None):
-    """Resolve the current live in-memory session for a user.
-
-    DB lookup identifies which engine/match the user is currently in. The
-    actual delivery-by-delivery state remains in the in-memory session, so we
-    only resume when that authoritative live session is still present.
-    """
+    """Resolve a live match, restoring runtime state after a process restart."""
     uid = int(user_id)
 
     # Prefer the current chat so /resume in the game group is instantaneous.
@@ -70,27 +65,36 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
     if play_match:
         match_id = int(play_match["match_id"])
         from engines.play_runtime import get_session
-        session = get_session(match_id)
+        from services.game_session_recovery import restore_or_rebuild
+        session = await restore_or_rebuild("PLAY", dict(play_match))
         if session is not None:
             return "PLAY", session
+        if str(play_match.get("status") or "") in {"accepted", "pitch_selected", "toss_done", "lineup"}:
+            return "PLAY_DB", dict(play_match)
         return "PLAY_UNAVAILABLE", play_match
 
     playint_match = await get_playint_active_for_user(uid)
     if playint_match:
         match_id = int(playint_match["match_id"])
         from engines.playint_runtime import get_playint_session
-        session = get_playint_session(match_id)
+        from services.game_session_recovery import restore_or_rebuild
+        session = await restore_or_rebuild("PLAYINT", dict(playint_match))
         if session is not None:
             return "PLAYINT", session
+        if str(playint_match.get("status") or "") in {"accepted", "team_selection", "pitch_selected", "toss_done", "lineup"}:
+            return "PLAYINT_DB", dict(playint_match)
         return "PLAYINT_UNAVAILABLE", playint_match
 
     playipl_match = await get_playipl_active_for_user(uid)
     if playipl_match:
         match_id = int(playipl_match["match_id"])
         from engines.playipl_runtime import get_playipl_session
-        session = get_playipl_session(match_id)
+        from services.game_session_recovery import restore_or_rebuild
+        session = await restore_or_rebuild("PLAYIPL", dict(playipl_match))
         if session is not None:
             return "PLAYIPL", session
+        if str(playipl_match.get("status") or "") in {"accepted", "team_selection", "pitch_selected", "toss_done", "lineup"}:
+            return "PLAYIPL_DB", dict(playipl_match)
         return "PLAYIPL_UNAVAILABLE", playipl_match
 
     playso_match = await get_playso_active_for_user(uid)
@@ -240,6 +244,122 @@ def _render_resume_scorecard(engine: str, session: Any) -> str:
     )
 
 
+
+async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
+    """Refresh a pre-runtime stage directly from its durable match row."""
+    mid = int(match["match_id"])
+    chat_id = int(match["chat_id"])
+    old_mid = match.get("message_id")
+    if old_mid:
+        try:
+            await app.delete_message(chat_id, int(old_mid))
+        except Exception as exc:
+            print(f"[resume] Failed deleting old {engine} stage message: {exc!r}")
+
+    status = str(match.get("status") or "")
+    if engine == "PLAY":
+        if status == "accepted":
+            from handlers.play.pitch import send_pitch_selection
+            await send_pitch_selection(chat_id, match)
+            return True
+        if status == "pitch_selected":
+            from handlers.play.toss import send_toss_call
+            await send_toss_call(chat_id, match)
+            return True
+        if status == "toss_done":
+            from utils.mentions import mention_html
+            from buttons.play_buttons import bat_bowl_keyboard
+            from handlers.play.toss import _toss_result_text
+            winner_id = int(match.get("toss_winner_id") or 0)
+            winner_is_ch = winner_id == int(match["challenger_id"])
+            winner_mention = mention_html(
+                winner_id,
+                match.get("challenger_username") if winner_is_ch else match.get("opponent_username"),
+                match.get("challenger_name") if winner_is_ch else match.get("opponent_name"),
+            )
+            text = _toss_result_text(winner_mention, str(match.get("toss_call") or "heads"), str(match.get("toss_result") or "heads"))
+            sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=bat_bowl_keyboard(mid))
+            await set_play_message_id(mid, sent["message_id"])
+            return True
+        if status == "lineup":
+            from handlers.play.lineup import send_playing_xi
+            await send_playing_xi(chat_id, match)
+            return True
+
+    if engine in {"PLAYINT", "PLAYIPL"}:
+        prefix = engine.lower()
+        if status in {"accepted", "team_selection"} and not match.get("challenger_team_code"):
+            if engine == "PLAYINT":
+                from handlers.playint.teams import send_team_selection
+            else:
+                from handlers.playipl.teams import send_team_selection
+            await send_team_selection(chat_id, match)
+            return True
+        if status in {"accepted", "team_selection"} and match.get("challenger_team_code") and match.get("opponent_team_code"):
+            if status == "team_selection":
+                if engine == "PLAYINT":
+                    from handlers.playint.lineup import send_build_messages
+                else:
+                    from handlers.playipl.lineup import send_build_messages
+                await send_build_messages(chat_id, match)
+                return True
+        if status in {"accepted", "team_selection"} and not (match.get("challenger_team_code") and match.get("opponent_team_code")):
+            if engine == "PLAYINT":
+                from handlers.playint.teams import send_team_selection
+            else:
+                from handlers.playipl.teams import send_team_selection
+            await send_team_selection(chat_id, match)
+            return True
+        if status == "lineup" and not match.get("pitch") and match.get("challenger_xi_confirmed") and match.get("opponent_xi_confirmed"):
+            if engine == "PLAYINT":
+                from handlers.playint.pitch import send_pitch_selection
+            else:
+                from handlers.playipl.pitch import send_pitch_selection
+            await send_pitch_selection(chat_id, match)
+            return True
+        if status == "lineup" and not (match.get("challenger_xi_confirmed") and match.get("opponent_xi_confirmed")):
+            if engine == "PLAYINT":
+                from handlers.playint.lineup import send_build_messages
+            else:
+                from handlers.playipl.lineup import send_build_messages
+            await send_build_messages(chat_id, match)
+            return True
+        if status == "lineup" and match.get("challenger_xi_confirmed") and match.get("opponent_xi_confirmed"):
+            # Decision has already been made; restore_or_rebuild() is expected
+            # to have supplied a runtime session for this state.
+            return False
+        if status == "pitch_selected":
+            if engine == "PLAYINT":
+                from handlers.playint.toss import send_toss_call
+            else:
+                from handlers.playipl.toss import send_toss_call
+            await send_toss_call(chat_id, match)
+            return True
+        if status == "toss_done":
+            from utils.mentions import mention_html
+            from database.playint_teams_repo import team_name as int_team_name
+            from buttons.playint_buttons import decision_keyboard as int_decision_keyboard
+            from buttons.playipl_buttons import decision_keyboard as ipl_decision_keyboard
+            if engine == "PLAYINT":
+                from handlers.playint.toss import _result as toss_result_text
+                winner_team_name = int_team_name(match.get("challenger_team_code") if int(match.get("toss_winner_id") or 0) == int(match["challenger_id"]) else match.get("opponent_team_code"))
+                text = toss_result_text(winner_team_name, match.get("toss_call"), match.get("toss_result"))
+                keyboard = int_decision_keyboard(mid)
+            else:
+                from handlers.playipl.toss import _result as toss_result_text
+                winner_code = match.get("challenger_team_code") if int(match.get("toss_winner_id") or 0) == int(match["challenger_id"]) else match.get("opponent_team_code")
+                text = toss_result_text(winner_code, match.get("toss_call"), match.get("toss_result"))
+                keyboard = ipl_decision_keyboard(mid)
+            if engine == "PLAYINT":
+                setter = set_playint_message_id
+            else:
+                setter = set_playipl_message_id
+            sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+            await setter(mid, sent["message_id"])
+            return True
+    return False
+
+
 async def _update_live_message_id(engine: str, session: Any, message_id: int) -> None:
     try:
         if engine == "PLAY":
@@ -270,6 +390,15 @@ async def resume_command(message):
         return
 
     if engine.endswith("_UNAVAILABLE"):
+        await app.send_message(chat_id, SESSION_UNAVAILABLE_MESSAGE, parse_mode="HTML")
+        return
+
+    if engine.endswith("_DB"):
+        handled = await _resume_db_stage(engine[:-3], dict(session_or_match), user_id)
+        if handled:
+            from utils.game_inactivity import sync_after_change
+            await sync_after_change(engine[:-3], int(session_or_match["match_id"]), user_id)
+            return
         await app.send_message(chat_id, SESSION_UNAVAILABLE_MESSAGE, parse_mode="HTML")
         return
 

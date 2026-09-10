@@ -41,6 +41,13 @@ def register_callback(action):
             actor_id = int((callback_query.get("from") or {}).get("id") or 0)
             if engine and match_id is not None:
                 try:
+                    from services.game_session_recovery import ensure_background_saver, restore_session
+                    ensure_background_saver()
+                    await restore_session(engine, match_id)
+                except Exception as exc:
+                    print(f"[registry] runtime restore failed for {action}: {exc!r}")
+
+                try:
                     from utils.game_inactivity import cancel, game_signature
                     before = await game_signature(engine, match_id)
                     # The user has actively touched the game. Stop their timer
@@ -70,6 +77,11 @@ def register_callback(action):
                     await sync_after_change(engine, match_id, actor_id)
                 except Exception as exc:
                     print(f"[registry] inactivity post-sync failed for {action}: {exc!r}")
+                try:
+                    from services.game_session_recovery import post_callback_sync
+                    await post_callback_sync(engine, match_id)
+                except Exception as exc:
+                    print(f"[registry] runtime snapshot failed for {action}: {exc!r}")
 
             return result
 
