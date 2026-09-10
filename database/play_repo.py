@@ -4,7 +4,7 @@ from database.query import execute, fetchrow
 # occupies the one-match-per-group slot and its two players are considered
 # "in a game". Terminal statuses (declined/completed/ended) are excluded so
 # a finished match never blocks a new /play.
-ACTIVE_STATUSES = ("pending", "accepted", "pitch_selected", "toss_done", "lineup")
+ACTIVE_STATUSES = ("pending", "accepted", "pitch_selected", "toss_done", "lineup", "live")
 
 
 async def create_match(chat_id, challenger_id, challenger_username, challenger_name,
