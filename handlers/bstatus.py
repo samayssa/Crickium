@@ -55,7 +55,7 @@ async def _status_snapshot() -> tuple[str, int, int, int, float, str]:
     return platform.python_version(), total_users, total_players, live_matches, ping_ms, health
 
 
-@register("btstatus")
+@register("bstatus")
 async def bstatus_command(message):
     chat_id = message["chat"]["id"]
 
