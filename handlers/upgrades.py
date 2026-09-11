@@ -14,12 +14,12 @@ from database.special_players_repo import get_special_player_by_id
 from database.players_repo import get_player
 from database.player_upgrades_repo import (
     get_upgrade, get_upgrade_by_name, get_upgrade_tiers, next_owned_tier, owned_upgrade_tier,
-    user_owned_upgrades, purchase_upgrade, equipped_for_player, list_equipped,
+    user_owned_upgrades, purchase_upgrade, level_up_upgrade, equipped_for_player, list_equipped,
     equip_upgrade, unequip_upgrade, load_snapshot_players, persist_snapshot,
 )
 from buttons.upgrade_buttons import (
     shop_filters, category_upgrade_buttons, purchase_keyboard, direct_purchase_keyboard,
-    equip_choices, equip_confirm, unequip_choices, unequip_confirm,
+    equip_choices, equip_confirm, unequip_choices, unequip_confirm, level_up_choices, level_up_confirm,
 )
 from utils.upgrade_prices import upgrade_price
 from services.player_upgrades import UPGRADES, UPGRADE_BY_KEY, eligible_for_player, role_key
@@ -84,14 +84,16 @@ async def _ubuy_category_text(user_id: int, category: str, page: int) -> tuple[s
     lines = [f"<b>╭━━〔 {'🏏 BATTING' if category == 'batting' else '🎯 BOWLING'} UPGRADES 〕━━╮</b>", ""]
     for index, u in enumerate(items[page * 5:(page + 1) * 5], start=1):
         dbu = await get_upgrade(u.key)
-        next_tier = await next_owned_tier(user_id, int(dbu["upgrade_id"]))
-        tier = next_tier or 5
-        price = upgrade_price(tier)
-        rows.append({"upgrade_key": u.key, "name": u.name, "price": price, "tier": tier})
-        status = "MAX" if next_tier is None else f"Tier {tier}"
-        lines.append(f"<b>{index}. {u.name} • 💎 {price:,} • {status}</b>")
+        owned_tier = await owned_upgrade_tier(user_id, int(dbu["upgrade_id"])) if dbu else None
+        price = upgrade_price(1)
+        if owned_tier:
+            status = f"Owned • Tier {int(owned_tier)} • Use /ulevelup"
+        else:
+            status = f"Tier 1 • 💎 {price:,}"
+            rows.append({"upgrade_key": u.key, "name": u.name, "price": price, "tier": 1})
+        lines.append(f"<b>{index}. {u.name} • {status}</b>")
         lines.append(f"<blockquote expandable><b>{_esc(u.description)}</b>\n\n<b>{_esc(u.detail)}</b></blockquote>")
-    lines += ["", f"<b>Page {page + 1} / {total_pages}</b>", "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"]
+    lines += ["", f"Page {page + 1} / {total_pages}", "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"]
     return "\n".join(lines), total_pages, rows
 
 
@@ -281,11 +283,11 @@ async def ubuy_command(message):
     if not u:
         await app.send_message(chat_id, "<b>⚠️ Upgrade not found. Use /ushop to view available upgrades.</b>", parse_mode="HTML")
         return
-    next_tier = await next_owned_tier(uid, int(u["upgrade_id"]))
-    if next_tier is None:
-        await app.send_message(chat_id, "<b>✅ This upgrade is already at Tier V.</b>", parse_mode="HTML")
+    owned_tier = await owned_upgrade_tier(uid, int(u["upgrade_id"]))
+    if owned_tier:
+        await app.send_message(chat_id, f"<b>⚠️ {_esc(u['name'])} is already owned at Tier {int(owned_tier)}.</b>\n\n<b>Use /ulevelup to increase its tier.</b>", parse_mode="HTML")
         return
-    tier = int(next_tier)
+    tier = 1
     definition = UPGRADE_BY_KEY.get(str(u["upgrade_key"]))
     token = _state_put({"kind": "buy", "user_id": uid, "upgrade_key": u["upgrade_key"], "upgrade_id": int(u["upgrade_id"]), "tier": tier, "source": "direct"})
     await app.send_message(chat_id, _upgrade_detail(definition, tier, purchase=True), parse_mode="HTML", reply_markup=direct_purchase_keyboard(token))
@@ -310,10 +312,14 @@ async def on_ubuy_select(callback_query):
         return
     u = UPGRADE_BY_KEY.get(key)
     row = await get_upgrade(key)
-    if not u or not row:
-        await app.answer_callback_query(callback_query["id"], "Upgrade unavailable.", show_alert=True)
+    if not u or not row or tier != 1:
+        await app.answer_callback_query(callback_query["id"], "Only new upgrades can be purchased here. Use /ulevelup for tier upgrades.", show_alert=True)
         return
-    token2 = _state_put({"kind": "buy", "user_id": uid, "upgrade_key": key, "upgrade_id": int(row["upgrade_id"]), "tier": tier, "return": state})
+    already_owned = await owned_upgrade_tier(uid, int(row["upgrade_id"]))
+    if already_owned:
+        await app.answer_callback_query(callback_query["id"], f"Already owned at Tier {int(already_owned)}. Use /ulevelup.", show_alert=True)
+        return
+    token2 = _state_put({"kind": "buy", "user_id": uid, "upgrade_key": key, "upgrade_id": int(row["upgrade_id"]), "tier": 1, "return": state})
     await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], _upgrade_detail(u, tier, purchase=True), parse_mode="HTML", reply_markup=purchase_keyboard(token2))
     await app.answer_callback_query(callback_query["id"])
 
@@ -373,6 +379,154 @@ async def on_ubuy_confirm(callback_query):
         await app.answer_callback_query(callback_query["id"], "That tier is already owned.", show_alert=True)
     else:
         await app.answer_callback_query(callback_query["id"], "Purchase failed. No Rubies were deducted.", show_alert=True)
+
+
+@register("ulevelup")
+async def ulevelup_command(message):
+    """Start the upgrade tier level-up flow."""
+    uid = int((message.get("from") or {}).get("id") or 0)
+    chat_id = int((message.get("chat") or {}).get("id") or 0)
+    owned = await user_owned_upgrades(uid)
+    highest: dict[int, dict[str, Any]] = {}
+    for row in owned:
+        upgrade_id = int(row.get("upgrade_id") or 0)
+        if not upgrade_id:
+            continue
+        current = highest.get(upgrade_id)
+        if current is None or int(row.get("tier") or 0) > int(current.get("tier") or 0):
+            highest[upgrade_id] = row
+
+    levelable = []
+    block_lines = []
+    for row in sorted(highest.values(), key=lambda r: (str(r.get("name") or "").lower(), int(r.get("upgrade_id") or 0))):
+        current_tier = int(row.get("tier") or 1)
+        name = str(row.get("name") or "Upgrade")
+        if current_tier >= 5:
+            block_lines.append(f"⚡ {_esc(name)} • Tier V • MAX")
+            continue
+        next_tier = current_tier + 1
+        price = upgrade_price(next_tier)
+        block_lines.append(f"⚡ {_esc(name)} • Tier {current_tier} → Tier {next_tier} • 💎 {price:,}")
+        levelable.append({
+            "upgrade_id": int(row["upgrade_id"]),
+            "upgrade_key": str(row["upgrade_key"]),
+            "name": name,
+            "current_tier": current_tier,
+            "next_tier": next_tier,
+            "price": price,
+        })
+
+    if not block_lines:
+        block_lines = ["No owned upgrades are available to level up."]
+    text = (
+        "<b>╭━━〔 ⚡ LEVEL UP UPGRADE 〕━━╮</b>\n\n"
+        "<b>Choose your upgrade which you want to level up.</b>\n\n"
+        "<blockquote expandable>" + "\n".join(f"<b>{line}</b>" for line in block_lines) + "</blockquote>"
+        "\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
+    )
+    token = _state_put({"kind": "level_up_list", "user_id": uid, "items": levelable})
+    await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=level_up_choices(levelable, token))
+
+
+@register_callback("ulevel_select")
+async def on_ulevel_select(callback_query):
+    uid = int((callback_query.get("from") or {}).get("id") or 0)
+    parts = str(callback_query.get("data") or "").split(":")
+    if len(parts) != 3:
+        await app.answer_callback_query(callback_query["id"], "Invalid level-up selection.", show_alert=True)
+        return
+    state = _state_take(parts[1], uid, consume=True)
+    if not state or state.get("kind") != "level_up_list":
+        await app.answer_callback_query(callback_query["id"], "This level-up menu has expired.", show_alert=True)
+        return
+    key = parts[2]
+    item = next((x for x in state.get("items", []) if str(x.get("upgrade_key")) == key), None)
+    if not item:
+        await app.answer_callback_query(callback_query["id"], "This upgrade is no longer available for level up.", show_alert=True)
+        return
+    row = await get_upgrade(key)
+    if not row:
+        await app.answer_callback_query(callback_query["id"], "Upgrade unavailable.", show_alert=True)
+        return
+    current_tier = await owned_upgrade_tier(uid, int(row["upgrade_id"]))
+    if current_tier is None:
+        await app.answer_callback_query(callback_query["id"], "You no longer own this upgrade.", show_alert=True)
+        return
+    if int(current_tier) >= 5:
+        await app.answer_callback_query(callback_query["id"], "This upgrade is already at Tier V.", show_alert=True)
+        return
+    next_tier = int(current_tier) + 1
+    price = upgrade_price(next_tier)
+
+    equipped_player = None
+    equipped = await list_equipped(uid)
+    for loadout in equipped:
+        for slot_id, slot_name in ((loadout.get("batting_upgrade_id"), loadout.get("batting_name")), (loadout.get("bowling_upgrade_id"), loadout.get("bowling_name"))):
+            if slot_id is not None and int(slot_id) == int(row["upgrade_id"]):
+                squad = await get_team_squad(uid) or []
+                equipped_player = next((p for p in squad if int(p.get("player_id") or 0) == int(loadout.get("player_id") or 0) and _kind(p) == str(loadout.get("player_kind"))), None)
+                break
+        if equipped_player:
+            break
+
+    details = [
+        f"⚡ {_esc(row['name'])}",
+        f"⭐ Tier {int(current_tier)} → Tier {next_tier}",
+        f"💎 Price: {price:,} Rubies",
+    ]
+    if equipped_player:
+        details.insert(1, f"👤 Player: {_esc(_player_identity_text(equipped_player))}")
+    text = (
+        f"<b>Are you sure you want to level up {_esc(row['name'])}?</b>\n\n"
+        f"<blockquote expandable><b>" + "\n".join(details) + "</b></blockquote>"
+    )
+    token = _state_put({"kind":"level_up","user_id":uid,"upgrade_id":int(row["upgrade_id"]),"upgrade_key":key,"current_tier":int(current_tier),"next_tier":next_tier,"price":price,"player":equipped_player})
+    await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], text, parse_mode="HTML", reply_markup=level_up_confirm(token))
+    await app.answer_callback_query(callback_query["id"])
+
+
+@register_callback("ulevel_confirm")
+async def on_ulevel_confirm(callback_query):
+    uid = int((callback_query.get("from") or {}).get("id") or 0)
+    token = str(callback_query.get("data") or "").split(":")[-1]
+    state = _state_take(token, uid, consume=True)
+    if not state or state.get("kind") != "level_up":
+        await app.answer_callback_query(callback_query["id"], "This level-up request has expired.", show_alert=True)
+        return
+    result = await level_up_upgrade(uid, int(state["upgrade_id"]), int(state["price"]))
+    if result == "success":
+        row = await get_upgrade(str(state["upgrade_key"]))
+        actual_tier = await owned_upgrade_tier(uid, int(state["upgrade_id"])) or int(state["next_tier"])
+        details = [f"⚡ {_esc(row['name'] if row else state['upgrade_key'])}", f"⭐ New Tier: {int(actual_tier)}"]
+        player = state.get("player")
+        if player:
+            details.insert(1, f"👤 Player: {_esc(_player_identity_text(player))}")
+        text = "<b>✅ UPGRADE LEVEL UP SUCCESSFUL</b>\n\n<blockquote expandable><b>" + "\n".join(details) + f"\n💎 -{int(state['price']):,} Rubies</b></blockquote>"
+        await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        await app.answer_callback_query(callback_query["id"], "Upgrade level increased.")
+    elif result == "insufficient":
+        await app.answer_callback_query(callback_query["id"], f"You need {int(state['price']):,} Rubies.", show_alert=True)
+    elif result == "max_tier":
+        await app.answer_callback_query(callback_query["id"], "This upgrade is already at Tier V.", show_alert=True)
+    else:
+        await app.answer_callback_query(callback_query["id"], "Level-up failed. No Rubies were deducted.", show_alert=True)
+
+
+@register_callback("ulevel_cancel")
+async def on_ulevel_cancel(callback_query):
+    uid = int((callback_query.get("from") or {}).get("id") or 0)
+    token = str(callback_query.get("data") or "").split(":")[-1]
+    state = _state_take(token, uid, consume=True)
+    if not state:
+        await app.answer_callback_query(callback_query["id"], "This request has expired.", show_alert=True)
+        return
+    await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], "<b>❌ LEVEL UP CANCELLED</b>\n\n<blockquote expandable><b>No Rubies were spent and no upgrade tier was changed.</b></blockquote>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+    await app.answer_callback_query(callback_query["id"], "Level-up cancelled.")
+
+
+@register_callback("ulevel_noop")
+async def on_ulevel_noop(callback_query):
+    await app.answer_callback_query(callback_query["id"], "All of your owned upgrades are already at Tier V.", show_alert=True)
 
 
 @register("inventory")
