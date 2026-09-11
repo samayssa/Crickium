@@ -83,7 +83,8 @@ async def owned_upgrade_tier(user_id: int, upgrade_id: int) -> int | None:
 
 
 async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int) -> str:
-    if int(tier) not in UPGRADE_RUBY_PRICES or int(price) != int(UPGRADE_RUBY_PRICES[int(tier)]):
+    # /ubuy is reserved for acquiring a new upgrade at Tier I.
+    if int(tier) != 1 or int(price) != int(UPGRADE_RUBY_PRICES[1]):
         return "invalid_purchase"
 
     async def _tx(conn):
@@ -116,6 +117,46 @@ async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int)
             VALUES ($1,$2,$3,'shop');
             """,
             int(user_id), int(upgrade_id), int(tier),
+        )
+        return "success"
+    return await transaction(_tx)
+
+
+async def level_up_upgrade(user_id: int, upgrade_id: int, price: int) -> str:
+    """Atomically purchase the next tier of an already-owned upgrade."""
+    async def _tx(conn):
+        row = await conn.fetchrow("SELECT rubies FROM users WHERE user_id = $1 FOR UPDATE;", int(user_id))
+        if not row:
+            return "user_missing"
+        current_balance = int(row["rubies"] or 0)
+        highest = int(await conn.fetchval(
+            "SELECT MAX(tier) FROM user_player_upgrades WHERE user_id=$1 AND upgrade_id=$2;",
+            int(user_id), int(upgrade_id),
+        ) or 0)
+        if highest <= 0:
+            return "not_owned"
+        if highest >= 5:
+            return "max_tier"
+        next_tier = highest + 1
+        expected_price = int(UPGRADE_RUBY_PRICES[next_tier])
+        if int(price) != expected_price:
+            return "invalid_purchase"
+        if current_balance < expected_price:
+            return "insufficient"
+        exists = await conn.fetchval(
+            "SELECT 1 FROM user_player_upgrades WHERE user_id=$1 AND upgrade_id=$2 AND tier=$3;",
+            int(user_id), int(upgrade_id), int(next_tier),
+        )
+        if exists:
+            return "already_owned"
+        await conn.execute(
+            "UPDATE users SET rubies = rubies - $1 WHERE user_id = $2;",
+            expected_price, int(user_id),
+        )
+        await conn.execute(
+            """INSERT INTO user_player_upgrades(user_id, upgrade_id, tier, source)
+               VALUES ($1,$2,$3,'level_up');""",
+            int(user_id), int(upgrade_id), int(next_tier),
         )
         return "success"
     return await transaction(_tx)
