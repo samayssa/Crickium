@@ -220,13 +220,16 @@ def _apply_pitch_hitting_dampening(weights: dict, pitch: str) -> None:
     weights[0] = max(0.0, float(weights.get(0, 0.0))) + moved * 0.28
 
 
-def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int) -> None:
+def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int, over_number: int = 0) -> None:
     """Keep 18+ and 20+ run overs uncommon without a hard inning score cap.
 
     Once an over is already productive, the final balls are gently de-risked.
     A completed 18+ over makes repeat high overs less likely, and a completed
     20+ over makes another explosive over rarer still.
     """
+    if int(over_number or 0) >= 16:
+        return
+
     current = max(0, int(over_runs or 0))
     high = max(0, int(high_run_overs or 0))
     extreme = max(0, int(very_high_run_overs or 0))
@@ -642,9 +645,9 @@ def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_lev
     # an even matchup. The effect is deliberately bounded for balance.
     level_gap_for_cap = max(0, int(diff or 0))
     if pitch in {"flat", "hard"}:
-        base_cap = 0.030
+        base_cap = 0.050 if pitch_name == "flat" else 0.030
         gap_step = 0.0015
-        max_cap = 0.045
+        max_cap = 0.050 if pitch_name == "flat" else 0.045
     elif pitch in {"green", "dusty", "dry", "slow", "bouncy"}:
         base_cap = 0.060
         gap_step = 0.0020
@@ -1112,7 +1115,7 @@ def _apply_final_wicket_cap(
     pitch_name = str(pitch or "even").strip().lower()
     diff = max(0, int(bowler_level or 0) - int(batter_level or 0))
     if pitch_name in {"flat", "hard"}:
-        base_cap, gap_step, max_cap = 0.030, 0.0015, 0.045
+        base_cap, gap_step, max_cap = ((0.050, 0.0015, 0.050) if pitch_name == "flat" else (0.030, 0.0015, 0.045))
     elif pitch_name in {"green", "dusty", "dry", "slow", "bouncy"}:
         base_cap, gap_step, max_cap = 0.060, 0.0020, 0.080
     else:
@@ -1172,6 +1175,22 @@ def _increase_probability_relative(weights: dict, target_key, relative_increase:
     weights[target_key] = current + delta
 
 
+def _apply_boundary_tuning(weights: dict, *, pitch: str, over_number: int, batsman_balls_faced: int, confidence: float) -> None:
+    """Apply the requested four/six boosts as a final relative tuning layer."""
+    pitch_name = str(pitch or "even").strip().lower()
+    if pitch_name != "flat":
+        for key in (4, 6):
+            if key in weights:
+                weights[key] = max(0.0, float(weights[key])) * 1.05
+
+    # Death overs + genuinely set/high-confidence batter get one additional
+    # 5% relative boundary lift. Set = 16+ legal balls faced; high confidence = 80+.
+    if int(over_number or 0) >= 16 and int(batsman_balls_faced or 0) >= 16 and float(confidence or 0.0) >= 80.0:
+        for key in (4, 6):
+            if key in weights:
+                weights[key] = max(0.0, float(weights[key])) * 1.05
+
+
 def _apply_requested_probability_tuning(
     weights: dict,
     *,
@@ -1188,7 +1207,9 @@ def _apply_requested_probability_tuning(
       redistribute that exact mass into singles/doubles.
     • Wide/no-ball mass is reduced by 45% globally and returned to singles/
       doubles, preventing the existing high-extra issue.
-    • Flat-pitch wicket probability is lifted by 7.5% relative.
+    • Flat-pitch wicket exposure now uses the dedicated 5% final guardrail.
+    • Boundary conversion receives a final 5% tuning layer without replacing
+      the existing pitch/tactic/phase/confidence logic.
     • A no-ball's immediate free-hit is enforced with 0% wicket chance.
     """
     balls = max(0, int(batsman_balls_faced or 0))
@@ -1198,11 +1219,30 @@ def _apply_requested_probability_tuning(
     _reduce_probability_into_rotation(weights, "WD", 0.45, (1, 2))
     _reduce_probability_into_rotation(weights, "NB", 0.45, (1, 2))
 
-    if str(pitch or "even").strip().lower() == "flat":
-        _increase_probability_relative(weights, "W", 0.075)
-
     if free_hit_next_ball:
         _redistribute_excess(weights, "W", 0.0, (0, 1, 2, 3, 4, 6, "WD", "NB", "LB", "BY"))
+
+
+def _set_probability_floor(weights: dict, target_key, target_probability: float) -> None:
+    """Raise one outcome to an exact minimum share of total probability mass."""
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+    current = max(0.0, float(weights.get(target_key, 0.0)))
+    current_p = current / total
+    desired_p = max(0.0, min(0.99, float(target_probability)))
+    if current_p >= desired_p:
+        return
+    delta = (desired_p - current_p) * total
+    non_target = total - current
+    if non_target <= 0:
+        return
+    for key in list(weights):
+        if key == target_key:
+            continue
+        value = max(0.0, float(weights.get(key, 0.0)))
+        weights[key] = value * max(0.0, (non_target - delta) / non_target)
+    weights[target_key] = current + delta
 
 
 def _increase_single_probability_relative(weights: dict, increase: float = 0.12) -> None:
@@ -1309,7 +1349,7 @@ def resolve_weights(
             weights, batter_level, bowler_level, batsman_balls_faced, confidence,
         )
     _apply_tailender_micro(weights, batter_level)
-    _apply_over_run_rarity(weights, over_runs, high_run_overs, very_high_run_overs)
+    _apply_over_run_rarity(weights, over_runs, high_run_overs, very_high_run_overs, over_number)
     _apply_final_wicket_cap(
         weights, pitch, batter_level, bowler_level, batsman_balls_faced,
         int(wickets_this_over or 0),
@@ -1357,9 +1397,24 @@ def resolve_weights(
             int(wickets_this_over or 0),
         )
 
+    # Final isolated boundary tuning.
+    _apply_boundary_tuning(
+        weights,
+        pitch=pitch,
+        over_number=over_number,
+        batsman_balls_faced=batsman_balls_faced,
+        confidence=confidence,
+    )
+
     # Isolated tuning requested for the standard outcome `1` across every
     # pitch condition. No existing matrix or probability rule is rewritten.
     _increase_single_probability_relative(weights, 0.12)
+
+    # Flat pitch uses a standard 5% wicket probability floor. This is the
+    # requested flat-pitch-only tuning; every other pitch keeps its existing
+    # wicket profile unchanged.
+    if str(pitch or "even").strip().lower() == "flat":
+        _set_probability_floor(weights, "W", 0.05)
 
     return {key: max(0.0, value) for key, value in weights.items()}
 
