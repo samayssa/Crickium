@@ -68,6 +68,19 @@ async def next_owned_tier(user_id: int, upgrade_id: int) -> int | None:
     highest = int(highest or 0)
     return highest + 1 if highest < 5 else None
 
+async def owned_upgrade_tier(user_id: int, upgrade_id: int) -> int | None:
+    """Return the authoritative highest tier owned for an upgrade.
+
+    Tiers are cumulative ownership records, while player loadouts store only
+    the upgrade id. Therefore the effective tier must always be resolved from
+    the user's ownership rows and must survive equip/unequip/re-equip cycles.
+    """
+    value = await fetchval(
+        "SELECT MAX(tier) FROM user_player_upgrades WHERE user_id=$1 AND upgrade_id=$2;",
+        int(user_id), int(upgrade_id),
+    )
+    return int(value) if value is not None else None
+
 
 async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int) -> str:
     if int(tier) not in UPGRADE_RUBY_PRICES or int(price) != int(UPGRADE_RUBY_PRICES[int(tier)]):
@@ -112,10 +125,24 @@ async def equipped_for_player(user_id: int, player_id: int, player_kind: str) ->
     row = await fetchrow(
         """
         SELECT l.*, b.upgrade_key AS batting_key, b.name AS batting_name, b.category AS batting_category, b.detail AS batting_detail,
-               bo.upgrade_key AS bowling_key, bo.name AS bowling_name, bo.category AS bowling_category, bo.detail AS bowling_detail
+               bt.tier AS batting_tier,
+               bo.upgrade_key AS bowling_key, bo.name AS bowling_name, bo.category AS bowling_category, bo.detail AS bowling_detail,
+               bo_t.tier AS bowling_tier
         FROM user_player_loadouts l
         LEFT JOIN upgrade_catalog b ON b.upgrade_id = l.batting_upgrade_id
+        LEFT JOIN LATERAL (
+            SELECT uui.tier
+            FROM user_player_upgrades uui
+            WHERE uui.user_id=l.user_id AND uui.upgrade_id=l.batting_upgrade_id
+            ORDER BY uui.tier DESC LIMIT 1
+        ) bt ON TRUE
         LEFT JOIN upgrade_catalog bo ON bo.upgrade_id = l.bowling_upgrade_id
+        LEFT JOIN LATERAL (
+            SELECT uui.tier
+            FROM user_player_upgrades uui
+            WHERE uui.user_id=l.user_id AND uui.upgrade_id=l.bowling_upgrade_id
+            ORDER BY uui.tier DESC LIMIT 1
+        ) bo_t ON TRUE
         WHERE l.user_id = $1 AND l.player_id = $2 AND l.player_kind = $3;
         """,
         int(user_id), int(player_id), player_kind,
@@ -127,10 +154,24 @@ async def list_equipped(user_id: int) -> list[dict[str, Any]]:
     rows = await fetch(
         """
         SELECT l.*, b.name AS batting_name, b.upgrade_key AS batting_key,
-               bo.name AS bowling_name, bo.upgrade_key AS bowling_key
+               bt.tier AS batting_tier,
+               bo.name AS bowling_name, bo.upgrade_key AS bowling_key,
+               bo_t.tier AS bowling_tier
         FROM user_player_loadouts l
         LEFT JOIN upgrade_catalog b ON b.upgrade_id = l.batting_upgrade_id
+        LEFT JOIN LATERAL (
+            SELECT uui.tier
+            FROM user_player_upgrades uui
+            WHERE uui.user_id=l.user_id AND uui.upgrade_id=l.batting_upgrade_id
+            ORDER BY uui.tier DESC LIMIT 1
+        ) bt ON TRUE
         LEFT JOIN upgrade_catalog bo ON bo.upgrade_id = l.bowling_upgrade_id
+        LEFT JOIN LATERAL (
+            SELECT uui.tier
+            FROM user_player_upgrades uui
+            WHERE uui.user_id=l.user_id AND uui.upgrade_id=l.bowling_upgrade_id
+            ORDER BY uui.tier DESC LIMIT 1
+        ) bo_t ON TRUE
         WHERE l.user_id = $1 AND (l.batting_upgrade_id IS NOT NULL OR l.bowling_upgrade_id IS NOT NULL)
         ORDER BY l.player_id;
         """,
@@ -144,12 +185,15 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
         return "invalid_slot"
 
     async def _tx(conn):
-        owned = await conn.fetchval(
-            "SELECT 1 FROM user_player_upgrades WHERE user_id=$1 AND upgrade_id=$2 AND tier=$3;",
-            int(user_id), int(upgrade_id), int(tier),
+        highest_tier = await conn.fetchval(
+            "SELECT MAX(tier) FROM user_player_upgrades WHERE user_id=$1 AND upgrade_id=$2;",
+            int(user_id), int(upgrade_id),
         )
-        if not owned:
+        if highest_tier is None:
             return "not_owned"
+        # The user's highest purchased tier is authoritative. The callback's
+        # tier is only a UI snapshot and must never downgrade the owned level.
+        tier = int(highest_tier)
 
         squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(user_id))
         if not squad_row:
