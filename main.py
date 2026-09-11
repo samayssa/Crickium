@@ -262,16 +262,28 @@ async def handle_message(_, message):
         print("[main.py] Not a command, ignoring.")
         return
 
+    # Only consume commands explicitly addressed to this bot. A command such
+    # as /start@another_bot is another bot's command and must be ignored.
+    first_word = str(text).split()[0] if str(text).split() else ""
+    if "@" in first_word:
+        target_username = first_word.split("@", 1)[1].strip().lower()
+        if target_username:
+            try:
+                me = await app.get_me()
+                bot_username = str(me.get("username") or "").strip().lower() if isinstance(me, dict) else str(getattr(me, "username", "") or "").strip().lower()
+                if bot_username and target_username != bot_username:
+                    print(f"[main.py] Command addressed to another bot '@{target_username}', ignoring.")
+                    return
+            except Exception as exc:
+                print(f"[main.py] Could not resolve bot username for addressed command: {exc!r}")
+                return
+
     handler = COMMANDS.get(command)
     if handler is None:
-        print(f"[main.py] No handler registered for command '/{command}'.")
-        try:
-            await app.send_message(
-                chat.get("id"),
-                f"⚠️ Unknown command: /{command}\nTry /start, /app, /debut, /team, /pxl, /match, or /mybank.",
-            )
-        except Exception:
-            traceback.print_exc()
+        # Unknown commands, a bare slash, and commands belonging to another
+        # bot are intentionally silent. This bot should answer only its own
+        # registered commands.
+        print(f"[main.py] No handler registered for '/{command}', ignoring.")
         return
 
     print(f"[main.py] Dispatching to handler for '/{command}'...")
