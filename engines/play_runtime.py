@@ -181,6 +181,29 @@ def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]
         if without_last:
             eligible = without_last
 
+    # Emergency bowling fallback: only when every natural bowler/all-rounder
+    # has exhausted the four-over quota, allow the bowling user's own batting
+    # players to bowl. The normal bowling pool always takes precedence.
+    if not eligible:
+        fallback_ids = {int(p.get("player_id") or 0) for p in candidates}
+        eligible = [
+            p for p in session.bowling_squad
+            if int(p.get("player_id") or 0) not in fallback_ids
+            and str(p.get("role") or "").strip().lower() in {"batsman", "wicketkeeper"}
+            and bowler_overs_bowled(session, int(p.get("player_id") or 0)) < MAX_OVERS_PER_BOWLER
+        ]
+
+        # If the fallback includes the previous bowler (unlikely but possible
+        # with unusual squad data), keep the same no-consecutive-over rule when
+        # at least one other batter is available.
+        if session.selected_bowler_id is not None and len(eligible) > 1:
+            without_last = [
+                p for p in eligible
+                if int(p.get("player_id") or 0) != int(session.selected_bowler_id)
+            ]
+            if without_last:
+                eligible = without_last
+
     for player in eligible:
         player["_overs_left"] = bowler_overs_left(session, int(player.get("player_id") or 0))
 
