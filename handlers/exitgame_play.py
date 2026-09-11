@@ -30,6 +30,30 @@ def _is_participant(match: dict, user_id: int) -> bool:
     return int(user_id) in (int(match["challenger_id"]), int(match["opponent_id"]))
 
 
+async def _remove_game_option_messages(chat_id: int, match: dict, session=None) -> None:
+    """Delete current setup/live option messages once an exit is confirmed."""
+    ids = set()
+    try:
+        mid = int(match.get("message_id") or 0)
+        if mid:
+            ids.add(mid)
+    except (TypeError, ValueError):
+        pass
+    if session is not None:
+        for attr in ("live_message_id", "ready_message_id", "short_message_id"):
+            try:
+                mid = int(getattr(session, attr, 0) or 0)
+                if mid:
+                    ids.add(mid)
+            except (TypeError, ValueError):
+                pass
+    for mid in ids:
+        try:
+            await app.delete_message(chat_id, mid)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed deleting game option message {mid}: {exc!r}")
+
+
 @register("exitgame")
 async def exitgame_command(message):
     chat_id = message["chat"]["id"]
@@ -130,6 +154,8 @@ async def on_play_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] Failed to award XP/stats for match_id={match_id}: {exc!r}")
 
+    await _remove_game_option_messages(chat_id, match, live_session)
+
     try:
         clear_session(match_id)
     except Exception as exc:
@@ -190,13 +216,8 @@ async def on_playint_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] PlayInt XP/stats failed: {exc!r}")
     session = playint_session
+    await _remove_game_option_messages(chat_id, match, session)
     if session:
-        for mid in {session.live_message_id, session.ready_message_id}:
-            if mid:
-                try:
-                    await app.delete_message(chat_id, mid)
-                except Exception as exc:
-                    print(f"[exitgame_play] Failed to delete PlayInt message {mid}: {exc!r}")
         clear_playint_session(match_id)
     exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
     await app.edit_message_text(chat_id, message_id, ("<b>🏳️ MATCH ENDED\n\n" f"{exiter_mention} exited the game.\n" f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>"), parse_mode="HTML", reply_markup=NO_KEYBOARD)
@@ -285,13 +306,8 @@ async def on_playipl_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] PlayIPL XP/stats failed: {exc!r}")
 
+    await _remove_game_option_messages(chat_id, match, session)
     if session:
-        for mid in {session.live_message_id, session.ready_message_id, session.short_message_id}:
-            if mid:
-                try:
-                    await app.delete_message(chat_id, mid)
-                except Exception as exc:
-                    print(f"[exitgame_play] Failed to delete PlayIPL message {mid}: {exc!r}")
         clear_playipl_session(match_id)
 
     exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
@@ -352,6 +368,8 @@ async def on_playso_exit_yes(callback_query):
         await record_h2h_result(900_000_000_000_000_000 + int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
     except Exception as exc:
         print(f"[exitgame_play] PlaySO XP/stats failed: {exc!r}")
+
+    await _remove_game_option_messages(chat_id, match)
 
     try:
         await set_playso_state(match_id, match.get("state") or {}, status="ended")

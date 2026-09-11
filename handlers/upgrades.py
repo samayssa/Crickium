@@ -13,7 +13,7 @@ from database.squads_repo import get_team_squad
 from database.special_players_repo import get_special_player_by_id
 from database.players_repo import get_player
 from database.player_upgrades_repo import (
-    get_upgrade, get_upgrade_by_name, get_upgrade_tiers, next_owned_tier,
+    get_upgrade, get_upgrade_by_name, get_upgrade_tiers, next_owned_tier, owned_upgrade_tier,
     user_owned_upgrades, purchase_upgrade, equipped_for_player, list_equipped,
     equip_upgrade, unequip_upgrade, load_snapshot_players, persist_snapshot,
 )
@@ -491,7 +491,8 @@ async def on_equip_confirm(callback_query):
     result = await equip_upgrade(uid, int(player.get("player_id") or 0), _kind(player), int(state["upgrade_id"]), int(state["tier"]), str(state["slot"]))
     if result == "success":
         u = UPGRADE_BY_KEY[state["upgrade_key"]]
-        text = f"<b>✅ UPGRADE EQUIPPED</b>\n\n<blockquote expandable><b>🏏 {_esc(player.get('name'))}\n⚡ {_esc(u.name)} • Tier {int(state['tier'])}\n📈 {_esc(u.description)}\n\n{_esc(u.detail)}</b></blockquote>\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
+        actual_tier = await owned_upgrade_tier(uid, int(state["upgrade_id"])) or int(state["tier"])
+        text = f"<b>✅ UPGRADE EQUIPPED</b>\n\n<blockquote expandable><b>🏏 {_esc(player.get('name'))}\n⚡ {_esc(u.name)} • Tier {int(actual_tier)}\n📈 {_esc(u.description)}\n\n{_esc(u.detail)}</b></blockquote>\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
         await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
         await app.answer_callback_query(callback_query["id"], "Upgrade equipped.")
     elif result == "slot_occupied":
@@ -527,9 +528,11 @@ async def equiplist_command(message):
         name = names.get((int(row["player_id"]), row["player_kind"]), "Player")
         upgrades = []
         if row.get("batting_name"):
-            upgrades.append(f"🏏 {row['batting_name']}")
+            tier = int(row.get("batting_tier") or 1)
+            upgrades.append(f"🏏 {row['batting_name']} • Tier {tier}")
         if row.get("bowling_name"):
-            upgrades.append(f"🎯 {row['bowling_name']}")
+            tier = int(row.get("bowling_tier") or 1)
+            upgrades.append(f"🎯 {row['bowling_name']} • Tier {tier}")
         lines.append(f"<b>👤 {name}</b>")
         for u in upgrades:
             lines.append(f"<b>⚡ {u}</b>")
