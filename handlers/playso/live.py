@@ -30,14 +30,18 @@ def _bowler_flow_text(match: dict, state: dict, title: str, body: list[str]) -> 
     mname = match.get("challenger_name") if user == int(match["challenger_id"]) else match.get("opponent_name")
     mun = match.get("challenger_username") if user == int(match["challenger_id"]) else match.get("opponent_username")
     mention=mention_html(user, mun, mname)
-    header=f"<b>╭━━〔 ⚡ PLAYSO • {title} 〕━━╮</b>\n\n👤 {mention}\n\n"
+    origin = str(state.get("origin_engine") or "PLAYSO")
+    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL"}.get(origin, "PLAYSO")
+    header=f"<b>╭━━〔 ⚡ {mode_title} • SUPER OVER • {title} 〕━━╮</b>\n\n👤 {mention}\n\n"
     return header + "\n".join(body) + "\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
 
 
 def _batter_flow_text(match: dict, state: dict, title: str, body: list[str]) -> str:
     user=int(state.get("batting_user") or 0)
     mention=mention_html(user, match.get("challenger_username") if user == int(match["challenger_id"]) else match.get("opponent_username"), match.get("challenger_name") if user == int(match["challenger_id"]) else match.get("opponent_name"))
-    return f"<b>╭━━〔 🏏 PLAYSO • {title} 〕━━╮</b>\n\n👤 {mention}\n\n" + "\n".join(body) + "\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
+    origin = str(state.get("origin_engine") or "PLAYSO")
+    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL"}.get(origin, "PLAYSO")
+    return f"<b>╭━━〔 🏏 {mode_title} • SUPER OVER • {title} 〕━━╮</b>\n\n👤 {mention}\n\n" + "\n".join(body) + "\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
 
 
 def _score_lines(state: dict) -> list[str]:
@@ -280,6 +284,14 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
         await start_setup(chat_id,dict(stmatch),1)
         return
     winner=int(second["batting_team_id"] if second_runs>first_runs else history_first["batting_team_id"])
+    if (match.get("state") or {}).get("origin_engine") and (match.get("state") or {}).get("origin_match_id"):
+        try:
+            from services.super_over_bridge import finalize_decider
+            await finalize_decider(dict(match), history, winner)
+        except Exception as exc:
+            print(f"[playso] Origin match finalization failed: {exc!r}")
+        await set_state(int(match["match_id"]), {**state, "innings_history": history, "winner_id": winner}, "completed")
+        return
     loser=int(match["opponent_id"] if winner==int(match["challenger_id"]) else match["challenger_id"])
     from database.user_stats_repo import record_match_result, record_h2h_result
     try:

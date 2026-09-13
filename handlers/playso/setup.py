@@ -28,7 +28,9 @@ def _users_for_innings(match: dict, innings_no: int):
 
 def _bowler_text(match: dict, batting_id: int, bowling_id: int, players: list[dict], selected: int | None = None, locked: int | None = None) -> str:
     bowling_mention = mention_html(bowling_id, match.get("challenger_username") if bowling_id == int(match["challenger_id"]) else match.get("opponent_username"), match.get("challenger_name") if bowling_id == int(match["challenger_id"]) else match.get("opponent_name"))
-    lines = ["<b>╭━━〔 🎯 PLAYSO • BOWLER SELECT 〕━━╮</b>", "", f"👤 {bowling_mention}", "", "<b>Choose your one bowler for this Super Over.</b>", ""]
+    mode = str((match.get("state") or {}).get("origin_engine") or "PLAYSO")
+    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL"}.get(mode, "PLAYSO")
+    lines = [f"<b>╭━━〔 🎯 {mode_title} • SUPER OVER • BOWLER SELECT 〕━━╮</b>", "", f"👤 {bowling_mention}", "", "<b>Choose your one bowler for this Super Over.</b>", ""]
     if selected:
         p = next((x for x in players if int(x.get("player_id") or 0) == int(selected)), None)
         if p:
@@ -41,7 +43,9 @@ def _bat_text(match: dict, batting_id: int, bowling_id: int, players: list[dict]
     batting_mention = mention_html(batting_id, match.get("challenger_username") if batting_id == int(match["challenger_id"]) else match.get("opponent_username"), match.get("challenger_name") if batting_id == int(match["challenger_id"]) else match.get("opponent_name"))
     slot = {pid: i+1 for i,pid in enumerate(selected)}
     chosen = [next((p for p in players if int(p.get("player_id") or 0)==pid), None) for pid in selected]
-    lines = ["<b>╭━━〔 🏏 PLAYSO • BATTERS 〕━━╮</b>", "", f"👤 {batting_mention}", "", "<b>Select your three batters:</b>", ""]
+    mode = str((match.get("state") or {}).get("origin_engine") or "PLAYSO")
+    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL"}.get(mode, "PLAYSO")
+    lines = [f"<b>╭━━〔 🏏 {mode_title} • SUPER OVER • BATTERS 〕━━╮</b>", "", f"👤 {batting_mention}", "", "<b>Select your three batters:</b>", ""]
     for i, p in enumerate(chosen, start=1):
         if p:
             role = "STRIKER" if i==1 else "NON-STRIKER" if i==2 else "ONE-DOWN"
