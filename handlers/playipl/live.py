@@ -41,6 +41,7 @@ from database.playipl_teams_repo import team_name, team_color, team_short
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
 from handlers.registry import register_callback
+from services.super_over_bridge import build_draw_result_text, start_decider
 from utils.game_inactivity import sync_after_change
 
 NO_KEYBOARD = {"inline_keyboard": []}
@@ -693,8 +694,20 @@ async def _finish_over_and_prompt_next(session) -> None:
         innings_2_snapshot = snapshot_innings(session)
         innings_1_snapshot = session.innings_history[0] if session.innings_history else innings_2_snapshot
         winner_id, margin = match_winner(innings_1_snapshot, innings_2_snapshot)
-        winner = (innings_1_snapshot["batting_team_display"] if winner_id == innings_1_snapshot["batting_team_id"]
-                  else innings_2_snapshot["batting_team_display"]) if winner_id is not None else "MATCH TIED"
+        if winner_id is None:
+            draw_text = build_draw_result_text(innings_1_snapshot, innings_2_snapshot, top_batters, top_bowlers)
+            await _safe_send(session.chat_id, draw_text, parse_mode="HTML")
+            await asyncio.sleep(3)
+            await start_decider(
+                origin_engine="PLAYIPL",
+                origin_match_id=int(session.match_id),
+                chat_id=int(session.chat_id),
+                origin_match=dict(session.match),
+                innings_1=innings_1_snapshot,
+                innings_2=innings_2_snapshot,
+            )
+            return
+        winner = innings_1_snapshot["batting_team_display"] if winner_id == innings_1_snapshot["batting_team_id"] else innings_2_snapshot["batting_team_display"]
         potm_name = player_of_the_match(innings_1_snapshot, innings_2_snapshot)
         match_result_text = _match_result_text(innings_1_snapshot, innings_2_snapshot)
         await _safe_send(session.chat_id, match_result_text, parse_mode="HTML")
