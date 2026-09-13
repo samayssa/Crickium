@@ -171,7 +171,10 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         result_box[2] - round(120 * scale_x), result_box[3] - round(4 * scale_y),
     )
     draw.rectangle(erase_box, fill=(2, 6, 8))
-    winner_text = f"{_team_name(winner)} WON BY {margin}".strip().upper()
+    if str(margin or "").strip().upper() == "IN SUPER OVER":
+        winner_text = f"{_team_name(winner)} WON IN SUPER OVER".strip().upper()
+    else:
+        winner_text = f"{_team_name(winner)} WON BY {margin}".strip().upper()
     _text(draw, winner_text, result_box, COLORS["gold"], FONT_SIZES["result"], bold=True, align="center")
     potm = potm or {}
     details = f"{int(potm.get('runs') or 0)} ({int(potm.get('balls') or 0)})"
