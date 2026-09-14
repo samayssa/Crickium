@@ -2,15 +2,30 @@ from __future__ import annotations
 import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from utils.PremiumEmoji import get_ipl_team_emoji
+
 _PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
 _SUPPORTS_STYLE = 'style' in _PARAMS
+_SUPPORTS_ICON = 'icon_custom_emoji_id' in _PARAMS
 _HINT = {'success': '🟢', 'danger': '🔴', 'primary': '🔵'}
 
 
-def _b(text, data, style='primary'):
+def _b(text, data, style='primary', icon_custom_emoji_id=None, fallback_text=None):
+    """Build a button, using a custom icon when the installed client supports it.
+
+    The fallback text retains the existing Unicode emoji styling when custom
+    emoji button icons are unavailable in the installed Telegram client.
+    """
+    if _SUPPORTS_ICON and icon_custom_emoji_id:
+        kwargs = {'callback_data': data, 'icon_custom_emoji_id': str(icon_custom_emoji_id)}
+        if _SUPPORTS_STYLE:
+            kwargs['style'] = style
+        return InlineKeyboardButton(text, **kwargs)
+
+    label = fallback_text if fallback_text is not None else text
     if _SUPPORTS_STYLE:
-        return InlineKeyboardButton(text, callback_data=data, style=style)
-    return InlineKeyboardButton(f"{_HINT.get(style, '')} {text}".strip(), callback_data=data)
+        return InlineKeyboardButton(label, callback_data=data, style=style)
+    return InlineKeyboardButton(f"{_HINT.get(style, '')} {label}".strip(), callback_data=data)
 
 
 def challenge_keyboard(match_id):
@@ -24,13 +39,28 @@ def challenge_keyboard(match_id):
 
 def team_keyboard(match_id):
     from database.playipl_teams_repo import TEAM_ORDER, team_button_label
+
     # Ten franchises: two compact buttons per row, no pagination.
+    # Prefer the configured Telegram custom-emoji logo for each team.
+    # If the installed client does not expose icon_custom_emoji_id, the
+    # original Unicode team emoji remains the exact fallback.
     rows = []
     for i in range(0, len(TEAM_ORDER), 2):
-        rows.append([
-            _b(team_button_label(code), f'playipl_team:{match_id}:{code}', 'primary')
-            for code in TEAM_ORDER[i:i + 2]
-        ])
+        row = []
+        for code in TEAM_ORDER[i:i + 2]:
+            code = str(code).upper()
+            custom_id = get_ipl_team_emoji(code)
+            fallback_label = team_button_label(code)
+            label = code if custom_id and _SUPPORTS_ICON else fallback_label
+            row.append(_b(
+                label,
+                f'playipl_team:{match_id}:{code}',
+                'primary',
+                icon_custom_emoji_id=custom_id,
+                fallback_text=fallback_label,
+            ))
+        rows.append(row)
+
     return InlineKeyboardMarkup(rows)
 
 
