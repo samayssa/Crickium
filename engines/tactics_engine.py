@@ -220,45 +220,21 @@ def _apply_pitch_hitting_dampening(weights: dict, pitch: str) -> None:
     weights[0] = max(0.0, float(weights.get(0, 0.0))) + moved * 0.28
 
 
-def _apply_over_run_rarity(
-    weights: dict,
-    over_runs: int,
-    high_run_overs: int,
-    very_high_run_overs: int,
-    over_number: int = 0,
-    batsman_balls_faced: int = 0,
-    confidence: float = 0.0,
-) -> None:
-    """Keep 18+ and 20+ run overs rare without a hard innings score cap.
+def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int, over_number: int = 0) -> None:
+    """Keep 18+ and 20+ run overs uncommon without a hard inning score cap.
 
-    The rarity system deliberately has only two score thresholds now: 18+
-    and 20+ runs. There is no 13+/15+ run rarity layer.
-
-    Overs 1-15 keep the established rarity behavior. In overs 16-19, a
-    genuinely settled/high-confidence batter gets a 30% *reduction of the
-    rarity suppression* once they have faced at least six legal balls. In the
-    20th over, a genuinely settled/high-confidence batter (80+ confidence,
-    16+ balls faced) gets a stronger 55% reduction of that suppression.
-    Batters who do not meet those confidence/balls-faced gates retain the
-    normal rarity behavior throughout the innings.
+    Once an over is already productive, the final balls are gently de-risked.
+    A completed 18+ over makes repeat high overs less likely, and a completed
+    20+ over makes another explosive over rarer still.
     """
-    over = int(over_number or 0)
+    if int(over_number or 0) >= 16:
+        return
+
     current = max(0, int(over_runs or 0))
     high = max(0, int(high_run_overs or 0))
     extreme = max(0, int(very_high_run_overs or 0))
-    balls = max(0, int(batsman_balls_faced or 0))
-    conf = max(0.0, min(100.0, float(confidence or 0.0)))
 
-    # Existing repeat-high-over rarity remains active in overs 1-15.
-    # It is only softened in the death phase for an appropriately settled
-    # batter.
     repeat_scale = (0.75 ** high) * (0.45 ** extreme)
-
-    if 16 <= over <= 19 and balls >= 6 and conf >= 60.0:
-        repeat_scale = 1.0 - (1.0 - repeat_scale) * 0.70
-    elif over >= 20 and balls >= 16 and conf >= 80.0:
-        repeat_scale = 1.0 - (1.0 - repeat_scale) * 0.45
-
     if repeat_scale < 1.0:
         for key in (4, 6):
             old = max(0.0, float(weights.get(key, 0.0)))
@@ -267,22 +243,16 @@ def _apply_over_run_rarity(
             weights[1] = max(0.0, float(weights.get(1, 0.0))) + freed * 0.70
             weights[0] = max(0.0, float(weights.get(0, 0.0))) + freed * 0.30
 
-    # Once the current over is at 18+, keep the established strong rarity
-    # suppression. At 20+, make it slightly stricter as the extreme band.
-    # No lower 8/12/15-run rarity stages are applied anymore.
-    if current >= 20:
+    if current >= 18:
         score_scale = 0.03
-    elif current >= 18:
-        score_scale = 0.08
+    elif current >= 15:
+        score_scale = 0.15
+    elif current >= 12:
+        score_scale = 0.30
+    elif current >= 8:
+        score_scale = 0.55
     else:
         score_scale = 1.0
-
-    # High-confidence late-innings batters only get a partial relaxation of
-    # that suppression. Normal/low-confidence batters keep the full rarity.
-    if 16 <= over <= 19 and balls >= 6 and conf >= 60.0:
-        score_scale = 1.0 - (1.0 - score_scale) * 0.70
-    elif over >= 20 and balls >= 16 and conf >= 80.0:
-        score_scale = 1.0 - (1.0 - score_scale) * 0.45
 
     if score_scale >= 1.0:
         return
@@ -1275,31 +1245,6 @@ def _set_probability_floor(weights: dict, target_key, target_probability: float)
     weights[target_key] = current + delta
 
 
-def _reduce_boundaries_relative(weights: dict, reduction: float = 0.03) -> None:
-    """Reduce 4/6 boundary mass by a small relative amount on every pitch.
-
-    The freed probability is returned to ordinary scoring outcomes so the
-    total weight remains unchanged. The adjustment is pitch-agnostic and is
-    applied after upgrades/boundary tuning, so the requested reduction is
-    guaranteed to affect every standard match pitch in both innings.
-    """
-    factor = max(0.0, min(1.0, 1.0 - float(reduction)))
-    boundary_mass = max(0.0, float(weights.get(4, 0.0))) + max(0.0, float(weights.get(6, 0.0)))
-    if boundary_mass <= 0.0:
-        return
-
-    old4 = max(0.0, float(weights.get(4, 0.0)))
-    old6 = max(0.0, float(weights.get(6, 0.0)))
-    new4 = old4 * factor
-    new6 = old6 * factor
-    freed = (old4 - new4) + (old6 - new6)
-
-    weights[4] = new4
-    weights[6] = new6
-    weights[1] = max(0.0, float(weights.get(1, 0.0))) + freed * 0.70
-    weights[0] = max(0.0, float(weights.get(0, 0.0))) + freed * 0.30
-
-
 def _increase_single_probability_relative(weights: dict, increase: float = 0.12) -> None:
     """Increase the normalized probability of outcome `1` by a relative 12%.
 
@@ -1404,15 +1349,7 @@ def resolve_weights(
             weights, batter_level, bowler_level, batsman_balls_faced, confidence,
         )
     _apply_tailender_micro(weights, batter_level)
-    _apply_over_run_rarity(
-        weights,
-        over_runs,
-        high_run_overs,
-        very_high_run_overs,
-        over_number,
-        batsman_balls_faced,
-        confidence,
-    )
+    _apply_over_run_rarity(weights, over_runs, high_run_overs, very_high_run_overs, over_number)
     _apply_final_wicket_cap(
         weights, pitch, batter_level, bowler_level, batsman_balls_faced,
         int(wickets_this_over or 0),
@@ -1468,11 +1405,6 @@ def resolve_weights(
         batsman_balls_faced=batsman_balls_faced,
         confidence=confidence,
     )
-
-    # Final 3% relative boundary reduction across every pitch condition.
-    # This is intentionally after upgrades and the existing boundary tuning
-    # so the requested reduction is consistent in both innings.
-    _reduce_boundaries_relative(weights, 0.03)
 
     # Isolated tuning requested for the standard outcome `1` across every
     # pitch condition. No existing matrix or probability rule is rewritten.
