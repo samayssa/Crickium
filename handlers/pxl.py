@@ -7,10 +7,11 @@ import html
 from handlers.registry import register
 from app import app
 from engines.lineup_engine import load_current_xi
-from database.user_stats_repo import ensure_franchise_name
 from database.captain_repo import get_captain_id
 from utils.country_flags import flag_for
 from utils.debut_gate import validate_playing_xi
+from utils.PremiumEmoji import ovr_emoji_html
+from utils.user_identity import get_user_identity, inline_identity
 
 
 async def _captain_id(players: list[dict], user_id: int) -> int | None:
@@ -21,9 +22,19 @@ async def _captain_id(players: list[dict], user_id: int) -> int | None:
     return captain_id if captain_id in player_ids else None
 
 
+def _overall(player: dict) -> int:
+    return max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
+
+
+def _team_ovr(xi: list[dict]) -> int:
+    if not xi:
+        return 0
+    return int(round(sum(_overall(player) for player in xi) / len(xi)))
+
+
 def _line(player: dict, number: int, icon: str, captain_id: int | None) -> str:
     name = html.escape(str(player.get("name") or "Player"))
-    level = max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
+    level = _overall(player)
     flag = flag_for(player.get("country"))
     cap = " 🧢" if captain_id and int(player.get("player_id") or 0) == captain_id else ""
     return f"{number}. {name} • {level} {flag} {icon}{cap}"
@@ -65,7 +76,7 @@ def _team_status(xi: list[dict]) -> tuple[bool, str]:
     return False, "Not Valid — " + ", ".join(reasons)
 
 
-def _render_pxl(xi: list[dict], team_name: str, captain_id: int | None = None) -> str:
+def _render_pxl(xi: list[dict], team_identity: str, captain_id: int | None = None) -> str:
     raw_batsmen = [p for p in xi if p.get("role") == "Batsman"]
     keepers = [p for p in xi if str(p.get("role") or "") == "Wicketkeeper"]
     keepers.extend(p for p in raw_batsmen if p.get("is_wicketkeeper"))
@@ -78,31 +89,29 @@ def _render_pxl(xi: list[dict], team_name: str, captain_id: int | None = None) -
 
     lines = [
         "╭━━━〔 🏏 PLAYING XI 〕━━━╮",
+        f"➤ {team_identity} • 👥 {len(xi)}/11",
+        f"➤ {ovr_emoji_html()} Team OVR: {_team_ovr(xi)}",
         "",
-        f"➤ <b>{html.escape(team_name)}</b>",
-        f"➤ 👥 <b>Players:</b> {len(xi)}/11",
-        "",
-        "<blockquote>",
-        "<b>🏏 Batsmen</b>",
+        "<blockquote>🏏 Batsmen",
     ]
     for i, player in enumerate(batsmen, start=1):
         lines.append(f"├ {_line(player, i, '🏏', captain_id)}")
     lines.append("</blockquote>")
 
-    lines += ["", "<blockquote>", "<b>🧤 Wicket-Keeper</b>"]
+    lines += ["", "<blockquote>🧤 Wicket-Keeper"]
     for i, player in enumerate(keepers, start=len(batsmen) + 1):
         prefix = "╰" if i == len(batsmen) + len(keepers) else "├"
         lines.append(f"{prefix} {_line(player, i, '🧤', captain_id)}")
     lines.append("</blockquote>")
 
-    lines += ["", "<blockquote>", "<b>🔄 All-Rounders</b>"]
+    lines += ["", "<blockquote>🔄 All-Rounders"]
     start = len(batsmen) + len(keepers) + 1
     for idx, player in enumerate(allrounders, start=start):
         prefix = "╰" if idx == len(batsmen) + len(keepers) + len(allrounders) else "├"
         lines.append(f"{prefix} {_line(player, idx, '🔄', captain_id)}")
     lines.append("</blockquote>")
 
-    lines += ["", "<blockquote>", "<b>⚡ Bowlers</b>"]
+    lines += ["", "<blockquote>⚡ Bowlers"]
     start = len(batsmen) + len(keepers) + len(allrounders) + 1
     for idx, player in enumerate(bowlers, start=start):
         prefix = "╰" if idx == 11 else "├"
@@ -110,7 +119,8 @@ def _render_pxl(xi: list[dict], team_name: str, captain_id: int | None = None) -
     lines += [
         "</blockquote>",
         "",
-        "➤ 📋 <b>Full Squad:</b> /squad",
+        f"➤ 📊 Team Status: {html.escape(_team_status(xi)[1])}",
+        "➤ 📋 Full Squad: /squad",
         "",
         "╰━━━━━━━━━━━━━━━━━━╯",
     ]
@@ -126,16 +136,9 @@ async def pxl_command(message):
 
     xi = await load_current_xi(user_id) or []
     xi = xi[:11]
-    valid, _ = validate_playing_xi(xi)
-    _, status_text = _team_status(xi)
+    validate_playing_xi(xi)
 
-    team_name = await ensure_franchise_name(user_id, first_name)
+    identity = await get_user_identity(user_id, first_name)
     captain_id = await _captain_id(xi, user_id)
-    report = _render_pxl(xi, team_name, captain_id)
-    full_squad_marker = "➤ 📋 <b>Full Squad:</b> /squad"
-    report = report.replace(
-        full_squad_marker,
-        f"➤ 📊 <b>Team Status:</b> {html.escape(status_text)}\n\n{full_squad_marker}",
-        1,
-    )
+    report = _render_pxl(xi, inline_identity(identity), captain_id)
     await app.send_message(chat_id, report, parse_mode="HTML")
