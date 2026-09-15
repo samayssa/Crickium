@@ -417,6 +417,22 @@ async def migrate():
     print("[migrate] Ensuring 'users.franchise_name' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS franchise_name TEXT;")
     print("[migrate] 'users.franchise_name' OK.")
+    print("[migrate] Ensuring user team-logo fields exist...")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS team_logo_type TEXT;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS team_logo_id TEXT;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS team_logo_fallback TEXT;")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS team_logo_requests(
+            token TEXT PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            logo_type TEXT NOT NULL,
+            logo_id TEXT NOT NULL,
+            logo_fallback TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_team_logo_requests_user ON team_logo_requests(user_id);")
+    print("[migrate] user team-logo fields/table OK.")
 
     print("[migrate] Ensuring index for level/xp leaderboard ranking exists...")
     await execute("CREATE INDEX IF NOT EXISTS idx_users_level_xp ON users(level DESC, xp DESC);")
