@@ -121,6 +121,17 @@ def _wrap_message(message: Any | None) -> dict:
     return wrapped
 
 
+
+
+def _contains_custom_emoji_markup(text: str | None) -> bool:
+    return bool(text and "<tg-emoji" in str(text).lower())
+
+
+def _strip_custom_emoji_markup(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return re.sub(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", r"\1", str(text), flags=re.IGNORECASE | re.DOTALL)
+
 def _wrap_http_message(result: dict) -> dict:
     """Same shape as _wrap_message(), but built from a raw HTTP Bot API
     JSON response instead of a pyrogram object."""
@@ -327,15 +338,25 @@ class App:
         print(f"[app.py] send_message -> chat_id={chat_id} text={text!r}")
 
         markup_json = _reply_markup_to_json(reply_markup)
-        if _markup_has_style(markup_json):
-            print("[app.py] send_message -> routing through raw HTTP Bot API for colored buttons")
+        if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text):
+            print("[app.py] send_message -> routing through raw HTTP Bot API")
             payload = {"chat_id": chat_id, "text": text, "reply_markup": markup_json}
             raw_mode = _raw_parse_mode(parse_mode)
             if raw_mode:
                 payload["parse_mode"] = raw_mode
-            result = await _resilient(
-                lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(http)",
-            )
+            try:
+                result = await _resilient(
+                    lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(http)",
+                )
+            except Exception as exc:
+                if _contains_custom_emoji_markup(text):
+                    print(f"[app.py] Custom emoji send failed; using Unicode fallback: {exc!r}")
+                    payload["text"] = _strip_custom_emoji_markup(text)
+                    result = await _resilient(
+                        lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(fallback)",
+                    )
+                else:
+                    raise
             return _wrap_http_message(result)
 
         msg = await _resilient(
@@ -353,15 +374,25 @@ class App:
         print(f"[app.py] edit_message_text -> chat_id={chat_id} message_id={message_id} text={text!r}")
 
         markup_json = _reply_markup_to_json(reply_markup)
-        if _markup_has_style(markup_json):
-            print("[app.py] edit_message_text -> routing through raw HTTP Bot API for colored buttons")
+        if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text):
+            print("[app.py] edit_message_text -> routing through raw HTTP Bot API")
             payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "reply_markup": markup_json}
             raw_mode = _raw_parse_mode(parse_mode)
             if raw_mode:
                 payload["parse_mode"] = raw_mode
-            result = await _resilient(
-                lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(http)",
-            )
+            try:
+                result = await _resilient(
+                    lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(http)",
+                )
+            except Exception as exc:
+                if _contains_custom_emoji_markup(text):
+                    print(f"[app.py] Custom emoji edit failed; using Unicode fallback: {exc!r}")
+                    payload["text"] = _strip_custom_emoji_markup(text)
+                    result = await _resilient(
+                        lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(fallback)",
+                    )
+                else:
+                    raise
             return _wrap_http_message(result)
 
         msg = await _resilient(
@@ -428,26 +459,33 @@ class App:
         print(f"[app.py] send_photo -> chat_id={chat_id} caption={caption!r}")
 
         markup_json = _reply_markup_to_json(reply_markup)
-        if _markup_has_style(markup_json):
-            print("[app.py] send_photo -> routing through raw HTTP Bot API for colored buttons")
-            form = aiohttp.FormData()
-            form.add_field("chat_id", str(chat_id))
-            if caption:
-                form.add_field("caption", caption)
-            raw_mode = _raw_parse_mode(parse_mode)
-            if raw_mode:
-                form.add_field("parse_mode", raw_mode)
-            form.add_field("reply_markup", _json.dumps(markup_json))
-            if isinstance(photo, (bytes, bytearray)):
-                form.add_field("photo", bytes(photo), filename="image.png", content_type="image/png")
-            elif hasattr(photo, "read"):
-                photo.seek(0)
-                form.add_field("photo", photo.read(), filename="image.png", content_type="image/png")
-            else:
-                form.add_field("photo", str(photo))
-            result = await _resilient(
-                lambda: self._call_bot_api("sendPhoto", data=form), label="send_photo(http)",
-            )
+        if _markup_has_style(markup_json) or _contains_custom_emoji_markup(caption):
+            print("[app.py] send_photo -> routing through raw HTTP Bot API")
+            async def _send_photo_http(caption_value):
+                form = aiohttp.FormData()
+                form.add_field("chat_id", str(chat_id))
+                if caption_value:
+                    form.add_field("caption", caption_value)
+                raw_mode = _raw_parse_mode(parse_mode)
+                if raw_mode:
+                    form.add_field("parse_mode", raw_mode)
+                form.add_field("reply_markup", _json.dumps(markup_json))
+                if isinstance(photo, (bytes, bytearray)):
+                    form.add_field("photo", bytes(photo), filename="image.png", content_type="image/png")
+                elif hasattr(photo, "read"):
+                    photo.seek(0)
+                    form.add_field("photo", photo.read(), filename="image.png", content_type="image/png")
+                else:
+                    form.add_field("photo", str(photo))
+                return await self._call_bot_api("sendPhoto", data=form)
+            try:
+                result = await _resilient(lambda: _send_photo_http(caption), label="send_photo(http)")
+            except Exception as exc:
+                if _contains_custom_emoji_markup(caption):
+                    print(f"[app.py] Custom emoji photo caption failed; using Unicode fallback: {exc!r}")
+                    result = await _resilient(lambda: _send_photo_http(_strip_custom_emoji_markup(caption)), label="send_photo(fallback)")
+                else:
+                    raise
             return _wrap_http_message(result)
 
         if isinstance(photo, (bytes, bytearray)):
@@ -501,19 +539,26 @@ class App:
         print(f"[app.py] edit_message_caption -> chat_id={chat_id} message_id={message_id}")
 
         markup_json = _reply_markup_to_json(reply_markup)
-        if _markup_has_style(markup_json):
-            print("[app.py] edit_message_caption -> routing through raw HTTP Bot API for colored buttons")
-            form = aiohttp.FormData()
-            form.add_field("chat_id", str(chat_id))
-            form.add_field("message_id", str(message_id))
-            form.add_field("caption", caption)
-            raw_mode = _raw_parse_mode(parse_mode)
-            if raw_mode:
-                form.add_field("parse_mode", raw_mode)
-            form.add_field("reply_markup", _json.dumps(markup_json))
-            result = await _resilient(
-                lambda: self._call_bot_api("editMessageCaption", data=form), label="edit_message_caption(http)",
-            )
+        if _markup_has_style(markup_json) or _contains_custom_emoji_markup(caption):
+            print("[app.py] edit_message_caption -> routing through raw HTTP Bot API")
+            async def _edit_caption_http(caption_value):
+                form = aiohttp.FormData()
+                form.add_field("chat_id", str(chat_id))
+                form.add_field("message_id", str(message_id))
+                form.add_field("caption", caption_value)
+                raw_mode = _raw_parse_mode(parse_mode)
+                if raw_mode:
+                    form.add_field("parse_mode", raw_mode)
+                form.add_field("reply_markup", _json.dumps(markup_json))
+                return await self._call_bot_api("editMessageCaption", data=form)
+            try:
+                result = await _resilient(lambda: _edit_caption_http(caption), label="edit_message_caption(http)")
+            except Exception as exc:
+                if _contains_custom_emoji_markup(caption):
+                    print(f"[app.py] Custom emoji caption edit failed; using Unicode fallback: {exc!r}")
+                    result = await _resilient(lambda: _edit_caption_http(_strip_custom_emoji_markup(caption)), label="edit_message_caption(fallback)")
+                else:
+                    raise
             return _wrap_http_message(result)
 
         msg = await _resilient(
