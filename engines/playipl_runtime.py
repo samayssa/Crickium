@@ -276,7 +276,7 @@ def _run_rate_line(session: PlaySession) -> str:
 
 def _profile_team_line(session: PlaySession, batting: bool) -> str:
     from utils.mentions import mention_name_only_html
-    from database.playipl_teams_repo import team_short
+    from database.playipl_teams_repo import team_short_label
     match = session.match
     if batting:
         uid = int(session.batting_team_id)
@@ -294,7 +294,7 @@ def _profile_team_line(session: PlaySession, batting: bool) -> str:
         else:
             mention = mention_name_only_html(match.get('opponent_id'), match.get('opponent_name'))
             code = match.get('opponent_team_code')
-    return f"{mention} • {team_short(code)}"
+    return f"{mention} • {team_short_label(code)}"
 
 
 def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) -> str:
