@@ -340,7 +340,9 @@ class App:
         markup_json = _reply_markup_to_json(reply_markup)
         if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text):
             print("[app.py] send_message -> routing through raw HTTP Bot API")
-            payload = {"chat_id": chat_id, "text": text, "reply_markup": markup_json}
+            payload = {"chat_id": chat_id, "text": text}
+            if markup_json is not None:
+                payload["reply_markup"] = markup_json
             raw_mode = _raw_parse_mode(parse_mode)
             if raw_mode:
                 payload["parse_mode"] = raw_mode
@@ -376,7 +378,9 @@ class App:
         markup_json = _reply_markup_to_json(reply_markup)
         if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text):
             print("[app.py] edit_message_text -> routing through raw HTTP Bot API")
-            payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "reply_markup": markup_json}
+            payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+            if markup_json is not None:
+                payload["reply_markup"] = markup_json
             raw_mode = _raw_parse_mode(parse_mode)
             if raw_mode:
                 payload["parse_mode"] = raw_mode
@@ -423,7 +427,8 @@ class App:
                     media["parse_mode"] = raw_mode
             form.add_field("media", _json.dumps(media))
             if reply_markup is not None:
-                form.add_field("reply_markup", _json.dumps(markup_json))
+                if markup_json is not None:
+                    form.add_field("reply_markup", _json.dumps(markup_json))
             if isinstance(photo, (bytes, bytearray)):
                 form.add_field("edited_photo", bytes(photo), filename="image.png", content_type="image/png")
             else:
@@ -469,7 +474,8 @@ class App:
                 raw_mode = _raw_parse_mode(parse_mode)
                 if raw_mode:
                     form.add_field("parse_mode", raw_mode)
-                form.add_field("reply_markup", _json.dumps(markup_json))
+                if markup_json is not None:
+                    form.add_field("reply_markup", _json.dumps(markup_json))
                 if isinstance(photo, (bytes, bytearray)):
                     form.add_field("photo", bytes(photo), filename="image.png", content_type="image/png")
                 elif hasattr(photo, "read"):
@@ -549,7 +555,8 @@ class App:
                 raw_mode = _raw_parse_mode(parse_mode)
                 if raw_mode:
                     form.add_field("parse_mode", raw_mode)
-                form.add_field("reply_markup", _json.dumps(markup_json))
+                if markup_json is not None:
+                    form.add_field("reply_markup", _json.dumps(markup_json))
                 return await self._call_bot_api("editMessageCaption", data=form)
             try:
                 result = await _resilient(lambda: _edit_caption_http(caption), label="edit_message_caption(http)")
