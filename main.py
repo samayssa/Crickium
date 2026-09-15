@@ -88,6 +88,37 @@ def _pyro_document_to_dict(document: Any | None) -> dict | None:
 def _pyro_message_to_dict(message: Any | None) -> dict:
     if message is None:
         return {}
+    entities = []
+    for entity in (getattr(message, "entities", None) or []) + (getattr(message, "caption_entities", None) or []):
+        entities.append({
+            "type": str(getattr(entity, "type", "")),
+            "offset": int(getattr(entity, "offset", 0) or 0),
+            "length": int(getattr(entity, "length", 0) or 0),
+            "custom_emoji_id": getattr(entity, "custom_emoji_id", None),
+            "url": getattr(entity, "url", None),
+        })
+
+    sticker_obj = getattr(message, "sticker", None)
+    sticker = None
+    if sticker_obj is not None:
+        sticker = {
+            "file_id": getattr(sticker_obj, "file_id", None),
+            "file_unique_id": getattr(sticker_obj, "file_unique_id", None),
+            "emoji": getattr(sticker_obj, "emoji", None),
+            "set_name": getattr(sticker_obj, "set_name", None),
+            "is_animated": bool(getattr(sticker_obj, "is_animated", False)),
+            "is_video": bool(getattr(sticker_obj, "is_video", False)),
+        }
+
+    voice_obj = getattr(message, "voice", None)
+    voice = None
+    if voice_obj is not None:
+        voice = {
+            "file_id": getattr(voice_obj, "file_id", None),
+            "file_unique_id": getattr(voice_obj, "file_unique_id", None),
+            "duration": getattr(voice_obj, "duration", None),
+        }
+
     data = {
         "message_id": int(getattr(message, "id", 0) or 0),
         "date": int(getattr(message, "date", 0).timestamp()) if getattr(message, "date", None) else None,
@@ -96,8 +127,10 @@ def _pyro_message_to_dict(message: Any | None) -> dict:
         "text": getattr(message, "text", None) or getattr(message, "caption", None) or "",
         "photo": _pyro_photo_to_dict(getattr(message, "photo", None)),
         "document": _pyro_document_to_dict(getattr(message, "document", None)),
+        "sticker": sticker,
+        "voice": voice,
         "new_chat_members": [_pyro_user_to_dict(u) for u in (getattr(message, "new_chat_members", None) or [])],
-        "entities": [],
+        "entities": entities,
     }
     reply = getattr(message, "reply_to_message", None)
     if reply is not None:
