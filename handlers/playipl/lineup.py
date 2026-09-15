@@ -39,7 +39,7 @@ def _valid(players):
 def _build_text(code,players,selected):
     c=_role_counts([p for p in players if int(p.get('player_id') or 0) in selected])
     status='✅ Team Valid' if _valid([p for p in players if int(p.get('player_id') or 0) in selected]) else '⚠️ Team Invalid'
-    lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_name(code).upper()} ({code})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
+    lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_label(code).upper()} ({code})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
     chosen=_chosen_in_order(players, selected)
     lines.extend([p.get('name','Player') for p in chosen])
     lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
@@ -53,7 +53,7 @@ async def send_build_messages(chat_id,match):
     for uid,field,code,is_ch in [(match['challenger_id'],'challenger_xi',match['challenger_team_code'],True),(match['opponent_id'],'opponent_xi',match['opponent_team_code'],False)]:
         players=await _players(code)
         if len(players) < 11:
-            await app.send_message(chat_id, f'<b>⚠️ {team_name(code)} ({code}) does not have at least 11 uploaded players.</b>', parse_mode='HTML')
+            await app.send_message(chat_id, f'<b>⚠️ {team_label(code)} ({code}) does not have at least 11 uploaded players.</b>', parse_mode='HTML')
             return
         sent=await app.send_message(chat_id,_build_text(code,players,[]),parse_mode='HTML',reply_markup=_xi_keyboard(match['match_id'],code,players,[],is_ch));
         # Separate build messages are retained; store latest one for cleanup only.
@@ -145,7 +145,7 @@ async def playipl_xi_confirm(callback_query):
     await app.send_message(callback_query['message']['chat']['id'],preview,parse_mode='HTML')
     await asyncio.sleep(1)
     player_mention=mention_html(uid, callback_query['from'].get('username'), callback_query['from'].get('first_name'))
-    team=team_name(code); bench=[]
+    team=team_label(code); bench=[]
     for p in players:
         if int(p.get('player_id') or 0) not in selected: bench.append(p)
         if len(bench)>=5: break

@@ -37,7 +37,7 @@ from engines.playipl_runtime import (
 from services.search import find_stadium_image_url
 from services.match_summary import send_match_summary, player_details
 from utils.mentions import mention_html
-from database.playipl_teams_repo import team_name, team_color, team_short
+from database.playipl_teams_repo import team_name, team_color, team_short, team_label, team_short_label
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
 from handlers.registry import register_callback
@@ -85,7 +85,7 @@ def _match_ready_text(match: dict[str, Any]) -> str:
     winner = int(match.get("toss_winner_id") or 0)
     toss_name = a if winner == int(match["challenger_id"]) else o
     t1, t2 = team_name(match["challenger_team_code"]).upper(), team_name(match["opponent_team_code"]).upper()
-    f1, f2 = team_color(match["challenger_team_code"]), team_color(match["opponent_team_code"])
+    f1, f2 = __import__("utils.PremiumEmoji", fromlist=["ipl_team_emoji_html"]).ipl_team_emoji_html(match["challenger_team_code"]), __import__("utils.PremiumEmoji", fromlist=["ipl_team_emoji_html"]).ipl_team_emoji_html(match["opponent_team_code"])
     decision = "BAT" if str(match.get("decision") or "").lower() == "bat" else "BOWL"
     return ("<b>╭━━〔 🏏 IPL MATCH READY 〕━━╮</b>\n\n"
             "<b>🏆 Indian Premier League • 20 Overs</b>\n\n"
@@ -380,7 +380,7 @@ def _impact_text(session: Any) -> str:
             continue
         xi, bench = _impact_players(session, code)
         st = state[code]
-        chunks.append(f'{label} <b>{mention} • {team_name(code).upper()} ({team_short(code)})</b>')
+        chunks.append(f'{label} <b>{mention} • {team_label(code).upper()} ({team_short(code)})</b>')
         if st.get('done'):
             chunks.append('✅ <b>Impact Player confirmed.</b>')
         elif st.get('stage') == 'in':
