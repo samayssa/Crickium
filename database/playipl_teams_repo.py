@@ -50,8 +50,15 @@ def team_color(code: str) -> str:
 
 
 def team_label(code: str) -> str:
+    from utils.PremiumEmoji import ipl_team_emoji_html
     code = str(code).upper()
-    return f"{team_color(code)} {team_name(code)}"
+    return f"{ipl_team_emoji_html(code)} {team_name(code)}"
+
+
+def team_short_label(code: str) -> str:
+    from utils.PremiumEmoji import ipl_team_emoji_html
+    code = str(code).upper()
+    return f"{ipl_team_emoji_html(code)} {team_short(code)}"
 
 
 def team_button_label(code: str) -> str:
