@@ -294,14 +294,14 @@ async def _rebuild_team_engine(engine: str, match: dict) -> Any | None:
         from database.playipl_repo import get_teams_player_ids
         from engines.playipl_runtime import create_playipl_session
         engine_key = "IPL"
-        from database.playipl_teams_repo import team_name
+        from database.playipl_teams_repo import team_name, team_label
         challenger_ids = match.get("challenger_xi") or []
         opponent_ids = match.get("opponent_xi") or []
         if isinstance(challenger_ids, str): challenger_ids = json.loads(challenger_ids)
         if isinstance(opponent_ids, str): opponent_ids = json.loads(opponent_ids)
         c_squad = await get_teams_player_ids(match["challenger_team_code"], challenger_ids)
         o_squad = await get_teams_player_ids(match["opponent_team_code"], opponent_ids)
-        names = team_name
+        names = team_label
 
     challenger_id = int(match["challenger_id"]); opponent_id = int(match["opponent_id"]); toss_winner_id = int(match["toss_winner_id"])
     decision = str(match["decision"]).lower()

@@ -83,6 +83,8 @@ def _text(draw, text, box, color, size, *, bold=False, align="left"):
 def _team_name(value: Any) -> str:
     """Return a clean plain-text team name without unsupported emoji/symbols."""
     raw = str(value or "TEAM").replace("\n", " ").strip()
+    import re
+    raw = re.sub(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", r"\1", raw, flags=re.IGNORECASE | re.DOTALL)
     cleaned = []
     for ch in raw:
         # Regional-indicator flags, pictographs, dingbats and symbol fonts can

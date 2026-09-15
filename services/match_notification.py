@@ -33,7 +33,8 @@ def _pitch(value) -> str:
 def _score(snapshot: dict | None) -> str:
     if not snapshot:
         return 'Not available'
-    team = html.escape(str(snapshot.get('batting_team_display') or snapshot.get('batting_team_name') or 'Team'))
+    team_raw = str(snapshot.get('batting_team_display') or snapshot.get('batting_team_name') or 'Team')
+    team = team_raw if '<tg-emoji' in team_raw.lower() else html.escape(team_raw)
     return f"{team} • {int(snapshot.get('runs') or 0)}/{int(snapshot.get('wickets') or 0)} ({snapshot.get('over_text') or '0.0'} Ov)"
 
 
