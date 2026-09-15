@@ -6,6 +6,9 @@ IPL franchise logos.  Callers can import IPL_TEAM_EMOJIS or get_ipl_team_emoji.
 
 from __future__ import annotations
 
+OVR_EMOJI_ID = "5370784581341422520"
+
+
 IPL_TEAM_EMOJIS: dict[str, str] = {
     "CSK": "6233466459670978723",
     "DC": "6231082473648823467",
@@ -51,3 +54,8 @@ def ipl_team_emoji_html(team_code: str) -> str:
     if custom_id:
         return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
     return fallback
+
+
+def ovr_emoji_html() -> str:
+    """Return the custom emoji used for OVR labels, with a safe fallback."""
+    return f'<tg-emoji emoji-id="{OVR_EMOJI_ID}">⭐</tg-emoji>'
