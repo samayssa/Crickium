@@ -122,6 +122,24 @@ TABLES = {
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "referrals": """
+        CREATE TABLE IF NOT EXISTS referrals(
+            referral_id BIGSERIAL PRIMARY KEY,
+            referrer_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            referred_id BIGINT NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','completed')),
+            debut_completed BOOLEAN NOT NULL DEFAULT FALSE,
+            claim_completed BOOLEAN NOT NULL DEFAULT FALSE,
+            game_completed BOOLEAN NOT NULL DEFAULT FALSE,
+            reward_number INTEGER,
+            reward_coins BIGINT NOT NULL DEFAULT 0,
+            reward_rubies BIGINT NOT NULL DEFAULT 0,
+            reward_players JSONB NOT NULL DEFAULT '[]'::jsonb,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """,
     "match_challenges": """
         CREATE TABLE IF NOT EXISTS match_challenges(
             challenge_id SERIAL PRIMARY KEY,
@@ -437,6 +455,9 @@ async def migrate():
     print("[migrate] Ensuring index for level/xp leaderboard ranking exists...")
     await execute("CREATE INDEX IF NOT EXISTS idx_users_level_xp ON users(level DESC, xp DESC);")
     print("[migrate] idx_users_level_xp OK.")
+    await execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer_status ON referrals(referrer_id, status, created_at);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_referrals_referred_status ON referrals(referred_id, status);")
+    print("[migrate] referral indexes OK.")
 
     # --- Tier card images uploaded via '/upload_img <tier>' (bronze/silver/gold/...) ---
     print("[migrate] Ensuring table 'tier_card_images' exists...")

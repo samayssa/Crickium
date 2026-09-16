@@ -6,6 +6,7 @@ from database.query import execute
 CLEAR_TABLES = [
     "player_claims",
     "team_lineups",
+    "referrals",
     "match_challenges",
     "matches",
     "player_stats",
