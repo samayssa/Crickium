@@ -160,3 +160,9 @@ async def debut_command(message):
         _render_debut_message(squad, first_name, user_id, is_new=True),
         parse_mode="HTML",
     )
+
+    try:
+        from services.referrals import refresh_referral_progress
+        await refresh_referral_progress(int(user_id))
+    except Exception as exc:
+        print(f"[debut] Referral progress update failed for user_id={user_id}: {exc!r}")

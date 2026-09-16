@@ -7,6 +7,7 @@ from app import app
 from config import ADMIN_USER_ID, NOTIFICATION_GROUP_ID
 from database.query import execute, fetchval
 from utils.user_notification import format_user_notification
+from services.referrals import create_referral
 
 CRICKIUM_GROUP_URL = "https://t.me/CrickiumHub"
 SUPPORT_URL = "https://t.me/CrickiumUpdates"
@@ -125,16 +126,34 @@ async def start_command(message):
         print("[start_dm] Missing user_id or chat_id; ignoring /start.")
         return
 
-    # Same "only genuinely first time" pattern used for the group-added
-    # notification: check BEFORE saving, so a returning user re-running
-    # /start never re-fires the notification.
+    # Referral eligibility is decided BEFORE inserting/updating the user row.
+    # This is important: once /start saves the user, a later referral link must
+    # not retroactively turn an existing account into a new referral.
     already_known = await fetchval("SELECT 1 FROM users WHERE user_id = $1 LIMIT 1;", int(user_id))
+    existing_squad = await fetchval("SELECT 1 FROM team_squads WHERE user_id = $1 LIMIT 1;", int(user_id))
+
+    start_parts = str(message.get("text") or "").split()
+    referral_payload = start_parts[1].strip() if len(start_parts) > 1 else ""
+    referrer_id = None
+    if referral_payload.lower().startswith("ref_"):
+        raw_referrer = referral_payload[4:]
+        if raw_referrer.isdigit():
+            candidate = int(raw_referrer)
+            if candidate != int(user_id) and already_known is None and existing_squad is None:
+                referrer_id = candidate
 
     await save_user(
         user_id,
         user.get("username"),
         first_name,
     )
+
+    if referrer_id is not None:
+        try:
+            created = await create_referral(referrer_id, int(user_id))
+            print(f"[start_dm] Referral registration for referred_id={user_id}, referrer_id={referrer_id}: {created}")
+        except Exception as exc:
+            print(f"[start_dm] Referral registration failed for user_id={user_id}: {exc!r}")
 
     if already_known is None:
         try:

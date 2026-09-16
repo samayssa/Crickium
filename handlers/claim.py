@@ -429,6 +429,12 @@ async def on_claim_retain(callback_query):
     else:
         await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
 
+    try:
+        from services.referrals import refresh_referral_progress
+        await refresh_referral_progress(int(presser["id"]))
+    except Exception as exc:
+        print(f"[claim] Referral progress update failed for user_id={presser['id']}: {exc!r}")
+
 
 @register_callback("claim_release")
 async def on_claim_release(callback_query):
