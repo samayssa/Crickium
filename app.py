@@ -334,13 +334,15 @@ class App:
         # Pyrogram is event-driven. This method stays only for backward compatibility.
         return []
 
-    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None, disable_web_page_preview=False):
         print(f"[app.py] send_message -> chat_id={chat_id} text={text!r}")
 
         markup_json = _reply_markup_to_json(reply_markup)
         if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text):
             print("[app.py] send_message -> routing through raw HTTP Bot API")
             payload = {"chat_id": chat_id, "text": text}
+            if disable_web_page_preview:
+                payload["link_preview_options"] = {"is_disabled": True}
             if markup_json is not None:
                 payload["reply_markup"] = markup_json
             raw_mode = _raw_parse_mode(parse_mode)
@@ -367,6 +369,7 @@ class App:
                 text=text,
                 parse_mode=_parse_mode(parse_mode),
                 reply_markup=_convert_reply_markup(reply_markup),
+                **({"link_preview_options": {"is_disabled": True}} if disable_web_page_preview else {}),
             ),
             label="send_message",
         )
