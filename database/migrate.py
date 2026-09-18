@@ -308,6 +308,95 @@ TABLES = {
             created_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    # Auction-tournament creation layer. This is deliberately isolated from
+    # the existing match-engine tables; later auction bidding/match logic can
+    # consume these records without changing Play, PlayIPL or PlayInt.
+    "auction_tournaments": """
+        CREATE TABLE IF NOT EXISTS auction_tournaments(
+            tournament_id BIGSERIAL PRIMARY KEY,
+            creator_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            creator_username TEXT,
+            creator_name TEXT,
+            engine_key TEXT NOT NULL DEFAULT 'PLAYIPL',
+            tournament_code TEXT NOT NULL DEFAULT 'IPL',
+            tournament_name TEXT NOT NULL DEFAULT 'Indian Premier League',
+            auction_mode BOOLEAN NOT NULL DEFAULT TRUE,
+            status TEXT NOT NULL DEFAULT 'select_mode',
+            creation_chat_id BIGINT NOT NULL,
+            overview_message_id BIGINT,
+            prompt_message_id BIGINT,
+            prize_coins BIGINT NOT NULL DEFAULT 0,
+            prize_rubies BIGINT NOT NULL DEFAULT 0,
+            prize_player JSONB,
+            prize_breakdown JSONB NOT NULL DEFAULT '[]'::jsonb,
+            pool_preview JSONB,
+            pool_errors JSONB,
+            pool_count INTEGER NOT NULL DEFAULT 0,
+            player_count INTEGER NOT NULL DEFAULT 0,
+            host_group_id BIGINT,
+            host_group_name TEXT,
+            host_group_username TEXT,
+            group_registration_message_id BIGINT,
+            self_registration_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMP
+        );
+    """,
+    "auction_tournament_teams": """
+        CREATE TABLE IF NOT EXISTS auction_tournament_teams(
+            tournament_team_id BIGSERIAL PRIMARY KEY,
+            tournament_id BIGINT NOT NULL REFERENCES auction_tournaments(tournament_id) ON DELETE CASCADE,
+            team_code TEXT NOT NULL,
+            team_name TEXT NOT NULL,
+            owner_user_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+            owner_username TEXT,
+            owner_name TEXT,
+            ownership_source TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE(tournament_id, team_code),
+            UNIQUE(tournament_id, owner_user_id)
+        );
+    """,
+    "auction_tournament_pools": """
+        CREATE TABLE IF NOT EXISTS auction_tournament_pools(
+            pool_id BIGSERIAL PRIMARY KEY,
+            tournament_id BIGINT NOT NULL REFERENCES auction_tournaments(tournament_id) ON DELETE CASCADE,
+            pool_no INTEGER NOT NULL,
+            pool_name TEXT NOT NULL,
+            base_price BIGINT NOT NULL CHECK(base_price > 0),
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE(tournament_id, pool_no),
+            UNIQUE(tournament_id, pool_name)
+        );
+    """,
+    "auction_tournament_pool_players": """
+        CREATE TABLE IF NOT EXISTS auction_tournament_pool_players(
+            pool_player_id BIGSERIAL PRIMARY KEY,
+            tournament_id BIGINT NOT NULL REFERENCES auction_tournaments(tournament_id) ON DELETE CASCADE,
+            pool_id BIGINT NOT NULL REFERENCES auction_tournament_pools(pool_id) ON DELETE CASCADE,
+            identity_key TEXT NOT NULL,
+            player_id BIGINT,
+            special_player_id BIGINT,
+            player_name TEXT NOT NULL,
+            edition TEXT,
+            is_special BOOLEAN NOT NULL DEFAULT FALSE,
+            ovr INTEGER NOT NULL DEFAULT 0,
+            country TEXT,
+            role TEXT,
+            bat_level INTEGER NOT NULL DEFAULT 0,
+            bowl_level INTEGER NOT NULL DEFAULT 0,
+            batting_hand TEXT,
+            bowling_hand TEXT,
+            base_price BIGINT,
+            status TEXT NOT NULL DEFAULT 'available',
+            sold_to_user_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+            sold_price BIGINT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE(tournament_id, identity_key)
+        );
+    """,
 }
 
 
@@ -334,6 +423,12 @@ async def migrate():
     print("[migrate] Ensuring unique index on special-edition identity...")
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_special_edition_identity ON special_edition_players(LOWER(name), LOWER(edition));")
     await execute("CREATE INDEX IF NOT EXISTS idx_special_edition_name ON special_edition_players(LOWER(name));")
+    await execute("CREATE INDEX IF NOT EXISTS idx_auction_tournaments_creator_status ON auction_tournaments(creator_id, status, tournament_id DESC);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_auction_tournaments_group_status ON auction_tournaments(host_group_id, status, tournament_id DESC);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_auction_team_owner ON auction_tournament_teams(tournament_id, owner_user_id);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_auction_pool_players_tournament ON auction_tournament_pool_players(tournament_id, pool_id, status);")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auction_active_creator_draft ON auction_tournaments(creator_id) WHERE status IN ('select_mode','await_prize','confirm_prize','overview','await_pool','confirm_pool','ask_group','await_group','confirm_group','final_confirm');")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auction_tournament_team_owner_nonnull ON auction_tournament_teams(tournament_id, owner_user_id) WHERE owner_user_id IS NOT NULL;")
     print("[migrate] special-edition indexes OK.")
 
     print("[migrate] Ensuring 'player_claims.chat_id' column exists...")
