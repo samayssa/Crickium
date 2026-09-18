@@ -13,6 +13,7 @@ from config import API_HASH, API_ID, BOT_TOKEN
 from app import app
 import handlers  # noqa: F401 - import side effects register commands/callbacks
 from handlers.registry import COMMANDS, CALLBACKS
+from handlers.tournament import handle_non_command_message
 from config import ADMIN_USER_ID, NOTIFICATION_GROUP_ID
 from database.query import fetchval
 from utils.group_notification import format_group_notification
@@ -292,6 +293,17 @@ async def handle_message(_, message):
 
     command = parse_command(text)
     if command is None:
+        reply = payload.get("reply_to_message") or {}
+        reply_from = reply.get("from") or {}
+        if reply and bool(reply_from.get("is_bot")):
+            try:
+                consumed = await handle_non_command_message(payload)
+                if consumed:
+                    print("[main.py] Non-command message consumed by tournament flow.")
+                    return
+            except Exception:
+                print("[main.py] Tournament non-command dispatch failed:")
+                traceback.print_exc()
         print("[main.py] Not a command, ignoring.")
         return
 
