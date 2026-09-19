@@ -891,14 +891,43 @@ async def handle_tournament_reply(message: dict) -> bool:
     if status == "await_prize":
         parsed, error = parse_prize_input(text)
         if error:
-            await app.edit_message_text(chat_id, reply_id, render_prize_prompt(error), parse_mode="HTML", reply_markup=cancel_keyboard(draft_id))
+            try:
+                await app.edit_message_text(
+                    chat_id, reply_id, render_prize_prompt(error),
+                    parse_mode="HTML", reply_markup=cancel_keyboard(draft_id),
+                )
+            except Exception as exc:
+                print(f"[auction_tournament] prize validation prompt edit failed: {exc!r}")
+                sent = await app.send_message(
+                    chat_id, render_prize_prompt(error),
+                    parse_mode="HTML", reply_markup=cancel_keyboard(draft_id),
+                )
+                await update_tournament(draft_id, prompt_message_id=int(sent["message_id"]))
             return True
+
         player, player_error = await resolve_owned_prize_player(user_id, parsed["player_query"])
         if player_error:
-            await app.edit_message_text(chat_id, reply_id, render_prize_prompt(player_error), parse_mode="HTML", reply_markup=cancel_keyboard(draft_id))
+            try:
+                await app.edit_message_text(
+                    chat_id, reply_id, render_prize_prompt(player_error),
+                    parse_mode="HTML", reply_markup=cancel_keyboard(draft_id),
+                )
+            except Exception as exc:
+                print(f"[auction_tournament] prize-player prompt edit failed: {exc!r}")
+                sent = await app.send_message(
+                    chat_id, render_prize_prompt(player_error),
+                    parse_mode="HTML", reply_markup=cancel_keyboard(draft_id),
+                )
+                await update_tournament(draft_id, prompt_message_id=int(sent["message_id"]))
             return True
+
         parsed["player"] = player
         breakdown = build_prize_breakdown(parsed["coins"], parsed["rubies"], player)
+
+        # Valid input advances the state atomically first. The old prompt and
+        # the creator's reply are then removed, and a brand-new confirmation
+        # message becomes the next reply target. This avoids edits against a
+        # message that Telegram may have stale reply metadata for.
         await update_tournament(
             draft_id,
             status="confirm_prize",
@@ -906,15 +935,26 @@ async def handle_tournament_reply(message: dict) -> bool:
             prize_rubies=int(parsed["rubies"]),
             prize_player=player,
             prize_breakdown=breakdown,
-            prompt_message_id=reply_id,
+            prompt_message_id=0,
         )
-        await app.edit_message_text(
+        try:
+            await app.delete_message(chat_id, reply_id)
+        except Exception as exc:
+            print(f"[auction_tournament] prize prompt delete failed: {exc!r}")
+        submitted_id = int(message.get("message_id") or 0)
+        if submitted_id:
+            try:
+                await app.delete_message(chat_id, submitted_id)
+            except Exception as exc:
+                print(f"[auction_tournament] prize reply delete failed: {exc!r}")
+
+        sent = await app.send_message(
             chat_id,
-            reply_id,
             render_prize_confirmation(parsed),
             parse_mode="HTML",
             reply_markup=confirm_prize_keyboard(draft_id),
         )
+        await update_tournament(draft_id, prompt_message_id=int(sent["message_id"]))
         return True
 
     return False
