@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from handlers.registry import register
 from app import app
 from config import ADMIN_USER_ID
-from database.backup_repo import export_tables, FULL_BACKUP_TABLES
+from database.backup_repo import export_tables, BACKUP_FORMAT_VERSION
 
 
 async def _is_admin(user_id: int | None) -> bool:
@@ -24,24 +24,35 @@ async def sync_command(message):
         return
 
     print(f"[sync] /sync invoked by user_id={user_id}")
-    await app.send_message(chat_id, "⏳ Building a full backup...")
+    await app.send_message(
+        chat_id,
+        "⏳ Building a complete database backup (all public application tables)...",
+    )
 
     try:
-        backup_bytes = await export_tables(FULL_BACKUP_TABLES, backup_type="sync")
+        # None is intentional: database.backup_repo resolves the full current
+        # table set directly from PostgreSQL, so new tables cannot be silently
+        # forgotten when the schema evolves.
+        backup_bytes = await export_tables(None, backup_type="sync")
     except Exception as exc:
         print(f"[sync] Backup failed: {exc!r}")
-        await app.send_message(chat_id, f"❌ *Backup failed.*\n`{exc}`", parse_mode="Markdown")
+        await app.send_message(
+            chat_id,
+            f"❌ *Backup failed.*\n`{exc}`",
+            parse_mode="Markdown",
+        )
         return
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     await app.send_document(
         chat_id,
         backup_bytes,
-        filename=f"cricklum_full_backup_{timestamp}.json.gz",
+        filename=f"cricklum_full_backup_v{BACKUP_FORMAT_VERSION}_{timestamp}.json.gz",
         caption=(
-            "🗂 *Full database backup.*\n"
-            "Reply to this file with /recover any time to restore the bot to this exact state."
+            "🗂 *Complete database backup.*\n"
+            "Includes every current public application table (including runtime/game recovery tables).\n"
+            "Reply to this file with /recover to restore the exact database state represented by this backup."
         ),
         parse_mode="Markdown",
     )
-    print(f"[sync] Backup sent to user_id={user_id}, {len(backup_bytes)} bytes")
+    print(f"[sync] Full backup sent to user_id={user_id}, {len(backup_bytes)} bytes")

@@ -26,13 +26,15 @@ async def recover_command(message):
     if not reply_to or not document or not document.get("file_id"):
         await app.send_message(
             chat_id,
-            "⚠️ Please use /recover as a reply to a backup document "
-            "sent by /cleardata or /sync.",
+            "⚠️ Please use /recover as a reply to a backup document sent by /cleardata or /sync.",
         )
         return
 
     print(f"[recover] /recover invoked by user_id={user_id}, file_id={document['file_id'][:20]}...")
-    await app.send_message(chat_id, "⏳ Restoring from backup...")
+    await app.send_message(
+        chat_id,
+        "⏳ Restoring database from backup... Please do not use game/economy commands until this finishes.",
+    )
 
     try:
         raw_bytes = await app.download_media(document["file_id"])
@@ -41,16 +43,17 @@ async def recover_command(message):
         print(f"[recover] Restore failed: {exc!r}")
         await app.send_message(
             chat_id,
-            f"❌ *Restore failed.*\n`{exc}`\n\nMake sure this is a genuine backup file from /cleardata or /sync.",
+            f"❌ *Restore failed.*\n`{exc}`\n\nNo partial transaction should have been committed.",
             parse_mode="Markdown",
         )
         return
 
+    total_rows = sum(results.values())
     lines = [f"• `{table}` — {count} row(s)" for table, count in results.items()]
     summary = "\n".join(lines) if lines else "_(no tables in this backup)_"
     await app.send_message(
         chat_id,
-        f"✅ *Restore completed.*\n\n{summary}",
+        f"✅ *Restore completed.*\n\n{len(results)} tables restored, {total_rows} total rows.\n\n{summary}",
         parse_mode="Markdown",
     )
     print(f"[recover] Restore completed by user_id={user_id}: {results}")
