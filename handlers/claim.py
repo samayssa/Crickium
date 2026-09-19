@@ -133,6 +133,178 @@ async def _claim_attempt_gate(conn, user_id: int):
     return None
 
 
+async def _auto_release_claim_once(claim_id: int) -> bool:
+    """Auto-release one pending claim exactly once.
+
+    The claim row is locked inside the transaction so manual Retain/Release
+    callbacks and the expiry task cannot both resolve the same claim or grant
+    the release reward twice.
+    """
+
+    async def _tx(conn):
+        claim = await conn.fetchrow(
+            """
+            SELECT claim_id, user_id, player_id, chat_id, message_id, status, claimed_at
+            FROM player_claims
+            WHERE claim_id = $1
+            FOR UPDATE;
+            """,
+            int(claim_id),
+        )
+        if not claim:
+            return None
+        if claim["status"] != "pending":
+            return None
+
+        # Keep the expiry rule identical to the previous maintenance worker.
+        # A task can wake a fraction early because of scheduler timing, so the
+        # database remains the final authority on whether the claim has expired.
+        due = await conn.fetchrow(
+            "SELECT EXTRACT(EPOCH FROM (NOW() - $1::timestamptz)) AS elapsed;",
+            claim["claimed_at"],
+        )
+        elapsed = float(due["elapsed"] or 0.0) if due else 0.0
+        if elapsed < CLAIM_PENDING_TIMEOUT_SECONDS:
+            return {
+                "kind": "not_due",
+                "remaining": max(0.0, CLAIM_PENDING_TIMEOUT_SECONDS - elapsed),
+            }
+
+        player = await conn.fetchrow(
+            "SELECT * FROM players WHERE player_id = $1;",
+            int(claim["player_id"]),
+        )
+        if not player:
+            # Preserve the old behavior for a missing player: resolve the claim
+            # without attempting to credit a nonexistent player's sell value.
+            updated = await conn.execute(
+                "UPDATE player_claims SET status = 'released' WHERE claim_id = $1 AND status = 'pending';",
+                int(claim_id),
+            )
+            if not updated.endswith(" 1"):
+                return None
+            return {
+                "kind": "released",
+                "chat_id": claim["chat_id"],
+                "message_id": claim["message_id"],
+                "claim_id": int(claim_id),
+            }
+
+        ovr = overall_rating(
+            int(player.get("bat_level") or 0),
+            int(player.get("bowl_level") or 0),
+        )
+        _buy_price, sell_price = get_price(ovr)
+
+        updated = await conn.execute(
+            "UPDATE player_claims SET status = 'released' WHERE claim_id = $1 AND status = 'pending';",
+            int(claim_id),
+        )
+        if not updated.endswith(" 1"):
+            return None
+
+        credited = await conn.execute(
+            "UPDATE users SET balance = balance + $1, last_seen_at = NOW() WHERE user_id = $2;",
+            int(sell_price),
+            int(claim["user_id"]),
+        )
+        if not credited.endswith(" 1"):
+            raise RuntimeError(
+                f"Could not credit auto-release reward for user_id={claim['user_id']}"
+            )
+
+        return {
+            "kind": "released",
+            "claim_id": int(claim_id),
+            "chat_id": int(claim["chat_id"]) if claim["chat_id"] is not None else None,
+            "message_id": int(claim["message_id"]) if claim["message_id"] is not None else None,
+        }
+
+    result = await transaction(_tx)
+    if not result:
+        return False
+    if result.get("kind") == "not_due":
+        return False
+
+    chat_id = result.get("chat_id")
+    message_id = result.get("message_id")
+    if chat_id is not None and message_id is not None:
+        text = (
+            "<b>⏱️ CLAIM EXPIRED</b>\n\n"
+            "<b>⏳ You didn't choose Retain or Release within 1 minute.</b>\n\n"
+            "<b>🔄 The player was automatically released.</b>"
+        )
+        try:
+            await app.edit_message_text(
+                chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+            )
+        except Exception:
+            try:
+                await app.edit_message_caption(
+                    chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+                )
+            except Exception as exc:
+                print(
+                    f"[claim] Could not update expired claim message claim_id={claim_id}: {exc!r}"
+                )
+    print(f"[claim] Auto-released claim_id={claim_id} after 60 seconds.")
+    return True
+
+
+def _cancel_claim_release_task(claim_id: int) -> None:
+    """Cancel and forget the in-memory expiry task for one claim."""
+    task = _CLAIM_RELEASE_TASKS.pop(int(claim_id), None)
+    if task is None or task.done():
+        return
+    current = asyncio.current_task()
+    if task is not current:
+        task.cancel()
+
+
+def _schedule_claim_release_task(claim_id: int, delay: float) -> None:
+    """Schedule exactly one in-memory expiry task for a pending claim."""
+    claim_id = int(claim_id)
+    _cancel_claim_release_task(claim_id)
+    delay = max(0.0, float(delay))
+
+    async def _runner() -> None:
+        current = asyncio.current_task()
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            # Retry transient database/runtime failures a few times without
+            # introducing a permanent background polling loop.
+            retry_delays = (5.0, 15.0, 30.0)
+            for attempt in range(len(retry_delays) + 1):
+                try:
+                    await _auto_release_claim_once(claim_id)
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if attempt >= len(retry_delays):
+                        print(
+                            f"[claim] Expiry task failed permanently for claim_id={claim_id}: {exc!r}"
+                        )
+                        return
+                    print(
+                        f"[claim] Expiry task retry {attempt + 1}/{len(retry_delays)} for claim_id={claim_id}: {exc!r}"
+                    )
+                    await asyncio.sleep(retry_delays[attempt])
+        except asyncio.CancelledError:
+            return
+        finally:
+            if _CLAIM_RELEASE_TASKS.get(claim_id) is current:
+                _CLAIM_RELEASE_TASKS.pop(claim_id, None)
+
+    try:
+        _CLAIM_RELEASE_TASKS[claim_id] = asyncio.create_task(_runner())
+    except RuntimeError:
+        # No running event loop. Startup recovery will handle persisted pending
+        # claims, so do not leave an invalid task reference behind.
+        _CLAIM_RELEASE_TASKS.pop(claim_id, None)
+
+
 async def start_claim_maintenance():
     """Recover and reschedule pending claim expiries after process startup."""
     rows = await fetch(
