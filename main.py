@@ -24,6 +24,7 @@ from database.runtime_repo import clear_bot_session, get_bot_session, save_bot_s
 from database.migrate import migrate
 from engines.probability_engine import reload_probability_profile_cache
 from handlers.claim import start_claim_maintenance
+from services.auction_tournament_session import rebuild_active_sessions
 
 MAX_CONCURRENT_UPDATES = 12
 MAX_PENDING_UPDATES = 100
@@ -293,9 +294,11 @@ async def handle_message(_, message):
 
     command = parse_command(text)
     if command is None:
+        # The tournament reply dispatcher performs its own exact prompt-ID and
+        # host checks. Do not require Telegram/Pyrogram to expose reply_from as
+        # a bot here, because different update paths can omit that nested user.
         reply = payload.get("reply_to_message") or {}
-        reply_from = reply.get("from") or {}
-        if reply and bool(reply_from.get("is_bot")):
+        if reply:
             try:
                 consumed = await handle_non_command_message(payload)
                 if consumed:
@@ -472,6 +475,7 @@ async def main():
         await migrate()
         await reload_probability_profile_cache()
         print("[main.py] Probability profile cache loaded.")
+        await rebuild_active_sessions()
         await start_claim_maintenance()
         print("[main.py] Claim maintenance worker started.")
     except Exception:
