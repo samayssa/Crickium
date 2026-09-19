@@ -16,25 +16,20 @@ from database.query import execute, fetchrow, fetch
 _TERMINAL = {"timed_out", "completed", "declined", "ended", "expired"}
 _SAVER_TASK: asyncio.Task | None = None
 _SAVE_LOCK = asyncio.Lock()
+RECOVERY_CHECKPOINT_SECONDS = 10.0
 
 
 async def ensure_schema() -> None:
-    await execute(
-        """
-        CREATE TABLE IF NOT EXISTS game_session_snapshots(
-            engine TEXT NOT NULL,
-            match_id BIGINT NOT NULL,
-            payload BYTEA NOT NULL,
-            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            PRIMARY KEY (engine, match_id)
-        );
-        """
-    )
+    """Compatibility no-op. Session schema is created by database.migrate().
+
+    Keeping the function avoids changing callers while ensuring a hot game
+    snapshot no longer runs CREATE TABLE traffic against Neon.
+    """
+    return None
 
 
 async def delete_snapshot(engine: str, match_id: int) -> None:
     try:
-        await ensure_schema()
         await execute(
             "DELETE FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
             str(engine).upper(), int(match_id),
@@ -63,17 +58,17 @@ async def persist_session(engine: str, session: Any) -> bool:
         return False
     try:
         payload = pickle.dumps(_normalize_for_pickle(session), protocol=pickle.HIGHEST_PROTOCOL)
-        await ensure_schema()
-        await execute(
-            """
-            INSERT INTO game_session_snapshots(engine,match_id,payload,updated_at)
-            VALUES($1,$2,$3,NOW())
-            ON CONFLICT(engine,match_id) DO UPDATE SET
-                payload=EXCLUDED.payload,
-                updated_at=NOW();
-            """,
-            str(engine).upper(), match_id, payload,
-        )
+        async with _SAVE_LOCK:
+            await execute(
+                """
+                INSERT INTO game_session_snapshots(engine,match_id,payload,updated_at)
+                VALUES($1,$2,$3,NOW())
+                ON CONFLICT(engine,match_id) DO UPDATE SET
+                    payload=EXCLUDED.payload,
+                    updated_at=NOW();
+                """,
+                str(engine).upper(), match_id, payload,
+            )
         return True
     except Exception as exc:
         print(f"[session-recovery] persist failed {engine}:{match_id}: {exc!r}")
@@ -81,7 +76,6 @@ async def persist_session(engine: str, session: Any) -> bool:
 
 
 async def _load_snapshot(engine: str, match_id: int) -> Any | None:
-    await ensure_schema()
     row = await fetchrow(
         "SELECT payload FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
         str(engine).upper(), int(match_id),
@@ -164,15 +158,15 @@ def _active_runtime_sessions() -> list[tuple[str, Any]]:
 
 
 async def _periodic_saver() -> None:
+    """Checkpoint active sessions every 10 seconds, but never poll Neon when idle."""
     while True:
         try:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(RECOVERY_CHECKPOINT_SECONDS)
             sessions = _active_runtime_sessions()
             if not sessions:
                 continue
-            async with _SAVE_LOCK:
-                for engine, session in sessions:
-                    await persist_session(engine, session)
+            for engine, session in sessions:
+                await persist_session(engine, session)
         except asyncio.CancelledError:
             return
         except Exception as exc:
