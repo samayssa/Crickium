@@ -20,42 +20,8 @@ _SCHEMA_READY = False
 
 
 async def ensure_schema() -> None:
-    global _SCHEMA_READY
-    if _SCHEMA_READY:
-        return
-    await execute(
-        '''
-        CREATE TABLE IF NOT EXISTS playipl_matches(
-            match_id SERIAL PRIMARY KEY,
-            chat_id BIGINT NOT NULL,
-            message_id BIGINT,
-            challenger_id BIGINT NOT NULL,
-            challenger_username TEXT,
-            challenger_name TEXT,
-            opponent_id BIGINT NOT NULL,
-            opponent_username TEXT,
-            opponent_name TEXT,
-            challenger_team_code TEXT,
-            challenger_team_name TEXT,
-            opponent_team_code TEXT,
-            opponent_team_name TEXT,
-            challenger_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
-            opponent_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
-            challenger_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
-            opponent_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
-            status TEXT DEFAULT 'pending',
-            pitch TEXT,
-            toss_winner_id BIGINT,
-            toss_call TEXT,
-            toss_result TEXT,
-            decision TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-        '''
-    )
-    await execute('CREATE INDEX IF NOT EXISTS idx_playipl_matches_chat_status ON playipl_matches(chat_id, status);')
-    await execute('CREATE INDEX IF NOT EXISTS idx_playipl_matches_user_status ON playipl_matches(challenger_id, opponent_id, status);')
-    _SCHEMA_READY = True
+    """Compatibility no-op. PLAYIPL schema is created by database.migrate()."""
+    return None
 
 
 def parse_playipl_player_line(line: str):

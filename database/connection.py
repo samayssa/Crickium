@@ -15,8 +15,8 @@ async def connect():
         try:
             _pool = await asyncpg.create_pool(
                 dsn=DATABASE_URL,
-                min_size=2,
-                max_size=20
+                min_size=0,
+                max_size=5
             )
             print("[db/connection] Pool created successfully.")
         except Exception as e:

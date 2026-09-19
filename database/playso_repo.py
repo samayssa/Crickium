@@ -29,37 +29,8 @@ def _coerce_state(value: Any) -> dict[str, Any]:
 
 
 async def ensure_schema() -> None:
-    global _SCHEMA_READY
-    if _SCHEMA_READY:
-        return
-    await execute("""
-    CREATE TABLE IF NOT EXISTS playso_matches(
-        match_id SERIAL PRIMARY KEY,
-        chat_id BIGINT NOT NULL,
-        message_id BIGINT,
-        challenger_id BIGINT NOT NULL,
-        challenger_username TEXT,
-        challenger_name TEXT,
-        opponent_id BIGINT NOT NULL,
-        opponent_username TEXT,
-        opponent_name TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        pitch TEXT,
-        toss_winner_id BIGINT,
-        toss_call TEXT,
-        toss_result TEXT,
-        decision TEXT,
-        stadium TEXT,
-        weather TEXT,
-        innings_no INTEGER NOT NULL DEFAULT 1,
-        state JSONB NOT NULL DEFAULT '{}'::jsonb,
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        expires_at TIMESTAMP
-    );
-    """)
-    await execute("CREATE INDEX IF NOT EXISTS idx_playso_chat_status ON playso_matches(chat_id,status);")
-    await execute("CREATE INDEX IF NOT EXISTS idx_playso_user_status ON playso_matches(challenger_id,opponent_id,status);")
-    _SCHEMA_READY = True
+    """Compatibility no-op. PLAYSO schema is created by database.migrate()."""
+    return None
 
 
 async def create_match(chat_id: int, challenger: dict, opponent: dict):

@@ -298,6 +298,71 @@ TABLES = {
             created_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    # PLAYSO is a first-class persisted runtime table. It used to be
+    # created lazily by database/playso_repo.py, which made hot game traffic
+    # run CREATE TABLE checks against Neon. Keep the schema centralized here.
+    "playso_matches": """
+        CREATE TABLE IF NOT EXISTS playso_matches(
+            match_id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT,
+            challenger_id BIGINT NOT NULL,
+            challenger_username TEXT,
+            challenger_name TEXT,
+            opponent_id BIGINT NOT NULL,
+            opponent_username TEXT,
+            opponent_name TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            pitch TEXT,
+            toss_winner_id BIGINT,
+            toss_call TEXT,
+            toss_result TEXT,
+            decision TEXT,
+            stadium TEXT,
+            weather TEXT,
+            innings_no INTEGER NOT NULL DEFAULT 1,
+            state JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMP
+        );
+    """,
+    "playipl_matches": """
+        CREATE TABLE IF NOT EXISTS playipl_matches(
+            match_id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT,
+            challenger_id BIGINT NOT NULL,
+            challenger_username TEXT,
+            challenger_name TEXT,
+            opponent_id BIGINT NOT NULL,
+            opponent_username TEXT,
+            opponent_name TEXT,
+            challenger_team_code TEXT,
+            challenger_team_name TEXT,
+            opponent_team_code TEXT,
+            opponent_team_name TEXT,
+            challenger_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            opponent_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            challenger_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            opponent_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            status TEXT DEFAULT 'pending',
+            pitch TEXT,
+            toss_winner_id BIGINT,
+            toss_call TEXT,
+            toss_result TEXT,
+            decision TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
+    "game_session_snapshots": """
+        CREATE TABLE IF NOT EXISTS game_session_snapshots(
+            engine TEXT NOT NULL,
+            match_id BIGINT NOT NULL,
+            payload BYTEA NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (engine, match_id)
+        );
+    """,
     # Caches one Telegram file_id per stadium name, so /play's MATCH
     # READY card only has to search + download a stadium photo once -
     # every later match at that same stadium reuses the saved file_id.
@@ -422,6 +487,13 @@ async def migrate():
         print(f"[migrate] Ensuring table '{table_name}' exists...")
         await execute(ddl)
         print(f"[migrate] Table '{table_name}' OK.")
+
+    print("[migrate] Ensuring runtime match indexes...")
+    await execute("CREATE INDEX IF NOT EXISTS idx_playso_matches_chat_status ON playso_matches(chat_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_playso_matches_user_status ON playso_matches(challenger_id,opponent_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_playipl_matches_chat_status ON playipl_matches(chat_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_playipl_matches_user_status ON playipl_matches(challenger_id,opponent_id,status);")
+    print("[migrate] Runtime match indexes OK.")
 
     print("[migrate] Ensuring 'users.claim_attempt_at' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS claim_attempt_at TIMESTAMP;")
