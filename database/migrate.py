@@ -371,6 +371,21 @@ TABLES = {
             UNIQUE(tournament_id, pool_name)
         );
     """,
+    "auction_tournament_backups": """
+        CREATE TABLE IF NOT EXISTS auction_tournament_backups(
+            backup_id BIGSERIAL PRIMARY KEY,
+            backup_token TEXT NOT NULL UNIQUE,
+            backup_sha256 TEXT NOT NULL,
+            creator_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            original_tournament_id BIGINT NOT NULL,
+            restored_tournament_id BIGINT,
+            tournament_name TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            restored_at TIMESTAMP
+        );
+    """,
     "auction_tournament_pool_players": """
         CREATE TABLE IF NOT EXISTS auction_tournament_pool_players(
             pool_player_id BIGSERIAL PRIMARY KEY,
@@ -427,6 +442,8 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_auction_tournaments_group_status ON auction_tournaments(host_group_id, status, tournament_id DESC);")
     await execute("CREATE INDEX IF NOT EXISTS idx_auction_team_owner ON auction_tournament_teams(tournament_id, owner_user_id);")
     await execute("CREATE INDEX IF NOT EXISTS idx_auction_pool_players_tournament ON auction_tournament_pool_players(tournament_id, pool_id, status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_auction_backups_creator ON auction_tournament_backups(creator_id, created_at DESC);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_auction_backups_original ON auction_tournament_backups(original_tournament_id, created_at DESC);")
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auction_active_creator_draft ON auction_tournaments(creator_id) WHERE status IN ('select_mode','await_prize','confirm_prize','overview','await_pool','confirm_pool','ask_group','await_group','confirm_group','final_confirm');")
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auction_tournament_team_owner_nonnull ON auction_tournament_teams(tournament_id, owner_user_id) WHERE owner_user_id IS NOT NULL;")
     print("[migrate] special-edition indexes OK.")
