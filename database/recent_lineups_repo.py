@@ -27,6 +27,19 @@ async def get_recent_xi(user_id: int, engine_key: str, team_code: str):
 
 
 async def save_recent_xi(user_id: int, engine_key: str, team_code: str, player_ids):
+    # Some engine-specific match flows can legitimately reach lineup
+    # persistence before the shared /users row has been created.  The
+    # recent-XI table intentionally references users, so ensure that parent
+    # row exists before saving. This does not alter gameplay or simulation.
+    uid = int(user_id)
+    await execute(
+        """
+        INSERT INTO users(user_id, first_name, last_seen_at)
+        VALUES ($1, 'Player', NOW())
+        ON CONFLICT (user_id) DO UPDATE SET last_seen_at=NOW();
+        """,
+        uid,
+    )
     await execute(
         """
         INSERT INTO recent_playing_xis(user_id, engine_key, team_code, player_ids, updated_at)
@@ -34,5 +47,5 @@ async def save_recent_xi(user_id: int, engine_key: str, team_code: str, player_i
         ON CONFLICT (user_id, engine_key, team_code)
         DO UPDATE SET player_ids=EXCLUDED.player_ids, updated_at=NOW();
         """,
-        int(user_id), str(engine_key).upper(), str(team_code).upper(), json.dumps([int(x) for x in player_ids]),
+        uid, str(engine_key).upper(), str(team_code).upper(), json.dumps([int(x) for x in player_ids]),
     )
