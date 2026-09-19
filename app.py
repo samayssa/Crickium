@@ -132,6 +132,90 @@ def _strip_custom_emoji_markup(text: str | None) -> str | None:
         return None
     return re.sub(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", r"\1", str(text), flags=re.IGNORECASE | re.DOTALL)
 
+
+def _strip_html_markup(text: str | None) -> str | None:
+    """Best-effort plain-text fallback for Telegram entity parsing failures."""
+    if text is None:
+        return None
+    cleaned = re.sub(r"<[^>]+>", "", str(text))
+    # Keep common Telegram HTML entities readable in the fallback path.
+    import html as _html
+    return _html.unescape(cleaned)
+
+
+def _is_custom_emoji_api_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "invalid custom emoji identifier" in text
+        or "custom emoji identifier" in text
+        or "custom emoji" in text and "invalid" in text
+    )
+
+
+def _is_entity_parse_api_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "can't parse entities" in text
+        or "cant parse entities" in text
+        or "parse entities" in text
+        or "unsupported start tag" in text
+        or "unsupported end tag" in text
+        or "entity" in text and "bad request" in text
+    )
+
+
+def _is_bad_request_api_error(exc: Exception) -> bool:
+    return "bad request" in str(exc).lower()
+
+
+def _strip_custom_emoji_icons(markup: dict | None) -> dict | None:
+    """Remove only invalid custom-emoji button icons, preserving button styles."""
+    if not markup:
+        return markup
+    result = {"inline_keyboard": []}
+    for row in markup.get("inline_keyboard", []):
+        new_row = []
+        for btn in row:
+            if not isinstance(btn, dict):
+                new_row.append(btn)
+                continue
+            copy = dict(btn)
+            copy.pop("icon_custom_emoji_id", None)
+            new_row.append(copy)
+        result["inline_keyboard"].append(new_row)
+    return result
+
+
+def _contains_custom_emoji_icons(markup: dict | None) -> bool:
+    if not markup:
+        return False
+    return any(
+        bool(btn.get("icon_custom_emoji_id"))
+        for row in markup.get("inline_keyboard", [])
+        for btn in row
+        if isinstance(btn, dict)
+    )
+
+
+def _strip_advanced_button_fields(markup: dict | None) -> dict | None:
+    """Last-resort keyboard fallback for older/incompatible Bot API layers."""
+    if not markup:
+        return markup
+    result = {"inline_keyboard": []}
+    for row in markup.get("inline_keyboard", []):
+        new_row = []
+        for btn in row:
+            if not isinstance(btn, dict):
+                new_row.append(btn)
+                continue
+            copy = dict(btn)
+            copy.pop("icon_custom_emoji_id", None)
+            copy.pop("style", None)
+            new_row.append(copy)
+        result["inline_keyboard"].append(new_row)
+    return result
+
+
 def _wrap_http_message(result: dict) -> dict:
     """Same shape as _wrap_message(), but built from a raw HTTP Bot API
     JSON response instead of a pyrogram object."""
@@ -353,11 +437,100 @@ class App:
                     lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(http)",
                 )
             except Exception as exc:
-                if _contains_custom_emoji_markup(text):
+                # If a configured custom-emoji ID has expired/been revoked,
+                # preserve the button styles and retry without only that icon.
+                if _is_custom_emoji_api_error(exc) and _contains_custom_emoji_icons(markup_json):
+                    print(f"[app.py] Invalid button custom emoji; retrying without icon IDs: {exc!r}")
+                    payload["reply_markup"] = _strip_custom_emoji_icons(markup_json)
+                    try:
+                        result = await _resilient(
+                            lambda: self._call_bot_api("sendMessage", json_payload=payload),
+                            label="send_message(icon-fallback)",
+                        )
+                    except Exception as retry_exc:
+                        # Some deployments expose a Bot API layer that also
+                        # rejects the newer button style field. As a final
+                        # keyboard-only fallback, keep the same buttons/data
+                        # but remove style/icon metadata.
+                        if markup_json:
+                            print(f"[app.py] Advanced button fields rejected; retrying basic keyboard: {retry_exc!r}")
+                            payload["reply_markup"] = _strip_advanced_button_fields(markup_json)
+                            try:
+                                result = await _resilient(
+                                    lambda: self._call_bot_api("sendMessage", json_payload=payload),
+                                    label="send_message(basic-keyboard-fallback)",
+                                )
+                            except Exception as keyboard_exc:
+                                if _contains_custom_emoji_markup(text):
+                                    print(f"[app.py] Custom emoji text send failed; using Unicode fallback: {keyboard_exc!r}")
+                                    payload["text"] = _strip_custom_emoji_markup(text)
+                                    result = await _resilient(
+                                        lambda: self._call_bot_api("sendMessage", json_payload=payload),
+                                        label="send_message(fallback)",
+                                    )
+                                elif _is_entity_parse_api_error(keyboard_exc) and parse_mode:
+                                    print(f"[app.py] HTML entity parsing failed after keyboard fallback; using plain text: {keyboard_exc!r}")
+                                    payload.pop("parse_mode", None)
+                                    payload["text"] = _strip_html_markup(text)
+                                    result = await _resilient(
+                                        lambda: self._call_bot_api("sendMessage", json_payload=payload),
+                                        label="send_message(plain-fallback)",
+                                    )
+                                else:
+                                    raise
+                        elif _contains_custom_emoji_markup(text):
+                            print(f"[app.py] Custom emoji text send failed; using Unicode fallback: {retry_exc!r}")
+                            payload["text"] = _strip_custom_emoji_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("sendMessage", json_payload=payload),
+                                label="send_message(fallback)",
+                            )
+                        elif _is_entity_parse_api_error(retry_exc) and parse_mode:
+                            print(f"[app.py] HTML entity parsing failed after icon fallback; using plain text: {retry_exc!r}")
+                            payload.pop("parse_mode", None)
+                            payload["text"] = _strip_html_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("sendMessage", json_payload=payload),
+                                label="send_message(plain-fallback)",
+                            )
+                        else:
+                            raise
+                elif _is_bad_request_api_error(exc) and markup_json:
+                    print(f"[app.py] Telegram rejected the advanced keyboard; retrying with a basic keyboard: {exc!r}")
+                    payload["reply_markup"] = _strip_advanced_button_fields(markup_json)
+                    try:
+                        result = await _resilient(
+                            lambda: self._call_bot_api("sendMessage", json_payload=payload),
+                            label="send_message(basic-keyboard-fallback)",
+                        )
+                    except Exception as retry_exc:
+                        if _contains_custom_emoji_markup(text):
+                            print(f"[app.py] Custom emoji text send failed; using Unicode fallback: {retry_exc!r}")
+                            payload["text"] = _strip_custom_emoji_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(fallback)",
+                            )
+                        elif _is_entity_parse_api_error(retry_exc) and parse_mode:
+                            print(f"[app.py] HTML entity parsing failed after keyboard fallback; using plain text: {retry_exc!r}")
+                            payload.pop("parse_mode", None)
+                            payload["text"] = _strip_html_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(plain-fallback)",
+                            )
+                        else:
+                            raise
+                elif _contains_custom_emoji_markup(text):
                     print(f"[app.py] Custom emoji send failed; using Unicode fallback: {exc!r}")
                     payload["text"] = _strip_custom_emoji_markup(text)
                     result = await _resilient(
                         lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(fallback)",
+                    )
+                elif _is_entity_parse_api_error(exc) and parse_mode:
+                    print(f"[app.py] HTML entity parsing failed; using plain text fallback: {exc!r}")
+                    payload.pop("parse_mode", None)
+                    payload["text"] = _strip_html_markup(text)
+                    result = await _resilient(
+                        lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(plain-fallback)",
                     )
                 else:
                     raise
@@ -392,11 +565,90 @@ class App:
                     lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(http)",
                 )
             except Exception as exc:
-                if _contains_custom_emoji_markup(text):
+                if _is_custom_emoji_api_error(exc) and _contains_custom_emoji_icons(markup_json):
+                    print(f"[app.py] Invalid button custom emoji on edit; retrying without icon IDs: {exc!r}")
+                    payload["reply_markup"] = _strip_custom_emoji_icons(markup_json)
+                    try:
+                        result = await _resilient(
+                            lambda: self._call_bot_api("editMessageText", json_payload=payload),
+                            label="edit_message_text(icon-fallback)",
+                        )
+                    except Exception as retry_exc:
+                        if markup_json:
+                            print(f"[app.py] Advanced button fields rejected on edit; retrying basic keyboard: {retry_exc!r}")
+                            payload["reply_markup"] = _strip_advanced_button_fields(markup_json)
+                            try:
+                                result = await _resilient(
+                                    lambda: self._call_bot_api("editMessageText", json_payload=payload),
+                                    label="edit_message_text(basic-keyboard-fallback)",
+                                )
+                            except Exception as keyboard_exc:
+                                if _contains_custom_emoji_markup(text):
+                                    print(f"[app.py] Custom emoji edit failed; using Unicode fallback: {keyboard_exc!r}")
+                                    payload["text"] = _strip_custom_emoji_markup(text)
+                                    result = await _resilient(
+                                        lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(fallback)",
+                                    )
+                                elif _is_entity_parse_api_error(keyboard_exc) and parse_mode:
+                                    print(f"[app.py] HTML entity parsing failed after keyboard fallback; using plain text: {keyboard_exc!r}")
+                                    payload.pop("parse_mode", None)
+                                    payload["text"] = _strip_html_markup(text)
+                                    result = await _resilient(
+                                        lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(plain-fallback)",
+                                    )
+                                else:
+                                    raise
+                        elif _contains_custom_emoji_markup(text):
+                            print(f"[app.py] Custom emoji edit failed; using Unicode fallback: {retry_exc!r}")
+                            payload["text"] = _strip_custom_emoji_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(fallback)",
+                            )
+                        elif _is_entity_parse_api_error(retry_exc) and parse_mode:
+                            print(f"[app.py] HTML entity parsing failed after icon fallback; using plain text: {retry_exc!r}")
+                            payload.pop("parse_mode", None)
+                            payload["text"] = _strip_html_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(plain-fallback)",
+                            )
+                        else:
+                            raise
+                elif _is_bad_request_api_error(exc) and markup_json:
+                    print(f"[app.py] Telegram rejected the advanced edit keyboard; retrying with a basic keyboard: {exc!r}")
+                    payload["reply_markup"] = _strip_advanced_button_fields(markup_json)
+                    try:
+                        result = await _resilient(
+                            lambda: self._call_bot_api("editMessageText", json_payload=payload),
+                            label="edit_message_text(basic-keyboard-fallback)",
+                        )
+                    except Exception as retry_exc:
+                        if _contains_custom_emoji_markup(text):
+                            print(f"[app.py] Custom emoji edit failed; using Unicode fallback: {retry_exc!r}")
+                            payload["text"] = _strip_custom_emoji_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(fallback)",
+                            )
+                        elif _is_entity_parse_api_error(retry_exc) and parse_mode:
+                            print(f"[app.py] HTML entity parsing failed after keyboard fallback; using plain text: {retry_exc!r}")
+                            payload.pop("parse_mode", None)
+                            payload["text"] = _strip_html_markup(text)
+                            result = await _resilient(
+                                lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(plain-fallback)",
+                            )
+                        else:
+                            raise
+                elif _contains_custom_emoji_markup(text):
                     print(f"[app.py] Custom emoji edit failed; using Unicode fallback: {exc!r}")
                     payload["text"] = _strip_custom_emoji_markup(text)
                     result = await _resilient(
                         lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(fallback)",
+                    )
+                elif _is_entity_parse_api_error(exc) and parse_mode:
+                    print(f"[app.py] HTML entity parsing failed; using plain text fallback: {exc!r}")
+                    payload.pop("parse_mode", None)
+                    payload["text"] = _strip_html_markup(text)
+                    result = await _resilient(
+                        lambda: self._call_bot_api("editMessageText", json_payload=payload), label="edit_message_text(plain-fallback)",
                     )
                 else:
                     raise
