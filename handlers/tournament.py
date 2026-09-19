@@ -295,17 +295,41 @@ async def setpool_command(message: dict):
     ]
 
     prompt_id = int(tournament.get("overview_message_id") or tournament.get("prompt_message_id") or 0)
+    summary_text = "\n".join(summary_lines)
+    summary_markup = pool_confirmation_keyboard(tid) if success else cancel_keyboard(tid)
     if not prompt_id:
-        sent = await app.send_message(int(tournament["creation_chat_id"]), "\n".join(summary_lines), parse_mode="HTML", reply_markup=pool_confirmation_keyboard(tid) if success else cancel_keyboard(tid))
+        sent = await app.send_message(
+            int(tournament["creation_chat_id"]),
+            summary_text,
+            parse_mode="HTML",
+            reply_markup=summary_markup,
+        )
         await _set_prompt_id(tid, int(sent["message_id"]))
     else:
-        await app.edit_message_text(
-            int(tournament["creation_chat_id"]),
-            prompt_id,
-            "\n".join(summary_lines),
-            parse_mode="HTML",
-            reply_markup=pool_confirmation_keyboard(tid) if success else cancel_keyboard(tid),
-        )
+        try:
+            await app.edit_message_text(
+                int(tournament["creation_chat_id"]),
+                prompt_id,
+                summary_text,
+                parse_mode="HTML",
+                reply_markup=summary_markup,
+            )
+        except Exception as exc:
+            # Telegram can reject an edit because of a stale/invalid entity or
+            # keyboard field. The pool was already validated and persisted as
+            # the draft preview, so never leave the host without a response.
+            print(f"[tournament] setpool edit failed; falling back to a new review message: {exc!r}")
+            sent = await app.send_message(
+                int(tournament["creation_chat_id"]),
+                summary_text,
+                parse_mode="HTML",
+                reply_markup=summary_markup,
+            )
+            await _set_prompt_id(tid, int(sent["message_id"]))
+            try:
+                await app.delete_message(int(tournament["creation_chat_id"]), prompt_id)
+            except Exception:
+                pass
 
 
 @register("setgroup")
