@@ -10,6 +10,7 @@ from buttons.play_buttons import bowler_selection_keyboard, bowler_tactic_keyboa
 from database.play_repo import get_match, update_status
 from database.user_stats_repo import add_match_xp, record_match_result, record_h2h_result
 from database.player_user_stats_repo import record_match_player_stats
+from services.milestones import clear_milestone_state
 from services.player_match_stats import record_session_player_stats
 from engines.level_engine import WIN_XP, LOSS_XP, TIE_XP
 from database.player_upgrades_repo import load_snapshot_players, persist_snapshot, restore_snapshot
@@ -544,6 +545,7 @@ async def _finish_over_and_prompt_next(session) -> None:
             )
         except Exception as exc:
             print(f"[play] Match notification failed: {exc!r}")
+        clear_milestone_state(session.match_id)
         clear_session(session.match_id)
         return
 
