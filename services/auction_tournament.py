@@ -673,28 +673,39 @@ async def validate_pool_players(pools: list[dict], errors: list[dict]) -> tuple[
                     "SELECT * FROM players WHERE LOWER(name)=LOWER($1) LIMIT 1;",
                     base,
                 )
-                special_count = int(
-                    await fetchval(
-                        "SELECT COUNT(*) FROM special_edition_players WHERE LOWER(name)=LOWER($1);",
+                if global_row:
+                    # A plain player name is always acceptable. If the name
+                    # exists in the global pool, use that canonical global
+                    # card. Do not reject it merely because Special Edition
+                    # cards with the same display name also exist.
+                    player = dict(global_row)
+                    player["is_special"] = False
+                    player["special_player_id"] = None
+                    identity = f"global:{int(player['player_id'])}"
+                else:
+                    # A plain name is also valid for a Special Edition player
+                    # when there is no global card with that name. This keeps
+                    # the auction pool format source-agnostic: pool authors
+                    # can write the player name normally for either source.
+                    special_row = await fetchrow(
+                        """
+                        SELECT *
+                        FROM special_edition_players
+                        WHERE LOWER(name)=LOWER($1)
+                        ORDER BY special_player_id ASC
+                        LIMIT 1;
+                        """,
                         base,
                     )
-                    or 0
-                )
-                if not global_row:
-                    if special_count:
-                        pool_errors.append({"pool": pool["pool_no"], "line": line_no, "detail": f"{raw_name} exists only as a Special Edition player. Use the exact name with edition in parentheses."})
-                    else:
-                        pool_errors.append({"pool": pool["pool_no"], "line": line_no, "detail": f"Player not found: {raw_name}"})
-                    failed += 1
-                    continue
-                if special_count:
-                    pool_errors.append({"pool": pool["pool_no"], "line": line_no, "detail": f"Player name is ambiguous because a Special Edition card also exists: {raw_name}. Use the Special Edition form with edition in parentheses if that is the intended card."})
-                    failed += 1
-                    continue
-                player = dict(global_row)
-                player["is_special"] = False
-                player["special_player_id"] = None
-                identity = f"global:{int(player['player_id'])}"
+                    if not special_row:
+                        pool_errors.append({"pool": pool["pool_no"], "line": line_no, "detail": f"Player not found in global or Special Edition pool: {raw_name}"})
+                        failed += 1
+                        continue
+                    player = dict(special_row)
+                    player["is_special"] = True
+                    player["special_player_id"] = int(player["special_player_id"])
+                    player["player_id"] = None
+                    identity = f"special:{player['special_player_id']}"
 
             if identity in seen:
                 pool_errors.append({"pool": pool["pool_no"], "line": line_no, "detail": f"Duplicate auction player: {raw_name}"})
