@@ -317,7 +317,7 @@ async def create_pools(tournament_id: int, pools: list[dict]) -> tuple[int, int]
                         bat_level,bowl_level,batting_hand,bowling_hand,base_price,status
                     )
                     VALUES(
-                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'available'
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
                     );
                     """,
                     int(tournament_id), pool_id, player["identity_key"],
@@ -325,7 +325,7 @@ async def create_pools(tournament_id: int, pools: list[dict]) -> tuple[int, int]
                     player["name"], player.get("edition"), bool(player["is_special"]),
                     int(player["ovr"]), player.get("country"), player.get("role"),
                     int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0),
-                    player.get("batting_hand"), player.get("bowling_hand"), int(pool["base_price"]),
+                    player.get("batting_hand"), player.get("bowling_hand"), int(pool["base_price"]), "available",
                 )
                 player_count += 1
         await conn.execute(
