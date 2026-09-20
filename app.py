@@ -5,6 +5,7 @@ import inspect
 import json as _json
 import re
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -714,6 +715,72 @@ class App:
                 print(f"[app.py] Non-fatal delete_message error ignored: {exc!r}")
                 return {}
             raise
+
+    async def _send_media_file(self, method: str, field_name: str, chat_id, media, caption=None, parse_mode=None):
+        """Send animation/video from a file_id, URL, bytes, file object or path."""
+        print(f"[app.py] {method} -> chat_id={chat_id} caption={caption!r}")
+
+        raw_mode = _raw_parse_mode(parse_mode)
+        use_multipart = isinstance(media, (bytes, bytearray)) or hasattr(media, "read") or (isinstance(media, str) and Path(media).is_file())
+
+        if use_multipart:
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(chat_id))
+            if caption:
+                form.add_field("caption", caption)
+            if raw_mode:
+                form.add_field("parse_mode", raw_mode)
+
+            if isinstance(media, (bytes, bytearray)):
+                filename = "media.bin"
+                content_type = "application/octet-stream"
+                form.add_field(field_name, bytes(media), filename=filename, content_type=content_type)
+            elif hasattr(media, "read"):
+                media.seek(0)
+                form.add_field(field_name, media.read(), filename=getattr(media, "name", "media.bin"), content_type="application/octet-stream")
+            else:
+                path = Path(str(media))
+                with path.open("rb") as fh:
+                    form.add_field(field_name, fh.read(), filename=path.name, content_type="application/octet-stream")
+
+            result = await _resilient(
+                lambda: self._call_bot_api(method, data=form),
+                label=f"{method}(http)",
+            )
+            return _wrap_http_message(result)
+
+        payload = {"chat_id": chat_id, field_name: str(media)}
+        if caption:
+            payload["caption"] = caption
+        if raw_mode:
+            payload["parse_mode"] = raw_mode
+        try:
+            result = await _resilient(
+                lambda: self._call_bot_api(method, json_payload=payload),
+                label=f"{method}(http)",
+            )
+            return _wrap_http_message(result)
+        except Exception as exc:
+            # Custom emoji in a caption can fail when an ID was revoked. Keep
+            # the media delivery alive with the Unicode-only caption.
+            if _contains_custom_emoji_markup(caption):
+                payload["caption"] = _strip_custom_emoji_markup(caption)
+                result = await _resilient(
+                    lambda: self._call_bot_api(method, json_payload=payload),
+                    label=f"{method}(unicode-fallback)",
+                )
+                return _wrap_http_message(result)
+            raise
+
+    async def send_animation(self, chat_id, animation, caption=None, parse_mode=None):
+        return await self._send_media_file(
+            "sendAnimation", "animation", chat_id, animation, caption=caption, parse_mode=parse_mode
+        )
+
+    async def send_video(self, chat_id, video, caption=None, parse_mode=None):
+        return await self._send_media_file(
+            "sendVideo", "video", chat_id, video, caption=caption, parse_mode=parse_mode
+        )
 
     async def send_photo(self, chat_id, photo, caption=None, parse_mode=None, reply_markup=None):
         print(f"[app.py] send_photo -> chat_id={chat_id} caption={caption!r}")
