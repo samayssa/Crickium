@@ -164,6 +164,16 @@ async def resolve_owned_prize_player(user_id: int, query: str | None) -> tuple[d
 
 
 def build_prize_breakdown(coins: int, rubies: int, player: dict | None) -> list[dict]:
+    """Build a cricket-style 11-award prize structure.
+
+    The creator's total coin/ruby pool is distributed using fixed percentages
+    instead of an equal 1/11 split:
+      31% winner, 20% runner-up, 13% third, 10% fourth,
+       5% orange cap,  5% purple cap, 7% MVP, 4% emerging player,
+       2% most sixes,   2% most fours,  1% best strike rate.
+
+    The optional player card is displayed separately as a card prize.
+    """
     labels = [
         "🏆 Winning Team",
         "🥈 Runner-up",
@@ -172,24 +182,45 @@ def build_prize_breakdown(coins: int, rubies: int, player: dict | None) -> list[
         "🟠 Orange Cap",
         "🟣 Purple Cap",
         "⭐ MVP",
+        "🌱 Emerging Player",
         "💥 Most Sixes",
         "4️⃣ Most Fours",
-        "🌟 Best Player",
-        "🎴 Player Prize Pool / Reserve",
+        "🎯 Best Strike Rate",
     ]
-    coin_base, coin_rem = divmod(int(coins), 11)
-    ruby_base, ruby_rem = divmod(int(rubies), 11)
+    percentages = [31, 20, 13, 10, 5, 5, 7, 4, 2, 2, 1]
+
+    def allocate(total: int) -> list[int]:
+        total = max(0, int(total))
+        raw = [(total * pct) // 100 for pct in percentages]
+        remainder = total - sum(raw)
+        # Largest prize gets any integer rounding remainder so the published
+        # total always equals the creator's exact pool.  The remainder is
+        # normally tiny relative to the prize and never changes the intended
+        # ordering.
+        raw[0] += remainder
+        return raw
+
+    coin_values = allocate(coins)
+    ruby_values = allocate(rubies)
     result = []
     for index, label in enumerate(labels):
         result.append(
             {
                 "part": index + 1,
                 "label": label,
-                "coins": coin_base + (1 if index < coin_rem else 0),
-                "rubies": ruby_base + (1 if index < ruby_rem else 0),
-                "player": player if index == 10 and player else None,
+                "coins": coin_values[index],
+                "rubies": ruby_values[index],
+                "percentage": percentages[index],
+                "player": None,
             }
         )
+
+    # A creator-supplied player card is an additional non-cash prize.  Keep it
+    # attached to the prize structure without using one of the 11 cash/ruby
+    # slices for a card.
+    if player:
+        result[-1]["player"] = player
+
     return result
 
 
@@ -972,13 +1003,22 @@ async def handle_tournament_reply(message: dict) -> bool:
 
 
 def prize_command_text(tournament: dict, pool_players: list[dict]) -> str:
-    breakdown = tournament.get("prize_breakdown") or []
-    if isinstance(breakdown, str):
-        import json
+    player = tournament.get("prize_player")
+    if isinstance(player, str):
         try:
-            breakdown = json.loads(breakdown)
+            player = json.loads(player)
         except Exception:
-            breakdown = []
+            player = None
+
+    # Always rebuild from the stored total pool so tournaments created with an
+    # older equal-split implementation are displayed using the corrected
+    # structure too.
+    breakdown = build_prize_breakdown(
+        int(tournament.get("prize_coins") or 0),
+        int(tournament.get("prize_rubies") or 0),
+        player if isinstance(player, dict) else None,
+    )
+
     lines = [
         "<b>╭━━〔 🏆 IPL PRIZE POOL 〕━━╮</b>",
         "",
@@ -987,22 +1027,34 @@ def prize_command_text(tournament: dict, pool_players: list[dict]) -> str:
         f"💎 <b>Total Rubies</b>: {int(tournament.get('prize_rubies') or 0):,}",
         "",
         "<blockquote>",
-        "<b>11-SECTION PRIZE SPLIT</b>",
+        "<b>11-SECTION PRIZE DISTRIBUTION</b>",
     ]
+
     for item in breakdown:
         lines.append(
-            f"{int(item.get('part') or 0)}. {esc(item.get('label'))} → "
+            f"{int(item.get('part') or 0)}. {esc(item.get('label'))} "
+            f"({int(item.get('percentage') or 0)}%) → "
             f"🪙 {int(item.get('coins') or 0):,} • 💎 {int(item.get('rubies') or 0):,}"
         )
-        p = item.get("player")
-        if p:
-            lines.append(
-                f"   🎴 {esc(p.get('name'))}"
-                + (f" ({esc(p.get('edition'))})" if p.get('edition') else "")
-                + f" • OVR {int(p.get('ovr') or 0)}"
-            )
-    lines += [
+
+    lines.extend([
         "</blockquote>",
+        "",
+        "<blockquote>",
+        "<b>🎴 PLAYER CARD PRIZE</b>",
+    ])
+    card_item = breakdown[-1].get("player") if breakdown else None
+    if card_item:
+        lines.append(
+            f"🎴 {esc(card_item.get('name'))}"
+            + (f" ({esc(card_item.get('edition'))})" if card_item.get('edition') else "")
+            + f" • OVR {int(card_item.get('ovr') or 0)}"
+        )
+    else:
+        lines.append("No optional player-card prize added.")
+    lines.append("</blockquote>")
+
+    lines += [
         "",
         "<blockquote expandable><b>🎴 AUCTION PLAYER POOL</b>",
     ]
@@ -1011,7 +1063,10 @@ def prize_command_text(tournament: dict, pool_players: list[dict]) -> str:
         for row in pool_players:
             if current_pool != row["pool_no"]:
                 current_pool = row["pool_no"]
-                lines.append(f"\n<b>Pool {int(row['pool_no'])}: {esc(row['pool_name'])}</b> • Base {int(row['base_price']):,}")
+                lines.append(
+                    f"\n<b>Pool {int(row['pool_no'])}: {esc(row['pool_name'])}</b> "
+                    f"• Base {int(row['base_price']):,}"
+                )
             special = " • Special Edition" if row["is_special"] else ""
             edition = f" ({esc(row['edition'])})" if row.get("edition") else ""
             lines.append(
