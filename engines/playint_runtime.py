@@ -10,6 +10,7 @@ from engines.lineup_engine import bowling_candidates
 from engines.play_engine import playing_xi
 from engines.strategy_engine import resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
+from services.milestones import schedule_milestone_notifications
 
 
 @dataclass(slots=True)
@@ -454,6 +455,11 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     # A no-ball creates exactly one immediate free-hit delivery. If that
     # re-ball is itself a no-ball, the flag naturally carries forward.
     session.free_hit_next_ball = outcome.outcome == "no_ball"
+    partnership_id_before_ball = int(session.innings.score.wickets or 0) + 1
+    partnership_players_before_ball = (
+        str(session.innings.striker.name if session.innings.striker else "Player"),
+        str(session.innings.non_striker.name if session.innings.non_striker else "Player"),
+    )
     register_ball(
         session.innings,
         outcome=outcome.outcome,
@@ -467,6 +473,11 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
         session.partnership_balls += 1
     session.partnership_runs += int(outcome.runs or 0)
     _update_bowler_stats(session, outcome)
+
+    # Milestones are informational and asynchronous. A Telegram failure must
+    # never interrupt scoring or the active game simulation.
+    schedule_milestone_notifications(session, outcome, striker_before, partnership_id=partnership_id_before_ball, partnership_players=partnership_players_before_ball)
+
     commentary = get_commentary(
         outcome.outcome,
         over_number=int(context.over_number),
