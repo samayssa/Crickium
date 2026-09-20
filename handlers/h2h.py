@@ -3,6 +3,10 @@ from __future__ import annotations
 import html
 
 from app import app
+try:
+    from pyrogram.errors import ChatWriteForbidden
+except Exception:
+    ChatWriteForbidden = Exception
 from handlers.registry import register
 from database.query import fetchrow
 from database.user_stats_repo import get_h2h_stats
@@ -84,21 +88,64 @@ def _h2h_text(one: dict, two: dict, stats: dict) -> str:
         "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
 
+async def _safe_h2h_send(chat_id: int, user_id: int, text: str, *, parse_mode: str = "HTML") -> bool:
+    """Send H2H where the command was issued, with a DM fallback.
+
+    Telegram can deliver a command from a group even when the bot has no
+    permission to write there.  Previously that RPC error bubbled through the
+    handler and looked like a bot crash.  We now fall back to the requester's
+    private chat and keep the command handler alive.
+    """
+    try:
+        await app.send_message(chat_id, text, parse_mode=parse_mode)
+        return True
+    except ChatWriteForbidden:
+        return await _send_h2h_dm_fallback(chat_id, user_id, text, parse_mode=parse_mode)
+    except Exception as exc:
+        # The HTTP Bot API adapter may surface the same Telegram condition as
+        # RuntimeError instead of Pyrogram's typed ChatWriteForbidden.
+        marker = "chat_write_forbidden" in str(exc).lower() or "don't have rights to send" in str(exc).lower()
+        if marker:
+            return await _send_h2h_dm_fallback(chat_id, user_id, text, parse_mode=parse_mode)
+        print(f"[h2h] send failed: {exc!r}")
+        return False
+
+
+async def _send_h2h_dm_fallback(chat_id: int, user_id: int, text: str, *, parse_mode: str = "HTML") -> bool:
+    if int(chat_id) == int(user_id):
+        print("[h2h] ChatWriteForbidden in private chat; cannot send result.")
+        return False
+    try:
+        await app.send_message(
+            int(user_id),
+            "⚠️ I can’t send H2H results in that chat because I don’t have permission to write there. I’ve sent the result here instead.\n\n" + text,
+            parse_mode=parse_mode,
+        )
+        return True
+    except Exception as exc:
+        print(f"[h2h] DM fallback failed: {exc!r}")
+        return False
+
+
 @register("h2h")
 async def h2h_command(message):
     uid = int((message.get("from") or {}).get("id") or 0)
     chat_id = int((message.get("chat") or {}).get("id") or 0)
     target, error = await _resolve_target(message)
     if error:
-        await app.send_message(chat_id, error, parse_mode="HTML")
+        await _safe_h2h_send(chat_id, uid, error)
         return
     opponent_id = int(target["user_id"])
     if opponent_id == uid:
-        await app.send_message(chat_id, "<b>⚠️ H2H needs two different players.</b>", parse_mode="HTML")
+        await _safe_h2h_send(chat_id, uid, "<b>⚠️ H2H needs two different players.</b>")
         return
     me = await fetchrow("SELECT user_id, username, first_name FROM users WHERE user_id=$1;", uid)
     if not me:
-        await app.send_message(chat_id, "<b>⚠️ Your Crickium profile is not ready yet. Use /start first.</b>", parse_mode="HTML")
+        await _safe_h2h_send(
+            chat_id,
+            uid,
+            "<b>⚠️ Your Crickium profile is not ready yet. Use /start first.</b>",
+        )
         return
     stats = await get_h2h_stats(uid, opponent_id)
-    await app.send_message(chat_id, _h2h_text(dict(me), target, stats), parse_mode="HTML")
+    await _safe_h2h_send(chat_id, uid, _h2h_text(dict(me), target, stats))

@@ -14,8 +14,8 @@ async def _forward_report(message, command_name: str):
     # Require actual text after the command.
     parts = text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        await app.answer_message(
-            message,
+        await app.send_message(
+            chat_id,
             f"Please use /{command_name} followed by your message.",
         )
         return
@@ -28,10 +28,13 @@ async def _forward_report(message, command_name: str):
         )
     except Exception as exc:
         print(f"[{command_name}] forward failed: {exc!r}")
-        await app.answer_message(
-            message,
-            "⚠️ Failed to send your message. Please try again.",
-        )
+        try:
+            await app.send_message(
+                chat_id,
+                "⚠️ Failed to send your message. Please try again.",
+            )
+        except Exception as send_exc:
+            print(f"[{command_name}] fallback message failed: {send_exc!r}")
 
 
 @register("bug")
