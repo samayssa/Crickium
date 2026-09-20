@@ -59,3 +59,45 @@ def ipl_team_emoji_html(team_code: str) -> str:
 def ovr_emoji_html() -> str:
     """Return the custom emoji used for OVR labels, with a safe fallback."""
     return f'<tg-emoji emoji-id="{OVR_EMOJI_ID}">⭐</tg-emoji>'
+
+# Milestone notification custom-emoji slots. Keep these as ``None`` until
+# Telegram custom-emoji IDs are supplied. The milestone renderer always falls
+# back to the Unicode value while they are None, and automatically gives the
+# custom emoji first priority once a valid ID is added here.
+MILESTONE_LINE_EMOJIS: dict[str, str | None] = {
+    "title": None,
+    "player": None,
+    "game": None,
+    "achievement": None,
+    "owner": None,
+    "stat": None,
+}
+
+# Optional media for milestone alerts. Replace ``file_id`` with a Telegram
+# animation/GIF or video file_id later. ``None`` means send the normal text
+# alert only for now.
+MILESTONE_MEDIA: dict[str, dict[str, str | None]] = {
+    "BAT_50": {"type": "animation", "file_id": None},
+    "BAT_100": {"type": "animation", "file_id": None},
+    "BOWL_3": {"type": "animation", "file_id": None},
+    "BOWL_5": {"type": "animation", "file_id": None},
+    "HAT_TRICK": {"type": "animation", "file_id": None},
+    "PARTNERSHIP": {"type": "animation", "file_id": None},
+}
+
+MILESTONE_FALLBACK_EMOJIS: dict[str, str] = {
+    "BAT_50": "🏏",
+    "BAT_100": "💯",
+    "BOWL_3": "🎯",
+    "BOWL_5": "🔥",
+    "HAT_TRICK": "🎩",
+    "PARTNERSHIP": "🤝",
+}
+
+
+def milestone_emoji_html(category: str, fallback: str) -> str:
+    """Return custom emoji HTML when configured, otherwise Unicode fallback."""
+    custom_id = MILESTONE_LINE_EMOJIS.get(str(category))
+    if custom_id:
+        return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
+    return fallback
