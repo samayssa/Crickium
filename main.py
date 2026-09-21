@@ -18,7 +18,11 @@ from config import ADMIN_USER_ID, NOTIFICATION_GROUP_ID
 from database.query import fetchval
 from utils.group_notification import format_group_notification
 from utils.group_added_response import format_group_added_response
-from database.connection import connect, disconnect
+from database.connection import (
+    connect,
+    disconnect,
+    is_database_quota_error,
+)
 from database.broadcast_repo import upsert_chat
 from database.runtime_repo import clear_bot_session, get_bot_session, save_bot_session
 from database.migrate import migrate
@@ -337,9 +341,20 @@ async def handle_message(_, message):
     print(f"[main.py] Dispatching to handler for '/{command}'...")
     try:
         await handler(payload)
-    except Exception:
+    except Exception as exc:
         print(f"[main.py] !! Handler for '/{command}' raised an exception:")
         traceback.print_exc()
+        if is_database_quota_error(exc) or "Database provider quota" in str(exc):
+            try:
+                await app.send_message(
+                    int((payload.get("chat") or {}).get("id") or 0),
+                    "⚠️ <b>Database temporarily unavailable</b>\n\n"
+                    "The database provider has reached its current project/account quota. "
+                    "Your command was received, but data-backed features cannot run until the quota is available again.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
 
 async def handle_callback_query(_, callback_query):
@@ -362,9 +377,18 @@ async def handle_callback_query(_, callback_query):
     print(f"[main.py] Dispatching callback to handler for action '{action}'...")
     try:
         await handler(payload)
-    except Exception:
+    except Exception as exc:
         print(f"[main.py] !! Callback handler for '{action}' raised an exception:")
         traceback.print_exc()
+        if is_database_quota_error(exc) or "Database provider quota" in str(exc):
+            try:
+                await app.answer_callback_query(
+                    payload.get("id"),
+                    "Database quota is temporarily exhausted. Please retry later.",
+                    show_alert=True,
+                )
+            except Exception:
+                pass
 
 
 async def _build_client(session_string: str | None = None) -> Client:
