@@ -1,8 +1,15 @@
 from __future__ import annotations
+import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
+_SUPPORTS_STYLE = 'style' in _PARAMS
+_HINT = {'success':'🟢','danger':'🔴','primary':'🔵'}
+
 def _b(text, data, style='primary'):
-    return InlineKeyboardButton(text, callback_data=data, style=style)
+    if _SUPPORTS_STYLE:
+        return InlineKeyboardButton(text, callback_data=data, style=style)
+    return InlineKeyboardButton(f"{_HINT.get(style,'')} {text}".strip(), callback_data=data)
 
 def challenge_keyboard(match_id):
     return InlineKeyboardMarkup([[_b('✅ Accept Challenge',f'playint_accept:{match_id}','success'),_b('❌ Decline',f'playint_decline:{match_id}','danger')]])

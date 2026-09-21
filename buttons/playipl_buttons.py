@@ -4,34 +4,28 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from utils.PremiumEmoji import get_ipl_team_emoji
 
-
-def _button_supports(name: str) -> bool:
-    # Keep button construction safe if a deployment is temporarily running
-    # an older Kurigram build. The requirements file pins the supported build.
-    try:
-        return name in inspect.signature(InlineKeyboardButton).parameters
-    except (TypeError, ValueError):
-        return False
-
-
-_SUPPORTS_STYLE = _button_supports('style')
-_SUPPORTS_ICON = _button_supports('icon_custom_emoji_id')
+_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
+_SUPPORTS_STYLE = 'style' in _PARAMS
+_SUPPORTS_ICON = 'icon_custom_emoji_id' in _PARAMS
+_HINT = {'success': '🟢', 'danger': '🔴', 'primary': '🔵'}
 
 
 def _b(text, data, style='primary', icon_custom_emoji_id=None, fallback_text=None):
-    """Build a Telegram inline button with safe style/icon compatibility."""
+    """Build a button, using a custom icon when the installed client supports it.
+
+    The fallback text retains the existing Unicode emoji styling when custom
+    emoji button icons are unavailable in the installed Telegram client.
+    """
+    if _SUPPORTS_ICON and icon_custom_emoji_id:
+        kwargs = {'callback_data': data, 'icon_custom_emoji_id': str(icon_custom_emoji_id)}
+        if _SUPPORTS_STYLE:
+            kwargs['style'] = style
+        return InlineKeyboardButton(text, **kwargs)
+
     label = fallback_text if fallback_text is not None else text
-    kwargs = {'callback_data': data}
-
-    # Telegram Bot API 9.4+ / current Kurigram supports native button styles.
     if _SUPPORTS_STYLE:
-        kwargs['style'] = style
-
-    # Custom icons are optional. Never pass the argument when unsupported.
-    if icon_custom_emoji_id and _SUPPORTS_ICON:
-        kwargs['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
-
-    return InlineKeyboardButton(label, **kwargs)
+        return InlineKeyboardButton(label, callback_data=data, style=style)
+    return InlineKeyboardButton(f"{_HINT.get(style, '')} {label}".strip(), callback_data=data)
 
 
 def challenge_keyboard(match_id):
