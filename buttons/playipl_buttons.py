@@ -1,31 +1,19 @@
 from __future__ import annotations
-import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from utils.PremiumEmoji import get_ipl_team_emoji
 
-_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
-_SUPPORTS_STYLE = 'style' in _PARAMS
-_SUPPORTS_ICON = 'icon_custom_emoji_id' in _PARAMS
-_HINT = {'success': '🟢', 'danger': '🔴', 'primary': '🔵'}
-
-
 def _b(text, data, style='primary', icon_custom_emoji_id=None, fallback_text=None):
-    """Build a button, using a custom icon when the installed client supports it.
+    """Build a native Telegram button with background style and optional custom icon.
 
-    The fallback text retains the existing Unicode emoji styling when custom
-    emoji button icons are unavailable in the installed Telegram client.
+    Requires the bundled Kurigram version that supports Telegram Bot API 9.4
+    button styles and custom button icons.
     """
-    if _SUPPORTS_ICON and icon_custom_emoji_id:
-        kwargs = {'callback_data': data, 'icon_custom_emoji_id': str(icon_custom_emoji_id)}
-        if _SUPPORTS_STYLE:
-            kwargs['style'] = style
-        return InlineKeyboardButton(text, **kwargs)
-
     label = fallback_text if fallback_text is not None else text
-    if _SUPPORTS_STYLE:
-        return InlineKeyboardButton(label, callback_data=data, style=style)
-    return InlineKeyboardButton(f"{_HINT.get(style, '')} {label}".strip(), callback_data=data)
+    kwargs = {'callback_data': data, 'style': style}
+    if icon_custom_emoji_id:
+        kwargs['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
+    return InlineKeyboardButton(label, **kwargs)
 
 
 def challenge_keyboard(match_id):
