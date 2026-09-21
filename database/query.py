@@ -1,5 +1,5 @@
 
-from database.connection import get_pool
+from database.connection import get_pool, mark_database_quota_exhausted, is_database_quota_error
 
 MAX_LOG_VALUE = 180
 MAX_LOG_QUERY = 120
@@ -39,6 +39,8 @@ async def execute(query, *args):
         print(f"[db/query] EXECUTE OK: {result}")
         return result
     except Exception as e:
+        if is_database_quota_error(e):
+            mark_database_quota_exhausted(e)
         print(f"[db/query] !! EXECUTE FAILED: {e!r}")
         raise
 
@@ -53,6 +55,8 @@ async def executemany(query, args):
         print("[db/query] EXECUTEMANY OK")
         return result
     except Exception as e:
+        if is_database_quota_error(e):
+            mark_database_quota_exhausted(e)
         print(f"[db/query] !! EXECUTEMANY FAILED: {e!r}")
         raise
 
@@ -67,6 +71,8 @@ async def fetch(query, *args):
         print(f"[db/query] FETCH OK: {len(result)} row(s)")
         return result
     except Exception as e:
+        if is_database_quota_error(e):
+            mark_database_quota_exhausted(e)
         print(f"[db/query] !! FETCH FAILED: {e!r}")
         raise
 
@@ -85,6 +91,8 @@ async def fetchrow(query, *args):
         print(f"[db/query] FETCHROW OK: {preview}")
         return result
     except Exception as e:
+        if is_database_quota_error(e):
+            mark_database_quota_exhausted(e)
         print(f"[db/query] !! FETCHROW FAILED: {e!r}")
         raise
 
@@ -99,6 +107,8 @@ async def fetchval(query, *args):
         print(f"[db/query] FETCHVAL OK: {_short_value(result)}")
         return result
     except Exception as e:
+        if is_database_quota_error(e):
+            mark_database_quota_exhausted(e)
         print(f"[db/query] !! FETCHVAL FAILED: {e!r}")
         raise
 
@@ -114,5 +124,7 @@ async def transaction(callback):
         print("[db/query] TRANSACTION committed")
         return result
     except Exception as e:
+        if is_database_quota_error(e):
+            mark_database_quota_exhausted(e)
         print(f"[db/query] !! TRANSACTION FAILED (rolled back): {e!r}")
         raise
