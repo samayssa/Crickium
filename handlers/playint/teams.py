@@ -2,7 +2,7 @@ from __future__ import annotations
 import html, json
 from handlers.registry import register_callback
 from app import app
-from database.playint_repo import get_match,set_team,set_xi,set_xi_confirmed
+from database.playint_repo import get_match,set_team,set_xi,set_xi_confirmed,set_message_id
 from database.playint_repo import get_team_players
 from database.playint_teams_repo import TEAM_MAP,TEAMS_PAGE_1,TEAMS_PAGE_2,team_flag,team_name,team_label
 from buttons.playint_buttons import team_keyboard
@@ -18,12 +18,67 @@ def _team_text(match, p1=None, p2=None):
             "</b><blockquote><b>Pick your national team for the T20I. 🏏</b></blockquote>\n\n"
             "<b>╰━━━━━━━━━━━━━━━━━━╯</b>")
 
-async def send_team_selection(chat_id,match):
-    m=await get_match(match['match_id'])
-    sent=await app.send_message(chat_id,_team_text(m),parse_mode='HTML',reply_markup=team_keyboard(m['match_id'],1))
-    # The original challenge message is no longer the active message; store this one.
-    from database.playint_repo import set_message_id
-    await set_message_id(m['match_id'],sent['message_id'])
+async def send_team_selection(chat_id, match):
+    """Publish the T20I team-selection stage before cleaning up the old
+    challenge message.  This prevents a cross-transport edit failure from
+    blocking progression after a challenge is accepted.
+    """
+    m = await get_match(match['match_id'])
+    if not m:
+        raise RuntimeError(f"PLAYINT match disappeared before team selection")
+
+    team_text = _team_text(m)
+    markup = team_keyboard(m['match_id'], 1)
+    old_message_id = int(m.get('message_id') or 0)
+
+    try:
+        sent = await app.send_message(
+            chat_id, team_text, parse_mode='HTML', reply_markup=markup
+        )
+    except Exception as send_exc:
+        print(f"[playint] team-selection send failed for match_id={m['match_id']}: {send_exc!r}")
+        if old_message_id <= 0:
+            raise
+        try:
+            # Styled keyboards use the raw Bot API in app.py, so this fallback
+            # does not depend on the MTProto edit path.
+            await app.edit_message_text(
+                chat_id, old_message_id, team_text,
+                parse_mode='HTML', reply_markup=markup,
+            )
+            await set_message_id(m['match_id'], old_message_id)
+            return {'message_id': old_message_id}
+        except Exception as fallback_exc:
+            print(f"[playint] team-selection fallback edit failed for match_id={m['match_id']}: {fallback_exc!r}")
+            raise RuntimeError(
+                f"Unable to publish T20I team-selection stage for match {m['match_id']}"
+            ) from send_exc
+
+    message_id = int(sent.get('message_id') or 0)
+    if message_id <= 0:
+        raise RuntimeError(f"Telegram returned no message_id for PLAYINT team selection (match {m['match_id']})")
+
+    try:
+        await set_message_id(m['match_id'], message_id)
+    except Exception as db_exc:
+        print(f"[playint] failed to persist team-selection message_id for match_id={m['match_id']}: {db_exc!r}")
+        try:
+            await app.delete_message(chat_id, message_id)
+        except Exception as delete_exc:
+            print(f"[playint] cleanup of detached team-selection message failed: {delete_exc!r}")
+        if old_message_id > 0:
+            try:
+                await app.edit_message_text(
+                    chat_id, old_message_id, team_text,
+                    parse_mode='HTML', reply_markup=markup,
+                )
+                await set_message_id(m['match_id'], old_message_id)
+                return {'message_id': old_message_id}
+            except Exception as fallback_exc:
+                print(f"[playint] DB-pointer fallback failed for match_id={m['match_id']}: {fallback_exc!r}")
+        raise
+
+    return sent
 
 @register_callback('playint_team_page')
 async def playint_team_page(callback_query):
