@@ -1,6 +1,10 @@
 from __future__ import annotations
 import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+try:
+    from pyrogram.enums import ButtonStyle
+except Exception:
+    ButtonStyle = None
 
 from utils.PremiumEmoji import get_ipl_team_emoji
 
@@ -10,21 +14,27 @@ _SUPPORTS_ICON = 'icon_custom_emoji_id' in _PARAMS
 _HINT = {'success': '🟢', 'danger': '🔴', 'primary': '🔵'}
 
 
-def _b(text, data, style='primary', icon_custom_emoji_id=None, fallback_text=None):
-    """Build a button, using a custom icon when the installed client supports it.
+def _style_value(style):
+    if ButtonStyle is None:
+        return style
+    return {
+        'primary': ButtonStyle.PRIMARY,
+        'success': ButtonStyle.SUCCESS,
+        'danger': ButtonStyle.DANGER,
+    }.get(str(style).lower(), ButtonStyle.DEFAULT)
 
-    The fallback text retains the existing Unicode emoji styling when custom
-    emoji button icons are unavailable in the installed Telegram client.
-    """
+
+def _b(text, data, style='primary', icon_custom_emoji_id=None, fallback_text=None):
+    """Build a button using Telegram's real button style enum when available."""
     if _SUPPORTS_ICON and icon_custom_emoji_id:
         kwargs = {'callback_data': data, 'icon_custom_emoji_id': str(icon_custom_emoji_id)}
         if _SUPPORTS_STYLE:
-            kwargs['style'] = style
+            kwargs['style'] = _style_value(style)
         return InlineKeyboardButton(text, **kwargs)
 
     label = fallback_text if fallback_text is not None else text
     if _SUPPORTS_STYLE:
-        return InlineKeyboardButton(label, callback_data=data, style=style)
+        return InlineKeyboardButton(label, callback_data=data, style=_style_value(style))
     return InlineKeyboardButton(f"{_HINT.get(style, '')} {label}".strip(), callback_data=data)
 
 
