@@ -38,6 +38,7 @@ from engines.playipl_runtime import (
 from services.search import find_stadium_image_url
 from services.match_summary import send_match_summary, player_details
 from utils.mentions import mention_html
+from utils.PremiumEmoji import ipl_team_emoji_html
 from database.playipl_teams_repo import team_name, team_color, team_short, team_label, team_short_label
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
@@ -381,7 +382,7 @@ def _impact_text(session: Any) -> str:
             continue
         xi, bench = _impact_players(session, code)
         st = state[code]
-        chunks.append(f'{label} <b>{mention} • {team_label(code).upper()} ({team_short(code)})</b>')
+        chunks.append(f'{label} <b>{mention} • {ipl_team_emoji_html(code)} {team_name(code).upper()} ({team_short(code)})</b>')
         if st.get('done'):
             chunks.append('✅ <b>Impact Player confirmed.</b>')
         elif st.get('stage') == 'in':

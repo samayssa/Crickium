@@ -5,6 +5,7 @@ from app import app
 from database.playipl_repo import get_match,set_xi,set_xi_confirmed,get_recent_playing_xi,save_recent_playing_xi
 from database.playipl_repo import get_team_players
 from database.playipl_teams_repo import team_name,team_label
+from utils.PremiumEmoji import ipl_team_emoji_html
 from buttons.playipl_challenger_buttons import challenger_xi_keyboard
 from buttons.playipl_opponent_buttons import opponent_xi_keyboard
 from utils.mentions import mention_html
@@ -39,7 +40,8 @@ def _valid(players):
 def _build_text(code,players,selected):
     c=_role_counts([p for p in players if int(p.get('player_id') or 0) in selected])
     status='✅ Team Valid' if _valid([p for p in players if int(p.get('player_id') or 0) in selected]) else '⚠️ Team Invalid'
-    lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_label(code).upper()} ({code})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
+    team_display=f"{ipl_team_emoji_html(code)} {team_name(code).upper()}"
+    lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_display} ({code})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
     chosen=_chosen_in_order(players, selected)
     lines.extend([p.get('name','Player') for p in chosen])
     lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
@@ -145,12 +147,12 @@ async def playipl_xi_confirm(callback_query):
     await app.send_message(callback_query['message']['chat']['id'],preview,parse_mode='HTML')
     await asyncio.sleep(1)
     player_mention=mention_html(uid, callback_query['from'].get('username'), callback_query['from'].get('first_name'))
-    team=team_label(code); bench=[]
+    team_display=f"{ipl_team_emoji_html(code)} {team_name(code).upper()}"; bench=[]
     for p in players:
         if int(p.get('player_id') or 0) not in selected: bench.append(p)
         if len(bench)>=5: break
     final=("<b>╭━━〔 🏏 PLAYING XI CONFIRMED 〕━━╮</b>\n\n"
-           f"🏏 <b>{player_mention} • {team.upper()} ({code})</b>\n\n"
+           f"🏏 <b>{player_mention} • {team_display} ({code})</b>\n\n"
            "<blockquote><b>🏏 PLAYING XI</b>\n"+"\n".join(f"{i+1}. {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for i,p in enumerate(chosen))+"</blockquote>\n\n"
            "<blockquote><b>🪑 BENCH / SUBSTITUTES</b>\n"+"\n".join(f"• {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for p in bench)+"</blockquote>\n\n🔒 <b>Playing XI Locked</b>\n\n╰━━━━━━━━━━━━━━━━━━╯")
     await app.send_message(callback_query['message']['chat']['id'],final,parse_mode='HTML')

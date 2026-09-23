@@ -121,8 +121,19 @@ async def playipl_accept(callback_query):
           "<blockquote><b>🏏 Indian Premier League\n🌍 Franchise Squads</b></blockquote>\n\n"
           "✅ <b>Challenge Accepted!</b>\n\nGet ready to choose your IPL franchise. 🏏🔥\n\n"
           "<b>╰━━━━━━━━━━━━━━━━━━╯</b>")
-    await app.edit_message_text(msg['chat']['id'],msg['message_id'],text,parse_mode='HTML',reply_markup={'inline_keyboard':[]})
-    await send_team_selection(msg['chat']['id'],match)
+    # Publish the next stage first.  The challenge message was originally
+    # sent through the Bot API because it contains styled buttons; editing it
+    # through the MTProto client can fail on some Kurigram/Telegram paths.
+    # A cleanup failure must never prevent the newly published team-selection
+    # stage from appearing.
+    await send_team_selection(msg['chat']['id'], match)
+    try:
+        await app.edit_message_text(
+            msg['chat']['id'], msg['message_id'], text,
+            parse_mode='HTML', reply_markup={'inline_keyboard': []},
+        )
+    except Exception as cleanup_exc:
+        print(f"[playipl] accepted-challenge cleanup edit failed for match_id={mid}: {cleanup_exc!r}")
 
 @register_callback('playipl_decline')
 async def playipl_decline(callback_query):

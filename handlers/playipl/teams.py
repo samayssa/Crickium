@@ -2,7 +2,7 @@ from __future__ import annotations
 import html, json
 from handlers.registry import register_callback
 from app import app
-from database.playipl_repo import get_match,set_team,set_xi,set_xi_confirmed
+from database.playipl_repo import get_match,set_team,set_xi,set_xi_confirmed,set_message_id
 from database.playipl_repo import get_team_players
 from database.playipl_teams_repo import TEAM_MAP,TEAM_ORDER,team_name,team_label,team_button_label,team_short,team_color
 from buttons.playipl_buttons import team_keyboard
@@ -18,12 +18,74 @@ def _team_text(match, p1=None, p2=None):
             "</b><blockquote><b>Pick your IPL franchise for the match. 🏏</b></blockquote>\n\n"
             "<b>╰━━━━━━━━━━━━━━━━━━╯</b>")
 
-async def send_team_selection(chat_id,match):
-    m=await get_match(match['match_id'])
-    sent=await app.send_message(chat_id,_team_text(m),parse_mode='HTML',reply_markup=team_keyboard(m['match_id']))
-    # The original challenge message is no longer the active message; store this one.
-    from database.playipl_repo import set_message_id
-    await set_message_id(m['match_id'],sent['message_id'])
+async def send_team_selection(chat_id, match):
+    """Publish the team-selection stage without letting a failed cleanup edit
+    block the actual game progression.
+
+    Challenge messages that contain styled buttons are sent through the raw
+    Bot API adapter.  Editing that message through the MTProto client can fail
+    even though a new Bot API message can be sent successfully.  Therefore the
+    next-stage message is published first; cleanup of the old challenge message
+    is deliberately handled by the caller as a non-fatal operation.
+    """
+    m = await get_match(match['match_id'])
+    if not m:
+        raise RuntimeError("PLAYIPL match disappeared before team selection")
+
+    team_text = _team_text(m)
+    markup = team_keyboard(m['match_id'])
+    old_message_id = int(m.get('message_id') or 0)
+
+    try:
+        sent = await app.send_message(
+            chat_id, team_text, parse_mode='HTML', reply_markup=markup
+        )
+    except Exception as send_exc:
+        print(f"[playipl] team-selection send failed for match_id={m['match_id']}: {send_exc!r}")
+        if old_message_id <= 0:
+            raise
+        try:
+            # The adapter routes styled keyboards through the Bot API, avoiding
+            # the MTProto-vs-Bot-API edit mismatch that can stall acceptance.
+            await app.edit_message_text(
+                chat_id, old_message_id, team_text,
+                parse_mode='HTML', reply_markup=markup,
+            )
+            await set_message_id(m['match_id'], old_message_id)
+            return {'message_id': old_message_id}
+        except Exception as fallback_exc:
+            print(f"[playipl] team-selection fallback edit failed for match_id={m['match_id']}: {fallback_exc!r}")
+            raise RuntimeError(
+                f"Unable to publish IPL team-selection stage for match {m['match_id']}"
+            ) from send_exc
+
+    message_id = int(sent.get('message_id') or 0)
+    if message_id <= 0:
+        raise RuntimeError(f"Telegram returned no message_id for PLAYIPL team selection (match {m['match_id']})")
+
+    try:
+        await set_message_id(m['match_id'], message_id)
+    except Exception as db_exc:
+        print(f"[playipl] failed to persist team-selection message_id for match_id={m['match_id']}: {db_exc!r}")
+        # Avoid leaving a detached duplicate message if the pointer cannot be
+        # persisted. Fall back to editing the old message in place.
+        try:
+            await app.delete_message(chat_id, message_id)
+        except Exception as delete_exc:
+            print(f"[playipl] cleanup of detached team-selection message failed: {delete_exc!r}")
+        if old_message_id > 0:
+            try:
+                await app.edit_message_text(
+                    chat_id, old_message_id, team_text,
+                    parse_mode='HTML', reply_markup=markup,
+                )
+                await set_message_id(m['match_id'], old_message_id)
+                return {'message_id': old_message_id}
+            except Exception as fallback_exc:
+                print(f"[playipl] DB-pointer fallback failed for match_id={m['match_id']}: {fallback_exc!r}")
+        raise
+
+    return sent
 
 @register_callback('playipl_team')
 async def playipl_team(callback_query):
