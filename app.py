@@ -479,6 +479,42 @@ class App:
         me = await self._client.get_me()
         return _wrap_user(me)
 
+    async def get_dialog_targets(self) -> list[dict]:
+        """Discover chats that are actually visible to this Telegram account.
+
+        This is deliberately independent of our PostgreSQL broadcast table.
+        It lets owner-only broadcast commands reach chats that exist in the
+        current Telegram session even if the local database was cleared or
+        a target was never persisted there.
+        """
+        targets: list[dict] = []
+        async for dialog in self._client.get_dialogs():
+            chat = getattr(dialog, "chat", None)
+            if chat is None:
+                continue
+            chat_id = int(getattr(chat, "id", 0) or 0)
+            if not chat_id:
+                continue
+            raw_type = str(getattr(chat, "type", "") or "").lower()
+            if "private" in raw_type:
+                target_type = "user"
+                title = getattr(chat, "first_name", None) or getattr(chat, "username", None)
+            elif "group" in raw_type or "supergroup" in raw_type:
+                target_type = "group"
+                title = getattr(chat, "title", None) or getattr(chat, "username", None)
+            elif "channel" in raw_type:
+                target_type = "channel"
+                title = getattr(chat, "title", None) or getattr(chat, "username", None)
+            else:
+                continue
+            targets.append({
+                "chat_id": chat_id,
+                "target_type": target_type,
+                "title": title,
+                "source": "telegram_dialogs",
+            })
+        return targets
+
     async def get_updates(self, offset=None, timeout=25, allowed_updates=None):
         # Pyrogram is event-driven. This method stays only for backward compatibility.
         return []
