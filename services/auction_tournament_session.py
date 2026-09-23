@@ -43,6 +43,43 @@ def _write(payload: dict) -> None:
     temp.replace(SESSION_FILE)
 
 
+def has_active_prompt_message(user_id: int, chat_id: int, message_id: int) -> bool:
+    """Return True only when a reply points at a known active tournament prompt.
+
+    This prevents the auction subsystem from querying PostgreSQL for every
+    ordinary reply in busy groups. The mirror is advisory; the database remains
+    authoritative once a prompt is actually matched.
+    """
+    try:
+        if not SESSION_FILE.exists():
+            return False
+        raw = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return False
+        target_user = int(user_id)
+        target_chat = int(chat_id)
+        target_message = int(message_id)
+        for payload in raw.values():
+            tournament = payload.get("tournament") if isinstance(payload, dict) else None
+            if not isinstance(tournament, dict):
+                continue
+            if int(tournament.get("creator_id") or 0) != target_user:
+                continue
+            if int(tournament.get("creation_chat_id") or 0) != target_chat:
+                continue
+            prompt_id = int(
+                tournament.get("prompt_message_id")
+                or tournament.get("overview_message_id")
+                or 0
+            )
+            if prompt_id == target_message:
+                return True
+        return False
+    except Exception as exc:
+        print(f"[auction-session] prompt lookup failed: {exc!r}")
+        return False
+
+
 async def sync_tournament_session(tournament_id: int) -> None:
     try:
         from database.auction_tournament_repo import get_tournament, fetch_teams, fetch_pool_summary
