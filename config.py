@@ -21,7 +21,7 @@ ADMIN_USER_ID = 1766243373
 # ==========================
 
 DATABASE_URL = (
-    "postgresql://neondb_owner:npg_2nWk1zLQtjau@ep-bitter-hall-a4ihpydn-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    "postgres://avnadmin:AVNS_-RwxPqRyFOf41gClEZm@pg-baef02d-tyagineetu983-b524.k.aivencloud.com:21437/defaultdb?sslmode=require"
 )
 
 # ==========================

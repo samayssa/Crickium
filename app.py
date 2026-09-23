@@ -169,6 +169,28 @@ def _is_bad_request_api_error(exc: Exception) -> bool:
     return "bad request" in str(exc).lower()
 
 
+def _is_advanced_button_field_error(exc: Exception) -> bool:
+    """Return True only when Telegram points at advanced button metadata.
+
+    A generic 400 should not cause us to silently remove style fields, because
+    that turns the intended red/green/blue keyboard into an unstyled keyboard
+    even when the actual problem is unrelated (for example message text).
+    """
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in (
+            "icon_custom_emoji_id",
+            "custom emoji identifier",
+            "style",
+            "keyboardbuttonstyle",
+            "unknown field",
+            "can't parse reply_markup",
+            "cant parse reply_markup",
+        )
+    )
+
+
 def _strip_custom_emoji_icons(markup: dict | None) -> dict | None:
     """Remove only invalid custom-emoji button icons, preserving button styles."""
     if not markup:
@@ -257,9 +279,43 @@ def _wrap_http_message(result: dict) -> dict:
     }
 
 
+def _normalize_button_style(style: Any) -> str | None:
+    """Normalize Kurigram/Pyrogram ButtonStyle values for the Bot API JSON."""
+    if style is None:
+        return None
+    if isinstance(style, str):
+        value = style.strip().lower()
+    else:
+        name = getattr(style, "name", None)
+        value_attr = getattr(style, "value", None)
+        value = str(name or value_attr or style).strip().lower()
+
+    if value.startswith("buttonstyle."):
+        value = value.split(".", 1)[1]
+    elif value.startswith("button_style."):
+        value = value.split(".", 1)[1]
+
+    mapping = {
+        "default": None,
+        "none": None,
+        "primary": "primary",
+        "success": "success",
+        "danger": "danger",
+        "link": "link",
+    }
+    return mapping.get(value, value if value in {"primary", "success", "danger"} else None)
+
+
 def _button_to_json(btn: Any) -> dict:
     if isinstance(btn, dict):
-        return {k: v for k, v in btn.items() if v is not None}
+        result = {k: v for k, v in btn.items() if v is not None}
+        if "style" in result:
+            normalized = _normalize_button_style(result.get("style"))
+            if normalized is None:
+                result.pop("style", None)
+            else:
+                result["style"] = normalized
+        return result
 
     entry: dict[str, Any] = {"text": getattr(btn, "text", "Button")}
     callback_data = getattr(btn, "callback_data", None)
@@ -268,12 +324,12 @@ def _button_to_json(btn: Any) -> dict:
     url = getattr(btn, "url", None)
     if url:
         entry["url"] = url
-    style = getattr(btn, "style", None)
+    style = _normalize_button_style(getattr(btn, "style", None))
     if style:
         entry["style"] = style
     icon = getattr(btn, "icon_custom_emoji_id", None)
     if icon:
-        entry["icon_custom_emoji_id"] = icon
+        entry["icon_custom_emoji_id"] = str(icon)
     return entry
 
 
@@ -329,7 +385,15 @@ def _convert_reply_markup(reply_markup: Any | None):
                     "url": btn.get("url"),
                 }
                 if btn.get("style") is not None and "style" in _BUTTON_PARAMS:
-                    button_kwargs["style"] = btn.get("style")
+                    style_value = _normalize_button_style(btn.get("style"))
+                    try:
+                        from pyrogram.enums import ButtonStyle
+                        if style_value:
+                            style_value = getattr(ButtonStyle, style_value.upper(), style_value)
+                    except Exception:
+                        pass
+                    if style_value is not None:
+                        button_kwargs["style"] = style_value
                 if btn.get("icon_custom_emoji_id") is not None and "icon_custom_emoji_id" in _BUTTON_PARAMS:
                     button_kwargs["icon_custom_emoji_id"] = btn.get("icon_custom_emoji_id")
 
@@ -496,7 +560,7 @@ class App:
                             )
                         else:
                             raise
-                elif _is_bad_request_api_error(exc) and markup_json:
+                elif _is_bad_request_api_error(exc) and markup_json and _is_advanced_button_field_error(exc):
                     print(f"[app.py] Telegram rejected the advanced keyboard; retrying with a basic keyboard: {exc!r}")
                     payload["reply_markup"] = _strip_advanced_button_fields(markup_json)
                     try:
@@ -614,7 +678,7 @@ class App:
                             )
                         else:
                             raise
-                elif _is_bad_request_api_error(exc) and markup_json:
+                elif _is_bad_request_api_error(exc) and markup_json and _is_advanced_button_field_error(exc):
                     print(f"[app.py] Telegram rejected the advanced edit keyboard; retrying with a basic keyboard: {exc!r}")
                     payload["reply_markup"] = _strip_advanced_button_fields(markup_json)
                     try:
