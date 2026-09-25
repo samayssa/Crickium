@@ -203,7 +203,7 @@ def schedule_batsman_keyboard(match_id, players, selected_ids=None):
     return InlineKeyboardMarkup(rows)
 
 
-def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None, stage='out'):
+def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None, stage='out', show_cancel=False):
     rows = []
     pair = []
     action = 'impact_out' if stage == 'out' else 'impact_in'
@@ -220,6 +220,8 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
         label = '✅ CONFIRM OUT PLAYER' if stage == 'out' else '✅ CONFIRM IMPACT PLAYER'
         cb = 'impact_confirm_out' if stage == 'out' else 'impact_confirm_in'
         rows.append([_b(label, f'{prefix}_{cb}:{match_id}:{int(team_id)}', 'danger')])
+    if stage == 'out' and show_cancel:
+        rows.append([_b('❌ CANCEL IMPACT', f'{prefix}_cancel_impact:{match_id}:{int(team_id)}', 'danger')])
     return InlineKeyboardMarkup(rows)
 
 
@@ -228,8 +230,15 @@ def impact_batting_position_keyboard(prefix, match_id, players, selected_positio
     pair = []
     for player in players:
         pos = int(player.get('position') or 0)
+        name = player.get("name", "Batter")
+        if pos == 1:
+            label = f'🏏 STRIKER • {name}'
+        elif pos == 2:
+            label = f'🏏 NON-STRIKER • {name}'
+        else:
+            label = f'#{pos} • {name}'
         style = 'success' if selected_position == pos else 'primary'
-        pair.append(_b(f'#{pos} • {player.get("name", "Batter")}', f'{prefix}_impact_batpos:{match_id}:{pos}', style))
+        pair.append(_b(label, f'{prefix}_impact_batpos:{match_id}:{pos}', style))
         if len(pair) == 2:
             rows.append(pair); pair = []
     if pair:
