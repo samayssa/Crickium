@@ -1,5 +1,6 @@
 from __future__ import annotations
 from utils.PremiumEmoji import impact_player_name_html
+from utils.PremiumEmoji import IMPACT_IN_EMOJI_ID, IMPACT_OUT_EMOJI_ID
 import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 try:
@@ -208,14 +209,22 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
     rows = []
     pair = []
     action = 'impact_out' if stage == 'out' else 'impact_in'
+    icon_id = IMPACT_OUT_EMOJI_ID if stage == 'out' else IMPACT_IN_EMOJI_ID
     for index, player in enumerate(players, start=1):
         pid = int(player.get('player_id') or 0)
-        name = player.get('name', 'Player')
-        if selected_id is not None and pid == int(selected_id):
-            name = impact_player_name_html(name, 'in' if stage == 'in' else 'out')
+        name = str(player.get('name', 'Player'))
+        selected = selected_id is not None and pid == int(selected_id)
         label = f'{index}. {name}'
-        style = 'success' if selected_id is not None and pid == int(selected_id) else 'danger'
-        pair.append(_b(label, f'{prefix}_{action}:{match_id}:{int(team_id)}:{pid}', style))
+        # Inline keyboard labels are not parsed as Telegram HTML.
+        # Native button icon support prevents the custom emoji ID from being shown.
+        button = _b(
+            label,
+            f'{prefix}_{action}:{match_id}:{int(team_id)}:{pid}',
+            'success' if selected else 'danger',
+        )
+        if selected and _SUPPORTS_ICON:
+            button.icon_custom_emoji_id = icon_id
+        pair.append(button)
         if len(pair) == 2:
             rows.append(pair); pair = []
     if pair:

@@ -1,4 +1,5 @@
 from utils.PremiumEmoji import impact_player_name_html
+from utils.PremiumEmoji import IMPACT_IN_EMOJI_ID, IMPACT_OUT_EMOJI_ID
 import inspect
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,6 +12,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 # "danger" (red), "primary" (blue).
 _BUTTON_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
 SUPPORTS_BUTTON_STYLE = "style" in _BUTTON_PARAMS
+SUPPORTS_BUTTON_ICON = "icon_custom_emoji_id" in _BUTTON_PARAMS
 
 _FALLBACK_HINT = {"success": "🟢", "danger": "🔴", "primary": "🔵"}
 
@@ -207,17 +209,30 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
     rows = []
     pair = []
     action = "impact_out" if stage == "out" else "impact_in"
+    icon_id = IMPACT_OUT_EMOJI_ID if stage == "out" else IMPACT_IN_EMOJI_ID
     for index, player in enumerate(players, start=1):
         pid = int(player.get("player_id") or 0)
-        name = player.get('name','Player')
-        if selected_id is not None and pid == int(selected_id):
-            name = impact_player_name_html(name, "in" if stage == "in" else "out")
+        name = str(player.get('name', 'Player'))
+        selected = selected_id is not None and pid == int(selected_id)
         label = f"{index}. {name}"
-        pair.append(_styled_button(
-            label,
-            f"{prefix}_{action}:{match_id}:{int(team_id)}:{pid}",
-            "success" if selected_id is not None and pid == int(selected_id) else "danger",
-        ))
+        # Telegram inline keyboard labels are not parsed as message HTML.
+        # Passing <tg-emoji> here makes the raw emoji ID appear in the button.
+        # Kurigram/Telegram support native button icons through
+        # icon_custom_emoji_id, so use the real button icon instead.
+        if selected and SUPPORTS_BUTTON_ICON:
+            button = _styled_button(
+                label,
+                f"{prefix}_{action}:{match_id}:{int(team_id)}:{pid}",
+                "success",
+            )
+            button.icon_custom_emoji_id = icon_id
+        else:
+            button = _styled_button(
+                label,
+                f"{prefix}_{action}:{match_id}:{int(team_id)}:{pid}",
+                "success" if selected else "danger",
+            )
+        pair.append(button)
         if len(pair) == 2:
             rows.append(pair)
             pair = []
