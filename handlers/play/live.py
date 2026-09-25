@@ -44,7 +44,7 @@ from utils.mentions import display_name, mention_html
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
 from handlers.registry import register_callback
-from services.live_runtime_controls import (ensure_impact_state, reset_impact_pending, full_squad, current_xi, impact_out_candidates, impact_in_candidates, apply_impact_replacement, future_batting_candidates, confirm_batting_order, consume_next_scheduled_bowler, scheduled_bowler_candidates, current_over_number, confirm_next_bowler)
+from services.live_runtime_controls import (ensure_impact_state, reset_impact_pending, full_squad, current_xi, impact_out_candidates, impact_in_candidates, apply_impact_replacement, future_batting_candidates, move_future_batting_player_to_position, confirm_batting_order, consume_next_scheduled_bowler, scheduled_bowler_candidates, current_over_number, confirm_next_bowler)
 from services.super_over_bridge import build_draw_result_text, start_decider
 
 NO_KEYBOARD = {"inline_keyboard": []}
@@ -311,7 +311,7 @@ def _play_impact_markup(session, team_id: int):
         return impact_batting_position_keyboard("play", session.match_id, future_batting_candidates(session), state.get("position"))
     if state.get("stage") == "batrole":
         return impact_batting_role_keyboard("play", session.match_id)
-    return impact_player_keyboard("play", session.match_id, team_id, impact_out_candidates(session, team_id), state.get("out_id"), stage="out")
+    return impact_player_keyboard("play", session.match_id, team_id, impact_out_candidates(session, team_id), state.get("out_id"), stage="out", show_cancel=True)
 
 
 @register_callback("play_set_next_bowler")
@@ -455,6 +455,36 @@ async def on_play_impact_runtime(callback_query):
     await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, uid), parse_mode="HTML", reply_markup=_play_impact_markup(session, uid))
 
 
+@register_callback("play_cancel_impact")
+async def on_play_cancel_impact(callback_query):
+    _, mid_s, owner_s = callback_query["data"].split(":")
+    session = get_session(int(mid_s))
+    owner = int(owner_s)
+    if session is None:
+        return
+    if int(callback_query["from"]["id"]) != owner:
+        await app.answer_callback_query(callback_query["id"], "These are not your Impact Player options.", show_alert=True)
+        return
+    st = ensure_impact_state(session, owner)
+    if st.get("context") != "runtime" or st.get("stage") not in {"out"}:
+        await app.answer_callback_query(callback_query["id"], "This Impact Player screen can no longer be cancelled.", show_alert=True)
+        return
+    return_stage = st.get("return_stage") or session.stage
+    st.update({"stage": "idle", "out_id": None, "in_id": None, "context": None, "return_stage": None, "entry_role": None, "position": None})
+    session.stage = return_stage
+    await app.answer_callback_query(callback_query["id"], "Impact Player cancelled.")
+    if return_stage == "choose_bowler":
+        markup = bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get("used"))
+        prompt = True
+    elif return_stage == "choose_tactic":
+        markup = bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get("used"))
+        prompt = False
+    else:
+        markup = strategy_keyboard(session.match_id, session.auto_batsman_enabled, not ensure_impact_state(session, int(session.batting_team_id)).get("used"))
+        prompt = False
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode="HTML", reply_markup=markup)
+
+
 @register_callback("play_impact_out")
 async def on_play_impact_out(callback_query):
     parts=callback_query["data"].split(":")
@@ -523,15 +553,31 @@ async def on_play_impact_confirm_in(callback_query):
         st["stage"]="batpos"
         await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, owner), parse_mode="HTML", reply_markup=impact_batting_position_keyboard("play", session.match_id, future_batting_candidates(session), st.get("position")))
         return
+    if owner == int(session.batting_team_id):
+        st["stage"] = "batpos"
+        st["context"] = "runtime"
+        await app.edit_message_text(
+            session.chat_id, session.live_message_id,
+            _play_impact_text(session, owner),
+            parse_mode="HTML",
+            reply_markup=impact_batting_position_keyboard("play", session.match_id, future_batting_candidates(session), st.get("position")),
+        )
+        return
+
+    # A bowling-side Impact Player will bat in the next innings. Let the user
+    # place that incoming player in the future XI before returning to the
+    # current bowling/batting stage. If the current bowler was replaced, the
+    # normal tactic re-selection remains the next stage after this step.
     return_stage = "choose_tactic" if replacing_current_bowler else (st.get("return_stage") or session.stage)
-    session.stage=return_stage
-    if return_stage=="choose_bowler":
-        markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, session.auto_bowler_enabled, False); prompt=True
-    elif return_stage=="choose_tactic":
-        markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, False); prompt=False
-    else:
-        markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled, False); prompt=False
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode="HTML", reply_markup=markup)
+    st["return_stage"] = return_stage
+    st["stage"] = "batpos"
+    st["context"] = "runtime"
+    await app.edit_message_text(
+        session.chat_id, session.live_message_id,
+        _play_impact_text(session, owner),
+        parse_mode="HTML",
+        reply_markup=impact_batting_position_keyboard("play", session.match_id, future_batting_candidates(session, owner), st.get("position")),
+    )
 
 
 @register_callback("play_impact_batpos")
@@ -540,12 +586,13 @@ async def on_play_impact_batpos(callback_query):
     if session is None: return
     uid=int(callback_query["from"]["id"]); st=ensure_impact_state(session, uid)
     if st.get("stage")!="batpos": return
-    valid={int(p.get("position") or 0) for p in future_batting_candidates(session)}
+    candidates = future_batting_candidates(session) if uid == int(session.batting_team_id) else future_batting_candidates(session, uid)
+    valid={int(p.get("position") or 0) for p in candidates}
     if pos not in valid:
         await app.answer_callback_query(callback_query["id"], "That batting position is not available.", show_alert=True); return
     st["position"]=None if int(st.get("position") or -1)==pos else pos
     await app.answer_callback_query(callback_query["id"], "Position selected." if st["position"] else "Selection removed.")
-    await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, uid), parse_mode="HTML", reply_markup=impact_batting_position_keyboard("play", session.match_id, future_batting_candidates(session), st.get("position")))
+    await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, uid), parse_mode="HTML", reply_markup=impact_batting_position_keyboard("play", session.match_id, candidates, st.get("position")))
 
 
 @register_callback("play_impact_confirm_batpos")
@@ -556,13 +603,29 @@ async def on_play_impact_confirm_batpos(callback_query):
     if st.get("stage")!="batpos" or st.get("position") is None:
         await app.answer_callback_query(callback_query["id"], "Select a batting position first.", show_alert=True); return
     try:
-        from services.live_runtime_controls import move_batting_player_to_position
-        move_batting_player_to_position(session, uid, int(st["position"]))
+        if uid == int(session.batting_team_id):
+            from services.live_runtime_controls import move_batting_player_to_position
+            move_batting_player_to_position(session, uid, int(st["position"]))
+            st["stage"]="batrole"
+            await app.answer_callback_query(callback_query["id"], "Batting position confirmed!")
+            await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, uid), parse_mode="HTML", reply_markup=impact_batting_role_keyboard("play", session.match_id))
+            return
+
+        move_future_batting_player_to_position(session, uid, int(st["in_id"]), int(st["position"]))
     except Exception as exc:
         await app.answer_callback_query(callback_query["id"], str(exc), show_alert=True); return
-    st["stage"]="batrole"
+
+    return_stage = st.get("return_stage") or session.stage
+    st.update({"stage":"done", "context":None, "return_stage":None, "position":None, "entry_role":None})
+    session.stage = return_stage
     await app.answer_callback_query(callback_query["id"], "Batting position confirmed!")
-    await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, uid), parse_mode="HTML", reply_markup=impact_batting_role_keyboard("play", session.match_id))
+    if return_stage=="choose_bowler":
+        markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get("used")); prompt=True
+    elif return_stage=="choose_tactic":
+        markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get("used")); prompt=False
+    else:
+        markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled, not ensure_impact_state(session, int(session.batting_team_id)).get("used")); prompt=False
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode="HTML", reply_markup=markup)
 
 
 @register_callback("play_impact_role")
