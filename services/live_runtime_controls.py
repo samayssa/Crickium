@@ -222,7 +222,20 @@ def apply_impact_replacement(session: Any, team_id: int, out_id: int, in_id: int
     return out_player, in_player
 
 
-def future_batting_candidates(session: Any) -> list[dict[str, Any]]:
+def future_batting_candidates(session: Any, team_id: int | None = None) -> list[dict[str, Any]]:
+    # When a team is not currently batting, its whole current XI is still a
+    # future batting order. This is used by the runtime Impact Player flow so
+    # the bowling-side user can place the incoming player for innings two.
+    if team_id is not None and int(team_id) != int(session.batting_team_id):
+        xi = current_xi(session, int(team_id))
+        return [
+            {
+                **dict(player),
+                "position": index + 1,
+            }
+            for index, player in enumerate(xi)
+        ]
+
     order = session.innings.batting_order
     start = int(session.innings.next_batter_index or 0)
     active = _active_batter_ids(session, session.batting_team_id)
@@ -281,6 +294,31 @@ def future_batting_candidates(session: Any) -> list[dict[str, Any]]:
 
 def selected_batting_order(session: Any) -> list[int]:
     return list(session.pending_batsman_order)
+
+
+def move_future_batting_player_to_position(session: Any, team_id: int, player_id: int, target_position: int) -> None:
+    """Move an Impact Player inside a team's future XI batting order.
+
+    This path is used only when the team is currently bowling, so the team
+    has no live innings batting_order yet. The reordered XI becomes the order
+    used when the second innings is created.
+    """
+    team_id = int(team_id)
+    player_id = int(player_id)
+    target_position = int(target_position)
+    xi = current_xi(session, team_id)
+    if not xi:
+        raise ValueError("The team's current Playing XI is unavailable.")
+    source_index = next(
+        (idx for idx, player in enumerate(xi) if int(player.get("player_id") or 0) == player_id),
+        None,
+    )
+    if source_index is None:
+        raise ValueError("Impact Player is not available in the future batting XI.")
+    target_index = min(max(0, target_position - 1), len(xi) - 1)
+    player = xi.pop(source_index)
+    xi.insert(target_index, player)
+    set_current_xi(session, team_id, xi)
 
 
 def confirm_batting_order(session: Any) -> list[int]:
