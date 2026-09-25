@@ -15,6 +15,30 @@ OVR_EMOJI_ID = "5370784581341422520"
 WICKET_OUT_EMOJI_ID = "5431667456454175520"
 WICKET_OUT_EMOJI_FALLBACK = "🏏"
 
+# Impact Player custom emojis. These IDs are reserved exclusively for
+# Impact Player IN/OUT names and must not alter any existing emoji registry.
+IMPACT_IN_EMOJI_ID = "5449683594425410231"
+IMPACT_IN_EMOJI_FALLBACK = "⚡"
+IMPACT_OUT_EMOJI_ID = "5447183459602669338"
+IMPACT_OUT_EMOJI_FALLBACK = "❌"
+
+
+def impact_in_emoji_html() -> str:
+    return f'<tg-emoji emoji-id="{IMPACT_IN_EMOJI_ID}">{IMPACT_IN_EMOJI_FALLBACK}</tg-emoji>'
+
+
+def impact_out_emoji_html() -> str:
+    return f'<tg-emoji emoji-id="{IMPACT_OUT_EMOJI_ID}">{IMPACT_OUT_EMOJI_FALLBACK}</tg-emoji>'
+
+
+def impact_player_name_html(name: str, impact_type: str) -> str:
+    """Prefix an Impact Player name with its dedicated custom emoji."""
+    name = str(name)
+    if "<tg-emoji" in name:
+        return name
+    prefix = impact_in_emoji_html() if str(impact_type).lower() == "in" else impact_out_emoji_html()
+    return f"{prefix} {name}"
+
 
 IPL_TEAM_EMOJIS: dict[str, str] = {
     "CSK": "6233466459670978723",
