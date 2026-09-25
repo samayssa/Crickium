@@ -11,6 +11,7 @@ from engines.play_engine import playing_xi
 from engines.strategy_engine import resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
 from services.milestones import schedule_milestone_notifications
+from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number
 
 
 @dataclass(slots=True)
@@ -60,6 +61,14 @@ class PlaySession:
     high_run_overs: int = 0
     very_high_run_overs: int = 0
     free_hit_next_ball: bool = False
+    full_squads: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    auto_bowler_enabled: bool = False
+    auto_bowler_queue: list[int] = field(default_factory=list)
+    pending_next_bowler_id: int | None = None
+    auto_batsman_enabled: bool = False
+    auto_batsman_queue: list[int] = field(default_factory=list)
+    pending_batsman_order: list[int] = field(default_factory=list)
+    impact_state: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 _PLAYINT_SESSIONS: dict[int, PlaySession] = {}
@@ -104,6 +113,7 @@ def create_playint_session(
         bowling_pool=bowl_pool,
         innings=innings,
     )
+    session.full_squads = {int(batting_team_id): [dict(p) for p in batting_squad], int(bowling_team_id): [dict(p) for p in bowling_squad]}
     _PLAYINT_SESSIONS[match_id] = session
     return session
 
@@ -326,6 +336,14 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
         "",
         bowler_line,
     ]
+    if session.current_bowler is not None:
+        lines.insert(-1, f"📌 Currently bowling: <b>{session.current_bowler.get('name', 'Bowler')}</b> • {ordinal(current_over_number(session))} over")
+    targets = scheduled_bowler_targets(session)
+    if targets:
+        lines.append("")
+        lines.append("<b>🗓️ Next Over Bowler Plan</b>")
+        for over_no, player in targets:
+            lines.append(f"{ordinal(over_no)} over: <b>{player.get('name', 'Bowler')}</b>")
     if figures:
         lines.append(figures)
     lines.extend(["", f"This over: [ {this_over_text} ]", ""])
@@ -469,6 +487,9 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
         extra_type=outcome.extra_type,
         legal_delivery=bool(outcome.legal),
     )
+    if outcome.wicket:
+        consume_planned_batsman_after_wicket(session)
+        apply_entry_role_after_wicket(session)
     if outcome.legal:
         session.partnership_balls += 1
     session.partnership_runs += int(outcome.runs or 0)
