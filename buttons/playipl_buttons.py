@@ -1,4 +1,5 @@
 from __future__ import annotations
+from utils.PremiumEmoji import impact_player_name_html
 import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 try:
@@ -209,7 +210,10 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
     action = 'impact_out' if stage == 'out' else 'impact_in'
     for index, player in enumerate(players, start=1):
         pid = int(player.get('player_id') or 0)
-        label = f'{index}. {player.get("name", "Player")}'
+        name = player.get('name', 'Player')
+        if selected_id is not None and pid == int(selected_id):
+            name = impact_player_name_html(name, 'in' if stage == 'in' else 'out')
+        label = f'{index}. {name}'
         style = 'success' if selected_id is not None and pid == int(selected_id) else 'danger'
         pair.append(_b(label, f'{prefix}_{action}:{match_id}:{int(team_id)}:{pid}', style))
         if len(pair) == 2:
