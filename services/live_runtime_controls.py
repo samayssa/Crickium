@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+from collections import Counter
+from typing import Any
+
+from engines.innings_engine import BatterSlot
+from engines.lineup_engine import bowling_candidates
+
+MAX_BOWLER_OVERS = 4
+
+
+def _key(team_id: int) -> str:
+    return str(int(team_id))
+
+
+def ensure_impact_state(session: Any, team_id: int) -> dict[str, Any]:
+    state = session.impact_state.setdefault(
+        _key(team_id),
+        {
+            "used": False,
+            "stage": "idle",
+            "out_id": None,
+            "in_id": None,
+            "context": None,
+            "return_stage": None,
+            "entry_role": None,
+            "position": None,
+        },
+    )
+    return state
+
+
+def reset_impact_pending(session: Any, team_id: int, *, context: str, return_stage: str | None) -> dict[str, Any]:
+    state = ensure_impact_state(session, team_id)
+    state.update(
+        {
+            "stage": "out",
+            "out_id": None,
+            "in_id": None,
+            "context": context,
+            "return_stage": return_stage,
+            "entry_role": None,
+            "position": None,
+        }
+    )
+    return state
+
+
+def full_squad(session: Any, team_id: int) -> list[dict[str, Any]]:
+    return [dict(p) for p in session.full_squads.get(int(team_id), [])]
+
+
+def current_xi(session: Any, team_id: int) -> list[dict[str, Any]]:
+    team_id = int(team_id)
+    if team_id == int(session.batting_team_id):
+        return [dict(p) for p in session.batting_squad]
+    if team_id == int(session.bowling_team_id):
+        return [dict(p) for p in session.bowling_squad]
+    return []
+
+
+def set_current_xi(session: Any, team_id: int, xi: list[dict[str, Any]]) -> None:
+    team_id = int(team_id)
+    xi = [dict(p) for p in xi]
+    if team_id == int(session.batting_team_id):
+        session.batting_squad = xi
+        session.batting_xi = list(xi)
+    elif team_id == int(session.bowling_team_id):
+        session.bowling_squad = xi
+        session.bowling_pool = bowling_candidates(xi)
+
+
+def _batter_slot_ids(session: Any, team_id: int) -> set[int]:
+    if int(team_id) != int(session.batting_team_id):
+        return set()
+    ids: set[int] = set()
+    for slot in session.innings.batting_order:
+        if slot.player_id is not None:
+            ids.add(int(slot.player_id))
+    return ids
+
+
+def _dismissed_ids(session: Any, team_id: int) -> set[int]:
+    if int(team_id) != int(session.batting_team_id):
+        return set()
+    return {
+        int(slot.player_id)
+        for slot in session.innings.batting_order
+        if slot.player_id is not None and bool(slot.dismissed)
+    }
+
+
+def _active_batter_ids(session: Any, team_id: int) -> set[int]:
+    if int(team_id) != int(session.batting_team_id):
+        return set()
+    return {
+        int(slot.player_id)
+        for slot in (session.innings.striker, session.innings.non_striker)
+        if slot is not None and slot.player_id is not None
+    }
+
+
+def impact_out_candidates(session: Any, team_id: int) -> list[dict[str, Any]]:
+    dismissed = _dismissed_ids(session, team_id)
+    # A dismissed batter cannot be brought back into the XI, but every other
+    # current-XI player remains selectable, including an active batter/bowler.
+    return [
+        dict(p)
+        for p in current_xi(session, team_id)
+        if int(p.get("player_id") or 0) not in dismissed
+    ]
+
+
+def impact_in_candidates(session: Any, team_id: int) -> list[dict[str, Any]]:
+    active = {int(p.get("player_id") or 0) for p in current_xi(session, team_id)}
+    return [
+        dict(p)
+        for p in full_squad(session, team_id)
+        if int(p.get("player_id") or 0) not in active
+    ]
+
+
+def find_player(session: Any, team_id: int, player_id: int) -> dict[str, Any] | None:
+    pid = int(player_id)
+    for p in current_xi(session, team_id):
+        if int(p.get("player_id") or 0) == pid:
+            return dict(p)
+    for p in full_squad(session, team_id):
+        if int(p.get("player_id") or 0) == pid:
+            return dict(p)
+    return None
+
+
+def _slot_from_player(player: dict[str, Any]) -> BatterSlot:
+    return BatterSlot(
+        player_id=int(player.get("player_id") or 0),
+        name=str(player.get("name") or "Player"),
+        role=player.get("role"),
+        bat_level=player.get("bat_level"),
+        bowl_level=player.get("bowl_level"),
+    )
+
+
+def apply_impact_replacement(session: Any, team_id: int, out_id: int, in_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    team_id = int(team_id)
+    out_id = int(out_id)
+    in_id = int(in_id)
+    xi = current_xi(session, team_id)
+    full = full_squad(session, team_id)
+    out_player = next((dict(p) for p in xi if int(p.get("player_id") or 0) == out_id), None)
+    in_player = next((dict(p) for p in full if int(p.get("player_id") or 0) == in_id), None)
+    if out_player is None or in_player is None:
+        raise ValueError("Impact Player replacement could not be resolved.")
+    if any(int(p.get("player_id") or 0) == in_id for p in xi):
+        raise ValueError("Selected Impact Player is already in the Playing XI.")
+
+    replaced = []
+    for player in xi:
+        if int(player.get("player_id") or 0) == out_id:
+            replaced.append(dict(in_player))
+        else:
+            replaced.append(dict(player))
+    set_current_xi(session, team_id, replaced)
+
+    # If this team is currently batting, keep the exact batting-order slot.
+    if team_id == int(session.batting_team_id):
+        order = session.innings.batting_order
+        for idx, slot in enumerate(order):
+            if int(slot.player_id or 0) != out_id:
+                continue
+            replacement = _slot_from_player(in_player)
+            order[idx] = replacement
+            if session.innings.striker is slot:
+                session.innings.striker = replacement
+            if session.innings.non_striker is slot:
+                session.innings.non_striker = replacement
+            break
+
+    # If the removed player is the current bowler, replace the current bowler
+    # immediately and force a fresh tactic choice for the incoming player.
+    if team_id == int(session.bowling_team_id) and session.current_bowler is not None:
+        if int(session.current_bowler.get("player_id") or 0) == out_id:
+            session.current_bowler = dict(in_player)
+            session.current_tactic = None
+            session.stage = "choose_tactic"
+
+    return out_player, in_player
+
+
+def future_batting_candidates(session: Any) -> list[dict[str, Any]]:
+    order = session.innings.batting_order
+    start = int(session.innings.next_batter_index or 0)
+    active = _active_batter_ids(session, session.batting_team_id)
+    dismissed = _dismissed_ids(session, session.batting_team_id)
+    result: list[dict[str, Any]] = []
+    for index in range(start, len(order)):
+        slot = order[index]
+        pid = int(slot.player_id or 0)
+        if not pid or pid in active or pid in dismissed:
+            continue
+        result.append(
+            {
+                "player_id": pid,
+                "name": slot.name,
+                "position": index + 1,
+                "bat_level": int(slot.bat_level or 0),
+                "bowl_level": int(slot.bowl_level or 0),
+                "role": slot.role,
+            }
+        )
+    return result
+
+
+def selected_batting_order(session: Any) -> list[int]:
+    return list(session.pending_batsman_order)
+
+
+def confirm_batting_order(session: Any) -> list[int]:
+    selected = list(session.pending_batsman_order)
+    if not selected:
+        raise ValueError("Select at least one next batter first.")
+
+    order = session.innings.batting_order
+    start = int(session.innings.next_batter_index or 0)
+    slots = order[start:]
+    by_id = {int(slot.player_id or 0): slot for slot in slots if slot.player_id is not None}
+    if any(int(pid) not in by_id for pid in selected):
+        raise ValueError("One or more selected batters are no longer available.")
+    # Preserve the exact click/selection order. The order in `pending_batsman_order`
+    # is the user's intended replacement queue, not the roster's original order.
+    selected_slots = [by_id[int(pid)] for pid in selected]
+    selected_set = {int(pid) for pid in selected}
+    remaining_slots = [slot for slot in slots if int(slot.player_id or 0) not in selected_set]
+    order[start:] = selected_slots + remaining_slots
+    session.auto_batsman_queue = [int(pid) for pid in selected]
+    session.pending_batsman_order.clear()
+    session.auto_batsman_enabled = True
+    return list(session.auto_batsman_queue)
+
+
+def consume_planned_batsman_after_wicket(session: Any) -> None:
+    if not session.auto_batsman_enabled:
+        return
+    if session.auto_batsman_queue:
+        session.auto_batsman_queue.pop(0)
+    if not session.auto_batsman_queue:
+        session.auto_batsman_enabled = False
+
+
+def _scheduled_bowler_counts(session: Any) -> Counter:
+    return Counter(int(pid) for pid in session.auto_bowler_queue)
+
+
+def scheduled_bowler_candidates(session: Any) -> list[dict[str, Any]]:
+    candidates = bowling_candidates(session.bowling_squad)
+    reserved = _scheduled_bowler_counts(session)
+    last_scheduled = int(session.auto_bowler_queue[-1]) if session.auto_bowler_queue else None
+    last_current = int(session.selected_bowler_id or 0) if session.selected_bowler_id is not None else None
+    previous = last_scheduled or last_current
+    result = []
+    for player in candidates:
+        pid = int(player.get("player_id") or 0)
+        actual_left = MAX_BOWLER_OVERS - int(session.bowler_stats.get(pid, {}).get("balls") or 0) // 6
+        if actual_left <= 0:
+            continue
+        if int(reserved.get(pid, 0)) >= actual_left:
+            continue
+        if previous is not None and pid == previous:
+            continue
+        item = dict(player)
+        item["_overs_left"] = max(0, actual_left - int(reserved.get(pid, 0)))
+        result.append(item)
+    return result
+
+
+def scheduled_bowler_targets(session: Any) -> list[tuple[int, dict[str, Any]]]:
+    by_id = {int(p.get("player_id") or 0): dict(p) for p in bowling_candidates(session.bowling_squad)}
+    start_over = int(session.innings.score.overs or 0) + 1
+    return [
+        (start_over + index, by_id[pid])
+        for index, pid in enumerate(session.auto_bowler_queue, start=1)
+        if pid in by_id
+    ]
+
+
+def confirm_next_bowler(session: Any) -> int:
+    pid = int(session.pending_next_bowler_id or 0)
+    if pid <= 0:
+        raise ValueError("Select a bowler first.")
+    valid = {int(p.get("player_id") or 0) for p in scheduled_bowler_candidates(session)}
+    if pid not in valid:
+        raise ValueError("That bowler is no longer available for the scheduled over.")
+    session.auto_bowler_queue.append(pid)
+    session.pending_next_bowler_id = None
+    return pid
+
+
+def clear_bowler_schedule_selection(session: Any) -> None:
+    session.pending_next_bowler_id = None
+
+
+def scheduled_bowler_player(session: Any, player_id: int) -> dict[str, Any] | None:
+    pid = int(player_id)
+    for p in bowling_candidates(session.bowling_squad):
+        if int(p.get("player_id") or 0) == pid:
+            return dict(p)
+    return None
+
+
+def consume_next_scheduled_bowler(session: Any) -> dict[str, Any] | None:
+    if not session.auto_bowler_queue:
+        return None
+    pid = int(session.auto_bowler_queue[0])
+    player = scheduled_bowler_player(session, pid)
+    session.auto_bowler_queue.pop(0)
+    if player is None:
+        return None
+    return player
+
+
+def current_over_number(session: Any) -> int:
+    return int(session.innings.score.overs or 0) + 1
+
+
+def ordinal(number: int) -> str:
+    n = int(number)
+    if 10 < n % 100 < 14:
+        return f"{n}th"
+    return f"{n}{ {1:'st',2:'nd',3:'rd'}.get(n % 10, 'th') }"
+
+
+def move_batting_player_to_position(session: Any, player_id: int, target_position: int) -> None:
+    player_id = int(player_id)
+    target_position = int(target_position)
+    order = session.innings.batting_order
+    start = int(session.innings.next_batter_index or 0)
+    if target_position <= start:
+        target_position = start + 1
+    source_index = next(
+        (idx for idx in range(start, len(order)) if int(order[idx].player_id or 0) == player_id),
+        None,
+    )
+    if source_index is None:
+        raise ValueError("Impact Player is not available in the remaining batting order.")
+    slot = order.pop(source_index)
+    insert_index = min(max(start, target_position - 1), len(order))
+    order.insert(insert_index, slot)
+    session.impact_state[str(int(session.batting_team_id))]["position"] = target_position
+
+
+def apply_entry_role_after_wicket(session: Any) -> None:
+    """Apply a saved striker/non-striker preference when a planned batter enters."""
+    for state in session.impact_state.values():
+        in_id = state.get("in_id")
+        role = state.get("entry_role")
+        if not in_id or role not in {"striker", "non_striker"}:
+            continue
+        in_id = int(in_id)
+        striker = session.innings.striker
+        non = session.innings.non_striker
+        if striker is not None and int(striker.player_id or 0) == in_id:
+            if role == "non_striker" and non is not None:
+                session.innings.striker, session.innings.non_striker = non, striker
+            state["entry_role"] = None
+            return
+        if non is not None and int(non.player_id or 0) == in_id:
+            if role == "striker" and striker is not None:
+                session.innings.striker, session.innings.non_striker = non, striker
+            state["entry_role"] = None
+            return
