@@ -10,11 +10,11 @@ from engines.lineup_engine import bowling_candidates
 from engines.play_engine import playing_xi
 from engines.strategy_engine import resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
+from utils.PremiumEmoji import ipl_team_emoji_html, wicket_out_emoji_html
 from services.milestones import schedule_milestone_notifications
 from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player
 
 
-WICKET_EMOJI_HTML = '<tg-emoji emoji-id="5431667456454175520">W</tg-emoji>'
 
 
 @dataclass(slots=True)
@@ -217,7 +217,7 @@ def render_this_over(tokens: list[str]) -> str:
     rendered = []
     for token in tokens:
         value = str(token or "")
-        rendered.append(WICKET_EMOJI_HTML if value.strip().upper() == "W" else value)
+        rendered.append(wicket_out_emoji_html() if value.strip().upper() == "W" else value)
     return " • ".join(rendered)
 
 
@@ -294,7 +294,7 @@ def _run_rate_line(session: PlaySession) -> str:
 
 def _profile_team_line(session: PlaySession, batting: bool) -> str:
     from utils.mentions import mention_name_only_html
-    from database.playipl_teams_repo import team_short_label
+    from database.playipl_teams_repo import team_short
     match = session.match
     if batting:
         uid = int(session.batting_team_id)
@@ -312,7 +312,7 @@ def _profile_team_line(session: PlaySession, batting: bool) -> str:
         else:
             mention = mention_name_only_html(match.get('opponent_id'), match.get('opponent_name'))
             code = match.get('opponent_team_code')
-    return f"{mention} • {team_short_label(code)}"
+    return f"{mention} • {ipl_team_emoji_html(code)} {team_short(code)}"
 
 
 def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) -> str:

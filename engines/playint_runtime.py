@@ -10,11 +10,11 @@ from engines.lineup_engine import bowling_candidates
 from engines.play_engine import playing_xi
 from engines.strategy_engine import resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
+from utils.PremiumEmoji import wicket_out_emoji_html
 from services.milestones import schedule_milestone_notifications
 from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player
 
 
-WICKET_EMOJI_HTML = '<tg-emoji emoji-id="5431667456454175520">W</tg-emoji>'
 
 
 @dataclass(slots=True)
@@ -216,7 +216,7 @@ def render_this_over(tokens: list[str]) -> str:
     rendered = []
     for token in tokens:
         value = str(token or "")
-        rendered.append(WICKET_EMOJI_HTML if value.strip().upper() == "W" else value)
+        rendered.append(wicket_out_emoji_html() if value.strip().upper() == "W" else value)
     return " • ".join(rendered)
 
 
