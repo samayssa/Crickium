@@ -14,6 +14,9 @@ from services.milestones import schedule_milestone_notifications
 from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player
 
 
+WICKET_EMOJI_HTML = '<tg-emoji emoji-id="5431667456454175520">W</tg-emoji>'
+
+
 @dataclass(slots=True)
 class OverEvent:
     symbol: str
@@ -210,7 +213,11 @@ def _current_over_runs(tokens: list[str]) -> int:
 def render_this_over(tokens: list[str]) -> str:
     if not tokens:
         return "-"
-    return " • ".join(tokens)
+    rendered = []
+    for token in tokens:
+        value = str(token or "")
+        rendered.append(WICKET_EMOJI_HTML if value.strip().upper() == "W" else value)
+    return " • ".join(rendered)
 
 
 def _escape_commentary(text: str) -> str:
@@ -306,17 +313,16 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
     striker = session.innings.striker or BatterSlot(name="Player")
     non = session.innings.non_striker or BatterSlot(name="Player")
     if bowler_prompt or session.current_bowler is None:
-        bowler_line = "🥎 Choose Your Bowler"
-    elif session.stage == "choose_tactic":
-        bowler_line = f"🥎 {session.current_bowler.get('name', 'Bowler')}\n🎯 Choose Your Bowling Tactic"
+        bowler_name = "Choose Your Bowler"
+        bowler_figures = "0W • 0R • 0.0 Ov"
     else:
-        bowler_line = f"🥎 {session.current_bowler.get('name', 'Bowler')}"
-    figures = "" if bowler_prompt or session.current_bowler is None or session.stage == "choose_tactic" else _format_bowler_figures(session)
+        bowler_name = str(session.current_bowler.get("name", "Bowler"))[:22]
+        bowler_figures = _format_bowler_figures(session)
     score = session.innings.score
     over_text = f"{score.overs}.{score.balls}"
     timeline = _render_over_timeline(session, bowler_prompt=bowler_prompt)
     commentary_lines = _render_over_commentary(session, bowler_prompt=bowler_prompt)
-    this_over_text = " • ".join(timeline) if timeline else "—"
+    this_over_text = render_this_over(timeline) if timeline else "—"
     lines = [
         "<b>╭━━━〔 🏏 LIVE SCORE 〕━━━╮</b>",
         "",
@@ -333,23 +339,18 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
         "",
         f"🎯 {_profile_team_line(session, False)}",
         "",
-        bowler_line,
+        f"🥎 <b>{bowler_name}</b>",
+        bowler_figures,
     ]
-    if session.current_bowler is not None:
-        lines.insert(-1, f"📌 Currently bowling: <b>{session.current_bowler.get('name', 'Bowler')}</b> • {ordinal(current_over_number(session))} over")
     targets = scheduled_bowler_targets(session) if not getattr(session, "auto_bowler_enabled", False) else []
     if getattr(session, "auto_bowler_enabled", False) and session.auto_bowler_queue:
         next_player = scheduled_bowler_player(session, int(session.auto_bowler_queue[0]))
         if next_player:
-            lines.append("")
-            lines.append(f"⏭️ Next over: <b>{next_player.get('name', 'Bowler')}</b>")
+            lines.extend(["", f"⏭️ Next: <b>{next_player.get('name', 'Bowler')}</b>"])
     elif targets:
-        lines.append("")
-        lines.append("<b>🗓️ Next Over Bowler Plan</b>")
+        lines.extend(["", "<b>🗓️ Next Over Bowler Plan</b>"])
         for over_no, player in targets:
             lines.append(f"{ordinal(over_no)} over: <b>{player.get('name', 'Bowler')}</b>")
-    if figures:
-        lines.append(figures)
     lines.extend(["", f"This over: [ {this_over_text} ]", ""])
     commentary_block = _render_commentary(commentary_lines)
     if commentary_block:

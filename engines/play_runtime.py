@@ -14,6 +14,9 @@ from services.milestones import schedule_milestone_notifications
 from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player
 
 
+WICKET_EMOJI_HTML = '<tg-emoji emoji-id="5431667456454175520">W</tg-emoji>'
+
+
 @dataclass(slots=True)
 class OverEvent:
     symbol: str
@@ -235,7 +238,11 @@ def _current_over_runs(tokens: list[str]) -> int:
 def render_this_over(tokens: list[str]) -> str:
     if not tokens:
         return "-"
-    return " • ".join(tokens)
+    rendered = []
+    for token in tokens:
+        value = str(token or "")
+        rendered.append(WICKET_EMOJI_HTML if value.strip().upper() == "W" else value)
+    return " • ".join(rendered)
 
 
 def _escape_commentary(text: str) -> str:
@@ -361,7 +368,7 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
         bowler_name = "Choose Your Bowler"
         bowler_stats = "0W • 0R • 0.0 Ov"
 
-    this_over_text = " • ".join(timeline) if timeline else "—"
+    this_over_text = render_this_over(timeline) if timeline else "—"
 
     lines = [
         "<b>╭━━━〔 🏏 LIVE SCORE 〕━━━╮</b>",
@@ -388,7 +395,7 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
     if session.auto_bowler_enabled and session.auto_bowler_queue:
         next_player = scheduled_bowler_player(session, int(session.auto_bowler_queue[0]))
         if next_player:
-            lines.extend(["", f"⏭️ Next over: <b>{next_player.get('name', 'Bowler')}</b>"])
+            lines.extend(["", f"⏭️ Next: <b>{next_player.get('name', 'Bowler')}</b>"])
     elif targets:
         lines.extend(["", "<b>🗓️ Next Over Bowler Plan</b>"])
         for over_no, player in targets:
