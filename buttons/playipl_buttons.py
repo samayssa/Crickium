@@ -104,21 +104,22 @@ def decision_keyboard(match_id):
     ]])
 
 
-def bowler_selection_keyboard(match_id, bowlers, auto_enabled=False):
+def bowler_selection_keyboard(match_id, bowlers, selected_id=None, auto_enabled=False, impact_enabled=True):
     rows = []
     for p in bowlers:
         pid = int(p.get('player_id') or 0)
         lvl = int(p.get('bowl_level') or 0)
         left = p.get('_overs_left', 0)
+        style = 'success' if selected_id is not None and pid == int(selected_id) else 'danger'
         rows.append([_b(
             f'🥎 {p.get("name", "Bowler")} • {lvl} • Left {left} Ov',
             f'playipl_bowler:{match_id}:{pid}',
-            'danger',
+            style,
         )])
-    rows.append(runtime_bowler_actions(match_id, auto_enabled))
+    rows.append(runtime_bowler_actions(match_id, auto_enabled, impact_enabled))
     return InlineKeyboardMarkup(rows)
 
-def bowler_tactic_keyboard(match_id,bowler=None,auto_enabled=False):
+def bowler_tactic_keyboard(match_id,bowler=None,auto_enabled=False,impact_enabled=True):
     style = str((bowler or {}).get('bowling_hand') or '').strip().upper()
     if style in {'RAO','LAO'} or 'OFF BREAK' in style or 'OFFSPIN' in style:
         pairs=[
@@ -137,17 +138,17 @@ def bowler_tactic_keyboard(match_id,bowler=None,auto_enabled=False):
             ('⚡ PACE UP','pace_up'), ('📏 BACK OF LENGTH','back_of_length'), ('🎯 VARIATION','variation'),
         ]
     rows=[[_b(lbl,f'playipl_tactic:{match_id}:{val}','success')] for lbl,val in pairs]
-    rows.append(runtime_bowler_actions(match_id, auto_enabled))
+    rows.append(runtime_bowler_actions(match_id, auto_enabled, impact_enabled))
     return InlineKeyboardMarkup(rows)
 
-def strategy_keyboard(match_id, auto_enabled=False):
+def strategy_keyboard(match_id, auto_enabled=False, impact_enabled=True):
     vals=[
         ('🛡️ DEFENSIVE','defensive'), ('🔄 ROTATE','rotate'),
         ('⚖️ NEUTRAL','neutral'), ('⚔️ AGGRESSIVE','aggressive'),
         ('🚀 ULTRA AGGRESSIVE','ultra_aggressive'),
     ]
     rows=[[_b(lbl,f'playipl_strategy:{match_id}:{val}','primary')] for lbl,val in vals]
-    rows.append(runtime_batting_actions(match_id, auto_enabled))
+    rows.append(runtime_batting_actions(match_id, auto_enabled, impact_enabled))
     return InlineKeyboardMarkup(rows)
 
 
@@ -158,19 +159,17 @@ def exit_confirm_keyboard(match_id):
     ]])
 
 
-def runtime_bowler_actions(match_id, auto_enabled=False):
-    if auto_enabled:
-        return [_b('⏹ OFF AUTO BOWLER', f'playipl_auto_bowler_off:{match_id}', 'danger'), _b('⚡ IMPACT PLAYER', f'playipl_impact_runtime:{match_id}', 'danger')]
-    return [_b('✅ SET NEXT BOWLER', f'playipl_set_next_bowler:{match_id}', 'success'), _b('⚡ IMPACT PLAYER', f'playipl_impact_runtime:{match_id}', 'danger')]
+def runtime_bowler_actions(match_id, auto_enabled=False, impact_enabled=True):
+    first = _b('⏹ OFF AUTO BOWLER' if auto_enabled else '✅ SET NEXT BOWLER', f'playipl_auto_bowler_off:{match_id}' if auto_enabled else f'playipl_set_next_bowler:{match_id}', 'danger' if auto_enabled else 'success')
+    return [first, _b('⚡ IMPACT PLAYER', f'playipl_impact_runtime:{match_id}', 'danger')] if impact_enabled else [first]
 
 
-def runtime_batting_actions(match_id, auto_enabled=False):
-    if auto_enabled:
-        return [_b('⏹ OFF AUTO PLAY', f'playipl_auto_batsman_off:{match_id}', 'danger'), _b('⚡ IMPACT PLAYER', f'playipl_impact_runtime:{match_id}', 'danger')]
-    return [_b('✅ SET NEXT BATSMAN', f'playipl_set_next_batsman:{match_id}', 'success'), _b('⚡ IMPACT PLAYER', f'playipl_impact_runtime:{match_id}', 'danger')]
+def runtime_batting_actions(match_id, auto_enabled=False, impact_enabled=True):
+    first = _b('⏹ OFF AUTO PLAY' if auto_enabled else '✅ SET NEXT BATSMAN', f'playipl_auto_batsman_off:{match_id}' if auto_enabled else f'playipl_set_next_batsman:{match_id}', 'danger' if auto_enabled else 'success')
+    return [first, _b('⚡ IMPACT PLAYER', f'playipl_impact_runtime:{match_id}', 'danger')] if impact_enabled else [first]
 
 
-def schedule_bowler_keyboard(match_id, bowlers, selected_id=None, auto_enabled=False):
+def schedule_bowler_keyboard(match_id, bowlers, selected_id=None, auto_enabled=False, impact_enabled=True):
     rows = []
     for player in bowlers:
         pid = int(player.get('player_id') or 0)
@@ -181,7 +180,7 @@ def schedule_bowler_keyboard(match_id, bowlers, selected_id=None, auto_enabled=F
     if selected_id is not None:
         rows.append([_b('✅ CONFIRM NEXT BOWLER', f'playipl_confirm_next_bowler:{match_id}', 'success')])
     rows.append([_b('▶️ START AUTO PLAY', f'playipl_start_auto_bowler:{match_id}', 'success')])
-    rows.append(runtime_bowler_actions(match_id, auto_enabled))
+    rows.append(runtime_bowler_actions(match_id, auto_enabled, impact_enabled))
     return InlineKeyboardMarkup(rows)
 
 

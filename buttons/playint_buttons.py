@@ -87,14 +87,14 @@ def exit_confirm_keyboard(match_id):
 
 def runtime_bowler_actions(match_id, auto_enabled=False):
     if auto_enabled:
-        return [_b('⏹ OFF AUTO BOWLER', f'playint_auto_bowler_off:{match_id}', 'danger'), _b('⚡ IMPACT PLAYER', f'playint_impact_runtime:{match_id}', 'danger')]
-    return [_b('✅ SET NEXT BOWLER', f'playint_set_next_bowler:{match_id}', 'success'), _b('⚡ IMPACT PLAYER', f'playint_impact_runtime:{match_id}', 'danger')]
+        return [_b('⏹ OFF AUTO BOWLER', f'playint_auto_bowler_off:{match_id}', 'danger')]
+    return [_b('✅ SET NEXT BOWLER', f'playint_set_next_bowler:{match_id}', 'success')]
 
 
 def runtime_batting_actions(match_id, auto_enabled=False):
     if auto_enabled:
-        return [_b('⏹ OFF AUTO PLAY', f'playint_auto_batsman_off:{match_id}', 'danger'), _b('⚡ IMPACT PLAYER', f'playint_impact_runtime:{match_id}', 'danger')]
-    return [_b('✅ SET NEXT BATSMAN', f'playint_set_next_batsman:{match_id}', 'success'), _b('⚡ IMPACT PLAYER', f'playint_impact_runtime:{match_id}', 'danger')]
+        return [_b('⏹ OFF AUTO PLAY', f'playint_auto_batsman_off:{match_id}', 'danger')]
+    return [_b('✅ SET NEXT BATSMAN', f'playint_set_next_batsman:{match_id}', 'success')]
 
 
 def schedule_bowler_keyboard(match_id, bowlers, selected_id=None, auto_enabled=False):
@@ -130,48 +130,3 @@ def schedule_batsman_keyboard(match_id, players, selected_ids=None):
     rows.append([_b('❌ CANCEL', f'playint_cancel_batsman_schedule:{match_id}', 'danger')])
     return InlineKeyboardMarkup(rows)
 
-
-def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None, stage='out'):
-    rows = []
-    pair = []
-    action = 'impact_out' if stage == 'out' else 'impact_in'
-    for index, player in enumerate(players, start=1):
-        pid = int(player.get('player_id') or 0)
-        label = f'{index}. {player.get("name", "Player")}'
-        style = 'success' if selected_id is not None and pid == int(selected_id) else 'danger'
-        pair.append(_b(label, f'{prefix}_{action}:{match_id}:{int(team_id)}:{pid}', style))
-        if len(pair) == 2:
-            rows.append(pair); pair = []
-    if pair:
-        rows.append(pair)
-    if selected_id is not None:
-        label = '✅ CONFIRM OUT PLAYER' if stage == 'out' else '✅ CONFIRM IMPACT PLAYER'
-        cb = 'impact_confirm_out' if stage == 'out' else 'impact_confirm_in'
-        rows.append([_b(label, f'{prefix}_{cb}:{match_id}:{int(team_id)}', 'danger')])
-    return InlineKeyboardMarkup(rows)
-
-
-def impact_batting_position_keyboard(prefix, match_id, players, selected_position=None):
-    rows = []
-    pair = []
-    for player in players:
-        pos = int(player.get('position') or 0)
-        style = 'success' if selected_position == pos else 'primary'
-        pair.append(_b(f'#{pos} • {player.get("name", "Batter")}', f'{prefix}_impact_batpos:{match_id}:{pos}', style))
-        if len(pair) == 2:
-            rows.append(pair); pair = []
-    if pair:
-        rows.append(pair)
-    if selected_position is not None:
-        rows.append([_b('✅ CONFIRM BATTING POSITION', f'{prefix}_impact_confirm_batpos:{match_id}', 'success')])
-    return InlineKeyboardMarkup(rows)
-
-
-def impact_batting_role_keyboard(prefix, match_id):
-    return InlineKeyboardMarkup([
-        [_b('🟦 STRIKER', f'{prefix}_impact_role:{match_id}:striker', 'primary'), _b('🟦 NON-STRIKER', f'{prefix}_impact_role:{match_id}:non_striker', 'primary')]
-    ])
-
-
-def impact_runtime_entry_keyboard(prefix, match_id):
-    return InlineKeyboardMarkup([[_b('⚡ IMPACT PLAYER', f'{prefix}_impact_runtime:{match_id}', 'danger')]])
