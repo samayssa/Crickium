@@ -326,17 +326,32 @@ def scheduled_bowler_candidates(session: Any) -> list[dict[str, Any]]:
     last_current = int(session.selected_bowler_id or 0) if session.selected_bowler_id is not None else None
     previous = last_scheduled or last_current
     result = []
+    current_pid = int(session.current_bowler.get("player_id") or 0) if session.current_bowler else None
     for player in candidates:
         pid = int(player.get("player_id") or 0)
-        actual_left = MAX_BOWLER_OVERS - int(session.bowler_stats.get(pid, {}).get("balls") or 0) // 6
-        if actual_left <= 0:
-            continue
-        if int(reserved.get(pid, 0)) >= actual_left:
+        stats = session.bowler_stats.get(pid, {})
+        balls = int(stats.get("balls") or 0)
+        completed_overs = balls // 6
+        actual_left = MAX_BOWLER_OVERS - completed_overs
+
+        # A newly selected/current bowler has already committed one over even
+        # before the first legal ball is delivered. This makes the displayed
+        # "Left" quota reflect the confirmed plan immediately. Once six balls
+        # of that over are completed, the completed-over count takes over and
+        # the extra commitment is no longer subtracted.
+        current_commitment = 0
+        if current_pid is not None and pid == current_pid:
+            if balls % 6 != 0 or str(getattr(session, "stage", "")) == "choose_tactic":
+                current_commitment = 1
+
+        committed_future = int(reserved.get(pid, 0))
+        displayed_left = actual_left - current_commitment - committed_future
+        if displayed_left <= 0:
             continue
         if previous is not None and pid == previous:
             continue
         item = dict(player)
-        item["_overs_left"] = max(0, actual_left - int(reserved.get(pid, 0)))
+        item["_overs_left"] = max(0, displayed_left)
         result.append(item)
     return result
 
