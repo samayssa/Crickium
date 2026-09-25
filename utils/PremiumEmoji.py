@@ -8,6 +8,13 @@ from __future__ import annotations
 
 OVR_EMOJI_ID = "5370784581341422520"
 
+# Wicket/out custom emoji used in the live simulation timelines.  The
+# alternative text inside Telegram's <tg-emoji> tag must be a valid Unicode
+# emoji, not the literal letter ``W``, otherwise Telegram ignores the custom
+# emoji entity and leaves plain text behind.
+WICKET_OUT_EMOJI_ID = "5431667456454175520"
+WICKET_OUT_EMOJI_FALLBACK = "🏏"
+
 
 IPL_TEAM_EMOJIS: dict[str, str] = {
     "CSK": "6233466459670978723",
@@ -59,6 +66,11 @@ def ipl_team_emoji_html(team_code: str) -> str:
 def ovr_emoji_html() -> str:
     """Return the custom emoji used for OVR labels, with a safe fallback."""
     return f'<tg-emoji emoji-id="{OVR_EMOJI_ID}">⭐</tg-emoji>'
+
+
+def wicket_out_emoji_html() -> str:
+    """Return the live wicket/out custom emoji as valid Telegram HTML."""
+    return f'<tg-emoji emoji-id="{WICKET_OUT_EMOJI_ID}">{WICKET_OUT_EMOJI_FALLBACK}</tg-emoji>'
 
 # Milestone notification custom-emoji slots. Keep these as ``None`` until
 # Telegram custom-emoji IDs are supplied. The milestone renderer always falls
