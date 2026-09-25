@@ -226,7 +226,7 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         chat_id,
         render_live_scorecard(session, bowler_prompt=True),
         parse_mode="HTML",
-        reply_markup=bowler_selection_keyboard(match["match_id"], next_bowler_card(session), session.auto_bowler_enabled),
+        reply_markup=bowler_selection_keyboard(match["match_id"], next_bowler_card(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get("used")),
     )
     session.live_message_id = live["message_id"]
 
@@ -268,7 +268,7 @@ async def on_playipl_bowler(callback_query):
         return
     session.this_over = []
     await app.answer_callback_query(callback_query["id"], f"Bowler set to {candidate.get('name')}!")
-    await _safe_edit_scorecard(session, reply_markup=bowler_tactic_keyboard(match_id, session.current_bowler, session.auto_bowler_enabled))
+    await _safe_edit_scorecard(session, reply_markup=bowler_tactic_keyboard(match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get("used")))
 
 
 @register_callback("playipl_tactic")
@@ -297,7 +297,7 @@ async def on_playipl_tactic(callback_query):
 
     assign_tactic(session, tactic)
     await app.answer_callback_query(callback_query["id"], f"{tactic.replace('_', ' ').upper()} tactic set!")
-    await _safe_edit_scorecard(session, reply_markup=strategy_keyboard(match_id, session.auto_batsman_enabled))
+    await _safe_edit_scorecard(session, reply_markup=strategy_keyboard(match_id, session.auto_batsman_enabled, not ensure_impact_state(session, int(session.batting_team_id)).get("used")))
 
 
 def _innings_break_text(innings_1: dict) -> str:
@@ -369,9 +369,18 @@ def _impact_team_code(session: Any, team_id: int) -> str | None:
 
 
 def _team_owner(session: Any, code: str) -> tuple[int, bool]:
-    if code == session.match.get('challenger_team_code'):
+    # Impact callbacks carry the Telegram user ID because the live message
+    # is shared by both teams. Team-code callbacks can still use IPL codes.
+    raw = str(code)
+    if raw.isdigit():
+        uid = int(raw)
+        if uid == int(session.match.get('challenger_id') or 0):
+            return uid, True
+        if uid == int(session.match.get('opponent_id') or 0):
+            return uid, False
+    if raw == str(session.match.get('challenger_team_code') or ''):
         return int(session.match['challenger_id']), True
-    if code == session.match.get('opponent_team_code'):
+    if raw == str(session.match.get('opponent_team_code') or ''):
         return int(session.match['opponent_id']), False
     return 0, False
 
@@ -461,6 +470,18 @@ async def _start_impact_flow(session, innings_1_snapshot: dict[str, Any]) -> Non
     ]
     for uid in unused:
         reset_impact_pending(session, uid, context='innings_break', return_stage=None)
+    if not unused:
+        # Both players already used their Impact Player. Show only the innings
+        # event card and skip the Impact-selection stage entirely.
+        sent = await _safe_send(
+            session.chat_id,
+            _impact_text(session, context='innings_break').split("\n\n<b>⚡ IMPACT PLAYER</b>", 1)[0] + "\n\n✅ <b>Both teams have already used their Impact Player.</b>",
+            parse_mode='HTML',
+        )
+        session.live_message_id = sent.get('message_id') if sent else None
+        await asyncio.sleep(3)
+        await _continue_after_impact_break(session)
+        return
     sent = await _safe_send(
         session.chat_id,
         _impact_text(session, context='innings_break'),
@@ -469,11 +490,6 @@ async def _start_impact_flow(session, innings_1_snapshot: dict[str, Any]) -> Non
     )
     session.live_message_id = sent.get('message_id') if sent else None
     await sync_after_change('PLAYIPL', int(session.match_id))
-    if not unused:
-        # Both players already used their Impact Player. Keep the mandatory
-        # innings-event card visible briefly, then launch innings two.
-        await asyncio.sleep(3)
-        await _continue_after_impact_break(session)
 
 
 async def _continue_after_impact_break(session: Any) -> None:
@@ -492,7 +508,7 @@ async def _continue_after_impact_break(session: Any) -> None:
         session.chat_id,
         render_live_scorecard(session, bowler_prompt=True),
         parse_mode='HTML',
-        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled),
+        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')),
     )
     if live.get('message_id'):
         session.live_message_id = live['message_id']
@@ -679,13 +695,13 @@ async def on_playipl_impact_confirm_in(callback_query):
         return_stage = 'choose_tactic'
     session.stage = return_stage
     if return_stage == 'choose_bowler':
-        markup = bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled)
+        markup = bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used'))
         prompt = True
     elif return_stage == 'choose_tactic':
-        markup = bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled)
+        markup = bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used'))
         prompt = False
     else:
-        markup = strategy_keyboard(session.match_id, session.auto_batsman_enabled)
+        markup = strategy_keyboard(session.match_id, session.auto_batsman_enabled, not ensure_impact_state(session, int(session.batting_team_id)).get('used'))
         prompt = False
     await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode='HTML', reply_markup=markup)
 
@@ -749,13 +765,13 @@ async def on_playipl_impact_role(callback_query):
     session.stage = st.get('return_stage') or 'choose_strategy'
     await app.answer_callback_query(callback_query['id'], f'{role.replace("_", " ").title()} selected!')
     if session.stage == 'choose_bowler':
-        markup = bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled)
+        markup = bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used'))
         prompt = True
     elif session.stage == 'choose_tactic':
-        markup = bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled)
+        markup = bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used'))
         prompt = False
     else:
-        markup = strategy_keyboard(session.match_id, session.auto_batsman_enabled)
+        markup = strategy_keyboard(session.match_id, session.auto_batsman_enabled, not ensure_impact_state(session, int(session.batting_team_id)).get('used'))
         prompt = False
     await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode='HTML', reply_markup=markup)
 
@@ -769,7 +785,7 @@ async def on_playipl_set_next_bowler(callback_query):
         await app.answer_callback_query(callback_query['id'], 'Only the bowling side can set the next bowler.', show_alert=True); return
     session.pending_next_bowler_id = None
     await app.answer_callback_query(callback_query['id'], 'Choose the next over bowler.')
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), None, session.auto_bowler_enabled))
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')))
 
 
 @register_callback('playipl_schedule_bowler')
@@ -787,7 +803,7 @@ async def on_playipl_schedule_bowler(callback_query):
         await app.answer_callback_query(callback_query['id'], 'That bowler is not available.', show_alert=True); return
     session.pending_next_bowler_id = None if int(session.pending_next_bowler_id or -1) == pid else pid
     await app.answer_callback_query(callback_query['id'], 'Bowler selected.' if session.pending_next_bowler_id else 'Selection removed.')
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), session.pending_next_bowler_id, session.auto_bowler_enabled))
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), session.pending_next_bowler_id, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')))
 
 
 @register_callback('playipl_confirm_next_bowler')
@@ -796,12 +812,13 @@ async def on_playipl_confirm_next_bowler(callback_query):
     if session is None: return
     if int(callback_query['from']['id']) != int(session.bowling_team_id):
         await app.answer_callback_query(callback_query['id'], 'Only the bowling side can confirm the next bowler.', show_alert=True); return
+    had_current = session.current_bowler is not None
     try:
         pid=confirm_next_bowler(session)
     except Exception as exc:
         await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True); return
-    await app.answer_callback_query(callback_query['id'], 'Next bowler added to the plan!')
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), None, session.auto_bowler_enabled))
+    await app.answer_callback_query(callback_query['id'], 'Current-over bowler set.' if not had_current else 'Next bowler added to the plan!')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')))
 
 
 @register_callback('playipl_start_auto_bowler')
@@ -818,7 +835,7 @@ async def on_playipl_start_auto_bowler(callback_query):
     await app.answer_callback_query(callback_query['id'], 'Auto bowler enabled for the scheduled overs!')
     # Keep the current over intact. The queued bowler is consumed only when
     # the next over actually begins.
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled))
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')))
 
 
 @register_callback('playipl_auto_bowler_off')
@@ -830,13 +847,13 @@ async def on_playipl_auto_bowler_off(callback_query):
     session.auto_bowler_enabled=False
     await app.answer_callback_query(callback_query['id'], 'Auto bowler turned off.')
     if session.stage == 'choose_tactic':
-        markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, False)
+        markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, False, not ensure_impact_state(session, int(session.bowling_team_id)).get("used"))
         prompt=False
     elif session.stage == 'choose_bowler':
-        markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), False)
+        markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, False, not ensure_impact_state(session, int(session.bowling_team_id)).get("used"))
         prompt=True
     else:
-        markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled)
+        markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled, not ensure_impact_state(session, int(session.batting_team_id)).get('used'))
         prompt=False
     await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode='HTML', reply_markup=markup)
 
@@ -882,7 +899,7 @@ async def on_playipl_confirm_batsman(callback_query):
     except Exception as exc:
         await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True); return
     await app.answer_callback_query(callback_query['id'], 'Batting order saved. Auto play enabled!')
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, True))
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, True, not ensure_impact_state(session, int(session.batting_team_id)).get("used")))
 
 
 @register_callback('playipl_cancel_batsman_schedule')
@@ -893,7 +910,7 @@ async def on_playipl_cancel_batsman_schedule(callback_query):
         return
     session.pending_batsman_order.clear()
     await app.answer_callback_query(callback_query['id'], 'Batting-order selection cancelled.')
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled))
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled, not ensure_impact_state(session, int(session.batting_team_id)).get('used')))
 
 
 @register_callback('playipl_auto_batsman_off')
@@ -904,7 +921,7 @@ async def on_playipl_auto_batsman_off(callback_query):
         await app.answer_callback_query(callback_query['id'], 'Only the batting side can turn auto play off.', show_alert=True); return
     session.auto_batsman_enabled=False
     await app.answer_callback_query(callback_query['id'], 'Auto batsman turned off.')
-    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, False))
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, False, not ensure_impact_state(session, int(session.batting_team_id)).get("used")))
 
 async def _safe_send(chat_id, text, **kwargs):
     try:
@@ -1076,7 +1093,7 @@ async def _finish_over_and_prompt_next(session) -> None:
                 session.chat_id,
                 render_live_scorecard(session, bowler_prompt=False),
                 parse_mode="HTML",
-                reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled),
+                reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')),
             )
             if live.get("message_id"):
                 session.live_message_id = live["message_id"]
@@ -1090,7 +1107,7 @@ async def _finish_over_and_prompt_next(session) -> None:
         session.chat_id,
         render_live_scorecard(session, bowler_prompt=True),
         parse_mode="HTML",
-        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled),
+        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), None, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')),
     )
     if live.get("message_id"):
         session.live_message_id = live["message_id"]
