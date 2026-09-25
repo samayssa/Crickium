@@ -221,13 +221,15 @@ def _apply_pitch_hitting_dampening(weights: dict, pitch: str) -> None:
 
 
 def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int, over_number: int = 0, batsman_balls_faced: int = 0) -> None:
-    """Preserve the existing over-run rarity/cap system, with a late-over
-    exception only for genuinely set batters.
+    """Preserve the normal over-run rarity rules, with a set-batter relief.
 
-    All existing 8/12/15/18+ score rarity behavior is retained.  The only
-    change is that the 18+ high-run rarity is softened when a batter has
-    faced more than 16 balls: by 30% in overs 16-19 and by 60% in the 20th.
-    Batters below that threshold keep the exact normal rarity behavior.
+    Only the 18+ over-score rarity guard is changed here:
+      - overs 16-19: 16+ balls faced -> 50% rarity-relief; >30 -> 70%.
+      - the last (20th) over: 16+ -> 70% rarity-relief; >30 -> cap disabled.
+
+    Lower score caps (8/12/15) and every non-score probability shape remain
+    untouched.  The relief is implemented by loosening the existing scoring
+    mass cap, not by directly rewriting individual outcome percentages.
     """
     current = max(0, int(over_runs or 0))
     high = max(0, int(high_run_overs or 0))
@@ -247,14 +249,17 @@ def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, v
     # only branch whose rarity is relaxed late in an innings for a set batter.
     if current >= 18:
         score_scale = 0.03
-        if balls > 16:
-            over = int(over_number or 0)
-            if 16 <= over <= 19:
-                # Reduce the 18+/20+ rarity restriction by 30%.
-                score_scale = score_scale + (1.0 - score_scale) * 0.30
-            elif over >= 20:
-                # Reduce the 18+/20+ rarity restriction by 60% in the last over.
-                score_scale = score_scale + (1.0 - score_scale) * 0.60
+        over = int(over_number or 0)
+        if 16 <= over <= 19 and balls >= 16:
+            relief = 0.70 if balls > 30 else 0.50
+            score_scale = score_scale + (1.0 - score_scale) * relief
+        elif over >= 20 and balls >= 16:
+            if balls > 30:
+                # Disable the 18+/20+ rarity restriction completely in the
+                # last over for a batter who has faced >30 balls.
+                score_scale = 1.0
+            else:
+                score_scale = score_scale + (1.0 - score_scale) * 0.70
     elif current >= 15:
         score_scale = 0.15
     elif current >= 12:
@@ -369,6 +374,43 @@ def phase_key(over_number: int) -> str:
     return "overs_16_20"
 
 
+SECOND_INNINGS_BASE_RPO_CAP = 12.12
+SECOND_INNINGS_REQUIRED_RPO_TRIGGER = 13.0
+SECOND_INNINGS_RPO_EXTENSION = 2.0
+SECOND_INNINGS_OVER_RUN_HOLD = 16
+SECOND_INNINGS_EXTENSION_THROUGH_OVER = 15
+SECOND_INNINGS_LAST_OVER = 20
+
+
+def _effective_second_innings_rpo_cap(
+    pitch: str,
+    required_rpo: float,
+    over_number: int,
+    over_runs: int,
+) -> float:
+    """Return the active second-innings soft RPO ceiling.
+
+    The normal pitch ceiling remains the baseline.  When the required RPO is
+    above 13, the chase is in overs 1-15 or the final over, and the current
+    over is still below 16 runs, the ceiling temporarily extends to required
+    RPO + 2.0.  This helper is deliberately pure so every pitch condition uses
+    exactly the same rule and boundary testing is easy.
+    """
+    base_cap = min(SECOND_INNINGS_BASE_RPO_CAP, pitch_target_rpo(pitch))
+    required = max(0.0, float(required_rpo or 0.0))
+    over = max(1, int(over_number or 1))
+    current_over_runs = max(0, int(over_runs or 0))
+
+    if required <= SECOND_INNINGS_REQUIRED_RPO_TRIGGER:
+        return base_cap
+
+    extension_window = over <= SECOND_INNINGS_EXTENSION_THROUGH_OVER or over >= SECOND_INNINGS_LAST_OVER
+    if not extension_window or current_over_runs >= SECOND_INNINGS_OVER_RUN_HOLD:
+        return base_cap
+
+    return max(base_cap, required + SECOND_INNINGS_RPO_EXTENSION)
+
+
 def _apply_pitch_score_environment(
     weights: dict,
     pitch: str,
@@ -377,6 +419,8 @@ def _apply_pitch_score_environment(
     target: int | None = None,
     total_runs: int = 0,
     balls_remaining: int = 120,
+    over_number: int = 0,
+    over_runs: int = 0,
 ) -> None:
     """Gently pull the ball-outcome distribution toward the pitch's desired
     first-innings scoring environment without imposing a hard score cap.
@@ -384,18 +428,19 @@ def _apply_pitch_score_environment(
     """
     target_rpo = pitch_target_rpo(pitch)
     # The chase has no pressure penalty. Keep the existing first-innings/pitch
-    # target untouched. In the second innings only, when required RPO rises
-    # above the normal environment ceiling, extend that ceiling to required
-    # RPO + 0.50 runs/over. This changes only the soft target ceiling; the
-    # underlying probability matrices and modifiers remain unchanged.
+    # target untouched. In the second innings only, the helper below may
+    # temporarily extend the pitch ceiling for a high required RPO. This
+    # changes only the soft target ceiling; the underlying probability
+    # matrices and modifiers remain unchanged.
     if is_second_innings:
-        target_rpo = min(12.12, target_rpo)
+        target_rpo = min(SECOND_INNINGS_BASE_RPO_CAP, target_rpo)
         remaining_balls = max(0, int(balls_remaining or 0))
         if target is not None and remaining_balls > 0:
             runs_needed = max(0, int(target) - int(total_runs or 0))
             required_rpo = (runs_needed * 6.0) / remaining_balls
-            if required_rpo > 12.12:
-                target_rpo = max(target_rpo, required_rpo + 0.50)
+            target_rpo = _effective_second_innings_rpo_cap(
+                pitch, required_rpo, over_number, over_runs
+            )
     total = sum(max(0.0, float(v)) for v in weights.values())
     if total <= 0:
         return
@@ -1322,6 +1367,8 @@ def resolve_weights(
         target=target,
         total_runs=total_runs,
         balls_remaining=balls_remaining,
+        over_number=over_number,
+        over_runs=over_runs,
     )
     pitch_match = _apply_pitch_edge(weights, pitch, batsman_balls_faced, bowler_style, bowler_role)
     _apply(weights, _phase_modifiers_for_over(over_number))
