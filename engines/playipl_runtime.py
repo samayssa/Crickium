@@ -12,7 +12,7 @@ from engines.strategy_engine import resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
 from utils.PremiumEmoji import ipl_team_emoji_html, wicket_out_emoji_html
 from services.milestones import schedule_milestone_notifications
-from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player
+from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player, impact_player_name_html
 
 
 
@@ -252,9 +252,9 @@ def _render_over_commentary(session: PlaySession, *, bowler_prompt: bool) -> lis
     return []
 
 
-def _format_batsman_line(slot: BatterSlot, striker: bool) -> str:
+def _format_batsman_line(session: PlaySession, slot: BatterSlot, striker: bool) -> str:
     prefix = "◉" if striker else " "
-    name = (slot.name or "Player")[:22]
+    name = impact_player_name_html(session, int(slot.player_id or 0), str(slot.name or "Player")[:22])
     runs = int(slot.runs or 0)
     balls = int(slot.balls or 0)
     return f"{prefix} {name:<22} {runs} ({balls})"
@@ -322,7 +322,7 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
         bowler_name = "Choose Your Bowler"
         bowler_figures = "0W • 0R • 0.0 Ov"
     else:
-        bowler_name = str(session.current_bowler.get("name", "Bowler"))[:22]
+        bowler_name = impact_player_name_html(session, int(session.current_bowler.get("player_id") or 0), str(session.current_bowler.get("name", "Bowler"))[:22])
         bowler_figures = _format_bowler_figures(session)
     score = session.innings.score
     over_text = f"{score.overs}.{score.balls}"
@@ -337,8 +337,8 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
         f"📊 Score ➤ {score.runs}/{score.wickets} ({over_text} Ov)",
         _run_rate_line(session),
         "",
-        _format_batsman_line(striker, True),
-        _format_batsman_line(non, False),
+        _format_batsman_line(session, striker, True),
+        _format_batsman_line(session, non, False),
         "",
         "🤝 Partnership",
         f"{session.partnership_runs} runs off {session.partnership_balls} balls",
@@ -352,11 +352,11 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
     if getattr(session, "auto_bowler_enabled", False) and session.auto_bowler_queue:
         next_player = scheduled_bowler_player(session, int(session.auto_bowler_queue[0]))
         if next_player:
-            lines.extend(["", f"⏭️ Next: <b>{next_player.get('name', 'Bowler')}</b>"])
+            lines.extend(["", f"⏭️ Next: <b>{impact_player_name_html(session, int(next_player.get('player_id') or 0), next_player.get('name', 'Bowler'))}</b>"])
     elif targets:
         lines.extend(["", "<b>🗓️ Next Over Bowler Plan</b>"])
         for over_no, player in targets:
-            lines.append(f"{ordinal(over_no)} over: <b>{player.get('name', 'Bowler')}</b>")
+            lines.append(f"{ordinal(over_no)} over: <b>{impact_player_name_html(session, int(player.get('player_id') or 0), player.get('name', 'Bowler'))}</b>")
     lines.extend(["", f"This over: [ {this_over_text} ]", ""])
     commentary_block = _render_commentary(commentary_lines)
     if commentary_block:

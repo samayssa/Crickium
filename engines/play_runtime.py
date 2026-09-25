@@ -12,7 +12,7 @@ from engines.strategy_engine import resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
 from utils.PremiumEmoji import wicket_out_emoji_html
 from services.milestones import schedule_milestone_notifications
-from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player
+from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player, impact_player_name_html
 
 
 
@@ -352,7 +352,7 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
     bowling_team = f"{session.bowling_team_display} XI"
 
     if session.current_bowler is not None:
-        bowler_name = str(session.current_bowler.get("name") or "Bowler")[:22]
+        bowler_name = impact_player_name_html(session, int(session.current_bowler.get("player_id") or 0), str(session.current_bowler.get("name") or "Bowler")[:22])
         bowler_figures = session.bowler_stats.get(
             int(session.current_bowler.get("player_id") or 0),
             {"balls": 0, "runs": 0, "wickets": 0},
@@ -379,8 +379,8 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
         f"📈 CRR: {crr_text} • 🎯 RRR: {rrr_text}",
         f"🏹 Need {need_text}",
         "",
-        f"◉ {str(striker.name)[:22]:<22} {int(striker.runs or 0)} ({int(striker.balls or 0)})",
-        f"  {str(non.name)[:22]:<22} {int(non.runs or 0)} ({int(non.balls or 0)})",
+        f"◉ {impact_player_name_html(session, int(striker.player_id or 0), str(striker.name)[:22]):<22} {int(striker.runs or 0)} ({int(striker.balls or 0)})",
+        f"  {impact_player_name_html(session, int(non.player_id or 0), str(non.name)[:22]):<22} {int(non.runs or 0)} ({int(non.balls or 0)})",
         "",
         "🤝 Partnership",
         f"{int(session.partnership_runs or 0)} runs off {int(session.partnership_balls or 0)} balls",
@@ -395,11 +395,11 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
     if session.auto_bowler_enabled and session.auto_bowler_queue:
         next_player = scheduled_bowler_player(session, int(session.auto_bowler_queue[0]))
         if next_player:
-            lines.extend(["", f"⏭️ Next: <b>{next_player.get('name', 'Bowler')}</b>"])
+            lines.extend(["", f"⏭️ Next: <b>{impact_player_name_html(session, int(next_player.get('player_id') or 0), next_player.get('name', 'Bowler'))}</b>"])
     elif targets:
         lines.extend(["", "<b>🗓️ Next Over Bowler Plan</b>"])
         for over_no, player in targets:
-            lines.append(f"{ordinal(over_no)} over: <b>{player.get('name', 'Bowler')}</b>")
+            lines.append(f"{ordinal(over_no)} over: <b>{impact_player_name_html(session, int(player.get('player_id') or 0), player.get('name', 'Bowler'))}</b>")
 
     lines.extend([
         "",
