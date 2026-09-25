@@ -9,6 +9,39 @@ from engines.lineup_engine import bowling_candidates
 MAX_BOWLER_OVERS = 4
 
 
+def impact_batting_position_allowed(session: Any, team_id: int) -> bool:
+    """Return whether this Impact replacement needs a batting-order step.
+
+    A batting-side replacement always needs positioning in the current innings.
+    During innings 1, the bowling side is the next innings batting side, so its
+    new Impact Player also needs a future batting position. In innings 2 the
+    bowling side has no later innings, so it must return directly to its normal
+    bowling stage.
+    """
+    team_id = int(team_id)
+    if team_id == int(session.batting_team_id):
+        return True
+    return (
+        int(getattr(session.innings, "innings_number", 1) or 1) == 1
+        and team_id == int(session.bowling_team_id)
+    )
+
+
+def impact_player_name_html(session: Any, player_id: int, name: str) -> str:
+    """Prefix only the selected Impact Player IN/OUT name with its emoji."""
+    pid = int(player_id or 0)
+    if pid <= 0:
+        return str(name)
+    from utils.PremiumEmoji import impact_player_name_html as _format_impact_name
+
+    for state in getattr(session, "impact_state", {}).values():
+        if int(state.get("in_id") or 0) == pid or int(state.get("impact_in_id") or 0) == pid:
+            return _format_impact_name(str(name), "in")
+        if int(state.get("out_id") or 0) == pid or int(state.get("impact_out_id") or 0) == pid:
+            return _format_impact_name(str(name), "out")
+    return str(name)
+
+
 def _key(team_id: int) -> str:
     return str(int(team_id))
 
@@ -25,6 +58,8 @@ def ensure_impact_state(session: Any, team_id: int) -> dict[str, Any]:
             "return_stage": None,
             "entry_role": None,
             "position": None,
+            "impact_out_id": None,
+            "impact_in_id": None,
         },
     )
     return state
@@ -219,6 +254,13 @@ def apply_impact_replacement(session: Any, team_id: int, out_id: int, in_id: int
         if getattr(session, "pending_next_bowler_id", None) is not None and int(session.pending_next_bowler_id) not in eligible_ids:
             session.pending_next_bowler_id = None
 
+    # Preserve the selected pair permanently for later innings-break, result,
+    # summary, and live rendering even after the transient workflow clears
+    # out_id/in_id from the state.
+    impact_state = ensure_impact_state(session, team_id)
+    impact_state["impact_out_id"] = out_id
+    impact_state["impact_in_id"] = in_id
+
     return out_player, in_player
 
 
@@ -294,6 +336,19 @@ def future_batting_candidates(session: Any, team_id: int | None = None) -> list[
 
 def selected_batting_order(session: Any) -> list[int]:
     return list(session.pending_batsman_order)
+
+
+def decorate_impact_snapshot(session: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return a display copy with Impact IN/OUT markers, without mutating raw stats."""
+    marked = dict(snapshot)
+    marked["batters"] = [dict(player) for player in snapshot.get("batters", []) or []]
+    marked["bowlers"] = [dict(player) for player in snapshot.get("bowlers", []) or []]
+    for key in ("batters", "bowlers"):
+        for player in marked[key]:
+            pid = int(player.get("player_id") or 0)
+            if pid:
+                player["name"] = impact_player_name_html(session, pid, player.get("name", "Player"))
+    return marked
 
 
 def move_future_batting_player_to_position(session: Any, team_id: int, player_id: int, target_position: int) -> None:
