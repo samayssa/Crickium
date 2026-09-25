@@ -11,6 +11,7 @@ from engines.play_engine import playing_xi
 from engines.strategy_engine import resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
 from services.milestones import schedule_milestone_notifications
+from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player
 
 
 @dataclass(slots=True)
@@ -60,6 +61,14 @@ class PlaySession:
     high_run_overs: int = 0
     very_high_run_overs: int = 0
     free_hit_next_ball: bool = False
+    full_squads: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    auto_bowler_enabled: bool = False
+    auto_bowler_queue: list[int] = field(default_factory=list)
+    pending_next_bowler_id: int | None = None
+    auto_batsman_enabled: bool = False
+    auto_batsman_queue: list[int] = field(default_factory=list)
+    pending_batsman_order: list[int] = field(default_factory=list)
+    impact_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     upgrade_snapshot: dict[str, dict[str, Any]] = field(default_factory=dict)
     upgrade_snapshot_restored: bool = False
 
@@ -106,6 +115,7 @@ def create_play_session(
         bowling_pool=bowl_pool,
         innings=innings,
     )
+    session.full_squads = {int(batting_team_id): [dict(p) for p in batting_squad], int(bowling_team_id): [dict(p) for p in bowling_squad]}
     _SESSIONS[match_id] = session
     return session
 
@@ -372,10 +382,23 @@ def render_live_scorecard(session: PlaySession, *, bowler_prompt: bool = False) 
         "",
         f"🥎 {bowler_name}",
         bowler_stats,
+    ]
+
+    targets = scheduled_bowler_targets(session) if not session.auto_bowler_enabled else []
+    if session.auto_bowler_enabled and session.auto_bowler_queue:
+        next_player = scheduled_bowler_player(session, int(session.auto_bowler_queue[0]))
+        if next_player:
+            lines.extend(["", f"⏭️ Next over: <b>{next_player.get('name', 'Bowler')}</b>"])
+    elif targets:
+        lines.extend(["", "<b>🗓️ Next Over Bowler Plan</b>"])
+        for over_no, player in targets:
+            lines.append(f"{ordinal(over_no)} over: <b>{player.get('name', 'Bowler')}</b>")
+
+    lines.extend([
         "",
         f"This over: [ {this_over_text} ]",
         "",
-    ]
+    ])
 
     commentary_block = _render_commentary(commentary_lines)
     if commentary_block:
@@ -548,6 +571,8 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     session.this_over.append(outcome.symbol)
     session.over_commentary.append(commentary)
     if outcome.wicket:
+        consume_planned_batsman_after_wicket(session)
+        apply_entry_role_after_wicket(session)
         # A new pair is now at the crease - their partnership starts
         # fresh at 0/0, not carried over from the whole innings.
         session.partnership_runs = 0
@@ -683,6 +708,15 @@ def start_second_innings(session: PlaySession, target: int) -> None:
     session.bowler_stats = {}
     session.partnership_runs = 0
     session.partnership_balls = 0
+    # Auto plans are innings-local. Preserve Impact Player usage state on IPL/Play.
+    if hasattr(session, "auto_bowler_queue"):
+        session.auto_bowler_enabled = False
+        session.auto_bowler_queue.clear()
+        session.pending_next_bowler_id = None
+    if hasattr(session, "auto_batsman_queue"):
+        session.auto_batsman_enabled = False
+        session.auto_batsman_queue.clear()
+        session.pending_batsman_order.clear()
 
 
 def match_winner(innings_1: dict[str, Any], innings_2: dict[str, Any]) -> tuple[int | None, str]:
