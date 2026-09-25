@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from app import app
-from buttons.playipl_buttons import (bowler_selection_keyboard, bowler_tactic_keyboard, strategy_keyboard, impact_out_keyboard, impact_in_keyboard)
+from buttons.playipl_buttons import (bowler_selection_keyboard, bowler_tactic_keyboard, strategy_keyboard, schedule_bowler_keyboard, schedule_batsman_keyboard, impact_player_keyboard, impact_batting_position_keyboard, impact_batting_role_keyboard)
 from database.playipl_repo import get_match, update_status, get_teams_player_ids, set_xi
 from database.user_stats_repo import add_match_xp, record_match_result, record_h2h_result
 from database.player_user_stats_repo import record_match_player_stats
@@ -43,6 +43,12 @@ from database.playipl_teams_repo import team_name, team_color, team_short, team_
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
 from handlers.registry import register_callback
+from services.live_runtime_controls import (
+    ensure_impact_state, reset_impact_pending, full_squad, current_xi, set_current_xi,
+    impact_out_candidates, impact_in_candidates, apply_impact_replacement, future_batting_candidates,
+    confirm_batting_order, consume_next_scheduled_bowler, scheduled_bowler_candidates, scheduled_bowler_targets,
+    current_over_number, ordinal, confirm_next_bowler, clear_bowler_schedule_selection, scheduled_bowler_player,
+)
 from services.super_over_bridge import build_draw_result_text, start_decider
 from utils.game_inactivity import sync_after_change
 
@@ -176,6 +182,10 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         match.get("challenger_team_code"): [int(x) for x in challenger_xi],
         match.get("opponent_team_code"): [int(x) for x in opponent_xi],
     }
+    match["_full_squads"] = {
+        str(challenger_id): [dict(p) for p in challenger_full],
+        str(opponent_id): [dict(p) for p in opponent_full],
+    }
     batting_squad = challenger_squad if batting_team_id == challenger_id else opponent_squad
     bowling_squad = challenger_squad if bowling_team_id == challenger_id else opponent_squad
     if len(batting_squad) < 11 or len(bowling_squad) < 11:
@@ -200,6 +210,8 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         batting_squad=batting_squad,
         bowling_squad=bowling_squad,
     )
+    if match.get("_full_squads"):
+        session.full_squads = {int(uid): [dict(p) for p in players] for uid, players in match["_full_squads"].items()}
     start_new_partnership(session)
 
     ready = await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match))
@@ -214,7 +226,7 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         chat_id,
         render_live_scorecard(session, bowler_prompt=True),
         parse_mode="HTML",
-        reply_markup=bowler_selection_keyboard(match["match_id"], next_bowler_card(session)),
+        reply_markup=bowler_selection_keyboard(match["match_id"], next_bowler_card(session), session.auto_bowler_enabled),
     )
     session.live_message_id = live["message_id"]
 
@@ -256,7 +268,7 @@ async def on_playipl_bowler(callback_query):
         return
     session.this_over = []
     await app.answer_callback_query(callback_query["id"], f"Bowler set to {candidate.get('name')}!")
-    await _safe_edit_scorecard(session, reply_markup=bowler_tactic_keyboard(match_id, session.current_bowler))
+    await _safe_edit_scorecard(session, reply_markup=bowler_tactic_keyboard(match_id, session.current_bowler, session.auto_bowler_enabled))
 
 
 @register_callback("playipl_tactic")
@@ -285,7 +297,7 @@ async def on_playipl_tactic(callback_query):
 
     assign_tactic(session, tactic)
     await app.answer_callback_query(callback_query["id"], f"{tactic.replace('_', ' ').upper()} tactic set!")
-    await _safe_edit_scorecard(session, reply_markup=strategy_keyboard(match_id))
+    await _safe_edit_scorecard(session, reply_markup=strategy_keyboard(match_id, session.auto_batsman_enabled))
 
 
 def _innings_break_text(innings_1: dict) -> str:
@@ -339,12 +351,21 @@ def _match_result_text(innings_1: dict, innings_2: dict) -> str:
 
 
 
+
 def _impact_state(session: Any) -> dict:
-    state = session.match.setdefault('_impact', {})
-    for code in (session.match.get('challenger_team_code'), session.match.get('opponent_team_code')):
-        if code:
-            state.setdefault(code, {'stage': 'out', 'out_id': None, 'in_id': None, 'done': False})
+    state = session.impact_state
+    for uid in (session.match.get('challenger_id'), session.match.get('opponent_id')):
+        if uid:
+            ensure_impact_state(session, int(uid))
     return state
+
+
+def _impact_team_code(session: Any, team_id: int) -> str | None:
+    if int(team_id) == int(session.match.get('challenger_id') or 0):
+        return session.match.get('challenger_team_code')
+    if int(team_id) == int(session.match.get('opponent_id') or 0):
+        return session.match.get('opponent_team_code')
+    return None
 
 
 def _team_owner(session: Any, code: str) -> tuple[int, bool]:
@@ -355,100 +376,114 @@ def _team_owner(session: Any, code: str) -> tuple[int, bool]:
     return 0, False
 
 
-def _impact_players(session: Any, code: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    full = list((session.match.get('_full_rosters') or {}).get(code) or [])
-    selected_ids = [int(x) for x in ((session.match.get('_selected_xis') or {}).get(code) or [])]
-    by_id = {int(p.get('player_id') or 0): dict(p) for p in full}
-    xi = [by_id[pid] for pid in selected_ids if pid in by_id]
-    bench = [p for p in full if int(p.get('player_id') or 0) not in set(selected_ids)]
-    return xi, bench
-
-
-def _impact_text(session: Any) -> str:
-    state = _impact_state(session)
-    a_id = int(session.match['challenger_id'])
-    o_id = int(session.match['opponent_id'])
-    a = mention_html(a_id, session.match.get('challenger_username'), session.match.get('challenger_name'))
-    o = mention_html(o_id, session.match.get('opponent_username'), session.match.get('opponent_name'))
-    chunks = [
-        '<b>╭━━〔 ⚡ IMPACT PLAYER 〕━━╮</b>',
-        '',
-        '🏁 <b>First innings complete!</b>',
-        'Before the second innings begins, each captain may make one Impact Player replacement.',
-        '',
-    ]
-    for label, code, mention in [('⚔️', session.match.get('challenger_team_code'), a), ('🔥', session.match.get('opponent_team_code'), o)]:
+def _impact_text(session: Any, *, team_id: int | None = None, context: str = 'innings_break') -> str:
+    _impact_state(session)
+    if context == 'runtime':
+        base = render_live_scorecard(session, bowler_prompt=False)
+    else:
+        snap = session.innings_history[0] if session.innings_history else snapshot_innings(session)
+        code = (
+            session.match.get('challenger_team_code')
+            if int(snap.get('batting_team_id') or 0) == int(session.match.get('challenger_id') or 0)
+            else session.match.get('opponent_team_code')
+        )
+        team_title = f"{ipl_team_emoji_html(code)} {snap.get('batting_team_display', session.batting_team_display)}" if code else snap.get('batting_team_display', session.batting_team_display)
+        target = int(snap.get('runs') or 0) + 1
+        bats = top_batters(snap)
+        bowls = top_bowlers(snap)
+        bat_lines = '\n'.join(f"{i+1}. {b['name']} • {b['runs']} ({b['balls']})" for i, b in enumerate(bats)) or '-'
+        bowl_lines = '\n'.join(f"{i+1}. {b['name']} • {b['wickets']}W ({b['runs']}R)" for i, b in enumerate(bowls)) or '-'
+        bowl_code = (
+            session.match.get('challenger_team_code')
+            if int(snap.get('bowling_team_id') or 0) == int(session.match.get('challenger_id') or 0)
+            else session.match.get('opponent_team_code')
+        )
+        bowling_title = f"{ipl_team_emoji_html(bowl_code)} {snap.get('bowling_team_display', session.bowling_team_display)}" if bowl_code else snap.get('bowling_team_display', session.bowling_team_display)
+        base = (
+            '<b>╭━━〔 🏁 INNINGS EVENTS COMPLETE 〕━━╮</b>\n\n'
+            f'🗓️ <b>{__import__("datetime").datetime.now().strftime("%d %b %Y")}</b>\n'
+            f'🏏 <b>{team_title} INNINGS</b>\n'
+            f'📊 <b>{snap.get("runs", 0)}/{snap.get("wickets", 0)} ({snap.get("over_text", "0.0")} Ov)</b>\n\n'
+            f'<b>⭐ Top Batters</b>\n{bat_lines}\n\n'
+            f'<b>🎯 Top Bowlers</b>\n{bowl_lines}\n\n'
+            f'🎯 <b>Target: {target}</b> for {bowling_title}\n'
+            '━━━━━━━━━━━━━━━━━━━━━━'
+        )
+    ids = [int(team_id)] if team_id is not None else [int(session.match['challenger_id']), int(session.match['opponent_id'])]
+    chunks = [base, '', '<b>⚡ IMPACT PLAYER</b>']
+    if context == 'innings_break':
+        chunks.append('Before the second innings begins, each side may make one Impact Player replacement.')
+    else:
+        chunks.append('Select a player from your Playing XI to replace with an available substitute.')
+    for uid in ids:
+        st = ensure_impact_state(session, uid)
+        code = _impact_team_code(session, uid)
         if not code:
             continue
-        xi, bench = _impact_players(session, code)
-        st = state[code]
-        chunks.append(f'{label} <b>{mention} • {ipl_team_emoji_html(code)} {team_name(code).upper()} ({team_short(code)})</b>')
-        if st.get('done'):
-            chunks.append('✅ <b>Impact Player confirmed.</b>')
-        elif st.get('stage') == 'in':
-            out_id = int(st.get('out_id') or 0)
-            out_p = next((p for p in xi if int(p.get('player_id') or 0) == out_id), None)
-            out_name = out_p.get('name') if out_p else 'selected player'
-            chunks.append(f'🔁 <b>{out_name}</b> is OUT. Choose your Impact Player to replace him:')
-        else:
-            chunks.append('🎯 <b>Choose your Impact Player to take OUT:</b>')
-        for i, p in enumerate(xi, 1):
-            chunks.append(f'{i}. {p.get("name")}')
+        team_title = f"{ipl_team_emoji_html(code)} {team_name(code)} ({team_short(code)})"
+        chunks.extend(['', f'<b>{team_title}</b>'])
         if st.get('stage') == 'in':
-            chunks.append(f'🔄 <b>Available substitutes: {len(bench)}</b>')
-        chunks.append('')
-    chunks.extend([
-        '━━━━━━━━━━━━━━━━━━━━━━',
-        '⏳ <b>Both captains must confirm their replacement before the second innings starts.</b>',
-        '╰━━━━━━━━━━━━━━━━━━╯',
-    ])
+            out_p = next((p for p in current_xi(session, uid) if int(p.get('player_id') or 0) == int(st.get('out_id') or 0)), None)
+            chunks.append(f'🔁 <b>{out_p.get("name", "Selected player") if out_p else "Selected player"}</b> is OUT. Choose the Impact Player IN.')
+        elif st.get('stage') == 'batpos':
+            chunks.append('🧭 <b>Select the batting position for the new Impact Player.</b>')
+        elif st.get('stage') == 'batrole':
+            chunks.append('🏏 <b>Select whether the Impact Player enters as Striker or Non-Striker.</b>')
+        elif st.get('used'):
+            chunks.append('✅ <b>Impact Player already used.</b>')
+            continue
+        else:
+            chunks.append('🎯 <b>Select the player to take OUT.</b>')
     return '\n'.join(chunks)
 
 
-def _impact_markup(session: Any):
-    state = _impact_state(session)
+def _impact_markup(session: Any, *, team_id: int | None = None, context: str = 'innings_break'):
+    ids = [int(team_id)] if team_id is not None else [int(session.match['challenger_id']), int(session.match['opponent_id'])]
     rows = []
-    for code in (session.match.get('challenger_team_code'), session.match.get('opponent_team_code')):
-        if not code:
-            continue
-        st = state[code]
-        if st.get('done'):
-            continue
-        xi, bench = _impact_players(session, code)
+    for uid in ids:
+        st = ensure_impact_state(session, uid)
         if st.get('stage') == 'in':
-            rows.extend(impact_in_keyboard(session.match_id, code, bench, st.get('in_id')))
-        else:
-            rows.extend(impact_out_keyboard(session.match_id, code, xi, st.get('out_id')))
+            rows.extend(impact_player_keyboard('playipl', session.match_id, uid, impact_in_candidates(session, uid), st.get('in_id'), stage='in').inline_keyboard)
+        elif st.get('stage') == 'batpos':
+            rows.extend(impact_batting_position_keyboard('playipl', session.match_id, future_batting_candidates(session), st.get('position')).inline_keyboard)
+        elif st.get('stage') == 'batrole':
+            rows.extend(impact_batting_role_keyboard('playipl', session.match_id).inline_keyboard)
+        elif not st.get('used'):
+            rows.extend(impact_player_keyboard('playipl', session.match_id, uid, impact_out_candidates(session, uid), st.get('out_id'), stage='out').inline_keyboard)
     return {'inline_keyboard': rows}
 
 
 async def _start_impact_flow(session, innings_1_snapshot: dict[str, Any]) -> None:
-    # The first-innings live score is deliberately not followed by a second
-    # live-score message. The two sides must resolve Impact Player choices first.
     _impact_state(session)
+    unused = [
+        int(uid) for uid in (session.match.get('challenger_id'), session.match.get('opponent_id'))
+        if uid and not ensure_impact_state(session, int(uid)).get('used')
+    ]
+    for uid in unused:
+        reset_impact_pending(session, uid, context='innings_break', return_stage=None)
     sent = await _safe_send(
         session.chat_id,
-        _impact_text(session),
+        _impact_text(session, context='innings_break'),
         parse_mode='HTML',
-        reply_markup=_impact_markup(session),
+        reply_markup=_impact_markup(session, context='innings_break'),
     )
     session.live_message_id = sent.get('message_id') if sent else None
-    await sync_after_change("PLAYIPL", int(session.match_id))
+    await sync_after_change('PLAYIPL', int(session.match_id))
+    if not unused:
+        # Both players already used their Impact Player. Keep the mandatory
+        # innings-event card visible briefly, then launch innings two.
+        await asyncio.sleep(3)
+        await _continue_after_impact_break(session)
 
 
-async def _maybe_finish_impact_flow(session: Any) -> None:
-    state = _impact_state(session)
-    if not all(v.get('done') for v in state.values()):
-        return
+async def _continue_after_impact_break(session: Any) -> None:
     if session.live_message_id:
         try:
             await app.delete_message(session.chat_id, session.live_message_id)
         except Exception as exc:
-            print(f'[playipl] Impact message cleanup failed (match_id={session.match_id}): {exc!r}')
+            print(f'[playipl] Impact/break cleanup failed: {exc!r}')
         session.live_message_id = None
     await asyncio.sleep(1.0)
-    if session.innings.innings_number != 1:
-        return
     innings_1_snapshot = session.innings_history[0] if session.innings_history else snapshot_innings(session)
     target = innings_1_snapshot['runs'] + 1
     start_second_innings(session, target)
@@ -457,10 +492,41 @@ async def _maybe_finish_impact_flow(session: Any) -> None:
         session.chat_id,
         render_live_scorecard(session, bowler_prompt=True),
         parse_mode='HTML',
-        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session)),
+        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled),
     )
     if live.get('message_id'):
         session.live_message_id = live['message_id']
+
+
+async def _maybe_finish_impact_flow(session: Any) -> None:
+    if session.innings.innings_number != 1:
+        return
+    if any(not ensure_impact_state(session, int(uid)).get('used') for uid in (session.match.get('challenger_id'), session.match.get('opponent_id'))):
+        return
+    await _continue_after_impact_break(session)
+
+
+@register_callback('playipl_impact_runtime')
+async def on_playipl_impact_runtime(callback_query):
+    mid = int(callback_query['data'].split(':')[1])
+    session = get_playipl_session(mid)
+    if session is None:
+        return
+    uid = int(callback_query['from']['id'])
+    if uid not in {int(session.match['challenger_id']), int(session.match['opponent_id'])}:
+        await app.answer_callback_query(callback_query['id'], 'You are not part of this match.', show_alert=True)
+        return
+    st = ensure_impact_state(session, uid)
+    if st.get('used'):
+        await app.answer_callback_query(callback_query['id'], 'Your Impact Player has already been used.', show_alert=True)
+        return
+    reset_impact_pending(session, uid, context='runtime', return_stage=session.stage)
+    await app.answer_callback_query(callback_query['id'], 'Choose your Impact Player replacement!')
+    await app.edit_message_text(
+        session.chat_id, session.live_message_id,
+        _impact_text(session, team_id=uid, context='runtime'),
+        parse_mode='HTML', reply_markup=_impact_markup(session, team_id=uid, context='runtime')
+    )
 
 
 @register_callback('playipl_impact_out')
@@ -470,27 +536,35 @@ async def on_playipl_impact_out(callback_query):
         await app.answer_callback_query(callback_query['id'], 'Invalid Impact Player selection.', show_alert=True)
         return
     _, mid_s, code, pid_s = parts
-    mid, pid = int(mid_s), int(pid_s)
+    mid, owner_code, pid = int(mid_s), str(code), int(pid_s)
     session = get_playipl_session(mid)
     if session is None:
-        await app.answer_callback_query(callback_query['id'], 'This match session is unavailable.', show_alert=True)
         return
-    owner, _ = _team_owner(session, code)
+    owner, _ = _team_owner(session, owner_code)
     if int(callback_query['from']['id']) != owner:
         await app.answer_callback_query(callback_query['id'], 'These are not your Impact Player options.', show_alert=True)
         return
-    state = _impact_state(session)[code]
-    if state.get('done') or state.get('stage') != 'out':
+    st = ensure_impact_state(session, owner)
+    if st.get('used') or st.get('stage') != 'out':
         await app.answer_callback_query(callback_query['id'], 'Complete the current Impact Player step first.', show_alert=True)
         return
-    xi, _bench = _impact_players(session, code)
-    valid_ids = {int(p.get('player_id') or 0) for p in xi}
-    if pid not in valid_ids:
-        await app.answer_callback_query(callback_query['id'], 'Player not found.', show_alert=True)
+    if pid not in {int(p.get('player_id') or 0) for p in impact_out_candidates(session, owner)}:
+        await app.answer_callback_query(callback_query['id'], 'That player is no longer available.', show_alert=True)
         return
-    state['out_id'] = pid
-    await app.answer_callback_query(callback_query['id'], 'Player selected!')
-    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session), parse_mode='HTML', reply_markup=_impact_markup(session))
+    # During live runtime, do not remove the active striker/non-striker. The
+    # full XI is displayed as requested, but replacing the current pair would
+    # leave the innings state ambiguous between deliveries.
+    if st.get('context') == 'runtime':
+        active_ids = {
+            int(p.player_id) for p in (session.innings.striker, session.innings.non_striker)
+            if p is not None and p.player_id is not None
+        }
+        if pid in active_ids:
+            await app.answer_callback_query(callback_query['id'], 'The current striker/non-striker cannot be replaced during live play.', show_alert=True)
+            return
+    st['out_id'] = None if int(st.get('out_id') or -1) == pid else pid
+    await app.answer_callback_query(callback_query['id'], 'Player selected.' if st['out_id'] else 'Selection removed.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=owner, context=st.get('context') or 'runtime'), parse_mode='HTML', reply_markup=_impact_markup(session, team_id=owner, context=st.get('context') or 'runtime'))
 
 
 @register_callback('playipl_impact_confirm_out')
@@ -506,17 +580,17 @@ async def on_playipl_impact_confirm_out(callback_query):
     if int(callback_query['from']['id']) != owner:
         await app.answer_callback_query(callback_query['id'], 'These are not your Impact Player options.', show_alert=True)
         return
-    state = _impact_state(session)[code]
-    if state.get('stage') != 'out' or state.get('out_id') is None:
+    st = ensure_impact_state(session, owner)
+    if st.get('stage') != 'out' or st.get('out_id') is None:
         await app.answer_callback_query(callback_query['id'], 'Select the player you want to replace first.', show_alert=True)
         return
-    _xi, bench = _impact_players(session, code)
+    bench = impact_in_candidates(session, owner)
     if not bench:
         await app.answer_callback_query(callback_query['id'], 'No substitute player is available.', show_alert=True)
         return
-    state['stage'] = 'in'
+    st['stage'] = 'in'
     await app.answer_callback_query(callback_query['id'], 'Choose your Impact Player!')
-    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session), parse_mode='HTML', reply_markup=_impact_markup(session))
+    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=owner, context=st.get('context') or 'runtime'), parse_mode='HTML', reply_markup=_impact_markup(session, team_id=owner, context=st.get('context') or 'runtime'))
 
 
 @register_callback('playipl_impact_in')
@@ -529,24 +603,21 @@ async def on_playipl_impact_in(callback_query):
     session = get_playipl_session(int(mid_s))
     if session is None:
         return
-    pid = int(pid_s)
     owner, _ = _team_owner(session, code)
     if int(callback_query['from']['id']) != owner:
         await app.answer_callback_query(callback_query['id'], 'These are not your Impact Player options.', show_alert=True)
         return
-    state = _impact_state(session)[code]
-    if state.get('stage') != 'in':
+    st = ensure_impact_state(session, owner)
+    if st.get('stage') != 'in':
         await app.answer_callback_query(callback_query['id'], 'Confirm the OUT player first.', show_alert=True)
         return
-    _xi, bench = _impact_players(session, code)
-    if pid not in {int(p.get('player_id') or 0) for p in bench}:
+    pid = int(pid_s)
+    if pid not in {int(p.get('player_id') or 0) for p in impact_in_candidates(session, owner)}:
         await app.answer_callback_query(callback_query['id'], 'That substitute is not available.', show_alert=True)
         return
-    # Exactly one substitute may be selected before confirmation; selecting a
-    # different one simply moves the green selection to the new button.
-    state['in_id'] = pid
-    await app.answer_callback_query(callback_query['id'], 'Impact Player selected!')
-    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session), parse_mode='HTML', reply_markup=_impact_markup(session))
+    st['in_id'] = None if int(st.get('in_id') or -1) == pid else pid
+    await app.answer_callback_query(callback_query['id'], 'Impact Player selected.' if st['in_id'] else 'Selection removed.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=owner, context=st.get('context') or 'runtime'), parse_mode='HTML', reply_markup=_impact_markup(session, team_id=owner, context=st.get('context') or 'runtime'))
 
 
 @register_callback('playipl_impact_confirm_in')
@@ -562,52 +633,278 @@ async def on_playipl_impact_confirm_in(callback_query):
     if int(callback_query['from']['id']) != owner:
         await app.answer_callback_query(callback_query['id'], 'These are not your Impact Player options.', show_alert=True)
         return
-    state = _impact_state(session)[code]
-    if state.get('stage') != 'in' or state.get('out_id') is None or state.get('in_id') is None:
+    st = ensure_impact_state(session, owner)
+    if st.get('stage') != 'in' or st.get('out_id') is None or st.get('in_id') is None:
         await app.answer_callback_query(callback_query['id'], 'Select an Impact Player first.', show_alert=True)
         return
-    xi, bench = _impact_players(session, code)
-    out_id = int(state['out_id']); in_id = int(state['in_id'])
-    by_id = {int(p.get('player_id') or 0): dict(p) for p in bench}
-    if in_id not in by_id:
-        await app.answer_callback_query(callback_query['id'], 'That substitute is no longer available.', show_alert=True)
-        return
-    new_ids = [int(p.get('player_id') or 0) for p in xi]
-    try:
-        index = new_ids.index(out_id)
-    except ValueError:
-        await app.answer_callback_query(callback_query['id'], 'The selected OUT player is no longer available.', show_alert=True)
-        return
-    new_ids[index] = in_id
-    session.match.setdefault('_selected_xis', {})[code] = new_ids
-    session.match['_impact'][code] = {'stage': 'done', 'out_id': out_id, 'in_id': in_id, 'done': True}
-    await set_xi(session.match_id, owner, new_ids, is_challenger=is_challenger)
-
-    # Refresh the live-session XI for the side immediately. The next-innings
-    # runtime reads _selected_xis, so batting order remains exactly at the
-    # replaced player's slot, while bowling_candidates() sees a new bowler/
-    # all-rounder if the incoming player can bowl.
-    full = list((session.match.get('_full_rosters') or {}).get(code) or [])
-    full_by_id = {int(p.get('player_id') or 0): dict(p) for p in full}
-    updated_xi = [full_by_id[x] for x in new_ids if x in full_by_id]
-    if int(session.batting_team_id) == owner:
-        session.batting_squad = updated_xi
-        session.batting_xi = updated_xi
-    if int(session.bowling_team_id) == owner:
-        session.bowling_squad = updated_xi
-        session.bowling_pool = __import__('engines.lineup_engine', fromlist=['bowling_candidates']).bowling_candidates(updated_xi)
-
-    out_player = next((p for p in xi if int(p.get('player_id') or 0) == out_id), {'name': 'Player'})
-    in_player = full_by_id.get(in_id, {'name': 'Player'})
-    await app.answer_callback_query(callback_query['id'], 'Impact Player confirmed!')
-    await app.edit_message_text(
-        session.chat_id,
-        session.live_message_id,
-        _impact_text(session) + f"\n\n✅ <b>{in_player.get('name')}</b> replaces <b>{out_player.get('name')}</b> as Impact Player for <b>{team_name(code)}</b>.",
-        parse_mode='HTML',
-        reply_markup=_impact_markup(session),
+    replacing_current_bowler = (
+        owner == int(session.bowling_team_id)
+        and session.current_bowler is not None
+        and int(session.current_bowler.get('player_id') or 0) == int(st['out_id'])
     )
-    await _maybe_finish_impact_flow(session)
+    try:
+        out_player, in_player = apply_impact_replacement(session, owner, int(st['out_id']), int(st['in_id']))
+    except Exception as exc:
+        await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True)
+        return
+    new_ids = [int(p.get('player_id') or 0) for p in current_xi(session, owner)]
+    session.match.setdefault('_selected_xis', {})[code] = new_ids
+    await set_xi(session.match_id, owner, new_ids, is_challenger=is_challenger)
+    st['used'] = True
+    context = st.get('context') or 'runtime'
+    st['stage'] = 'done'
+    await app.answer_callback_query(callback_query['id'], 'Impact Player confirmed!')
+
+    if context == 'innings_break':
+        await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, context='innings_break'), parse_mode='HTML', reply_markup=_impact_markup(session, context='innings_break'))
+        await _maybe_finish_impact_flow(session)
+        return
+
+    # Runtime batting-side substitution gets an explicit batting-order step.
+    if owner == int(session.batting_team_id):
+        st['stage'] = 'batpos'
+        st['context'] = 'runtime'
+        positions = future_batting_candidates(session)
+        await app.edit_message_text(
+            session.chat_id, session.live_message_id,
+            _impact_text(session, team_id=owner, context='runtime') + '\n\n<b>🧭 Select the batting position for the Impact Player.</b>',
+            parse_mode='HTML',
+            reply_markup=impact_batting_position_keyboard('playipl', session.match_id, positions, st.get('position')),
+        )
+        return
+
+    # Bowling-side replacement returns to the exact stage from which the flow opened.
+    return_stage = st.get('return_stage') or session.stage
+    if replacing_current_bowler:
+        return_stage = 'choose_tactic'
+    session.stage = return_stage
+    if return_stage == 'choose_bowler':
+        markup = bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled)
+        prompt = True
+    elif return_stage == 'choose_tactic':
+        markup = bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled)
+        prompt = False
+    else:
+        markup = strategy_keyboard(session.match_id, session.auto_batsman_enabled)
+        prompt = False
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode='HTML', reply_markup=markup)
+
+
+@register_callback('playipl_impact_batpos')
+async def on_playipl_impact_batpos(callback_query):
+    _, mid_s, pos_s = callback_query['data'].split(':')
+    session = get_playipl_session(int(mid_s))
+    if session is None:
+        return
+    uid = int(callback_query['from']['id'])
+    st = ensure_impact_state(session, uid)
+    if st.get('stage') != 'batpos':
+        await app.answer_callback_query(callback_query['id'], 'Complete the Impact Player step first.', show_alert=True)
+        return
+    position = int(pos_s)
+    valid = {int(p.get('position') or 0) for p in future_batting_candidates(session)}
+    if position not in valid:
+        await app.answer_callback_query(callback_query['id'], 'That batting position is no longer available.', show_alert=True)
+        return
+    st['position'] = None if int(st.get('position') or -1) == position else position
+    await app.answer_callback_query(callback_query['id'], 'Position selected.' if st['position'] else 'Selection removed.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=uid, context='runtime'), parse_mode='HTML', reply_markup=impact_batting_position_keyboard('playipl', session.match_id, future_batting_candidates(session), st.get('position')))
+
+
+@register_callback('playipl_impact_confirm_batpos')
+async def on_playipl_impact_confirm_batpos(callback_query):
+    mid = int(callback_query['data'].split(':')[1])
+    session = get_playipl_session(mid)
+    if session is None:
+        return
+    uid = int(callback_query['from']['id'])
+    st = ensure_impact_state(session, uid)
+    if st.get('stage') != 'batpos' or st.get('position') is None or st.get('in_id') is None:
+        await app.answer_callback_query(callback_query['id'], 'Select the Impact Player batting position first.', show_alert=True)
+        return
+    try:
+        from services.live_runtime_controls import move_batting_player_to_position
+        move_batting_player_to_position(session, uid, int(st['position']))
+    except Exception as exc:
+        await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True)
+        return
+    st['stage'] = 'batrole'
+    await app.answer_callback_query(callback_query['id'], 'Batting position confirmed!')
+    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=uid, context='runtime'), parse_mode='HTML', reply_markup=impact_batting_role_keyboard('playipl', session.match_id))
+
+
+@register_callback('playipl_impact_role')
+async def on_playipl_impact_role(callback_query):
+    _, mid_s, role = callback_query['data'].split(':')
+    session = get_playipl_session(int(mid_s))
+    if session is None:
+        return
+    uid = int(callback_query['from']['id'])
+    st = ensure_impact_state(session, uid)
+    if st.get('stage') != 'batrole' or role not in {'striker', 'non_striker'}:
+        await app.answer_callback_query(callback_query['id'], 'Select the batting role first.', show_alert=True)
+        return
+    st['entry_role'] = role
+    st['stage'] = 'done'
+    session.stage = st.get('return_stage') or 'choose_strategy'
+    await app.answer_callback_query(callback_query['id'], f'{role.replace("_", " ").title()} selected!')
+    if session.stage == 'choose_bowler':
+        markup = bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled)
+        prompt = True
+    elif session.stage == 'choose_tactic':
+        markup = bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled)
+        prompt = False
+    else:
+        markup = strategy_keyboard(session.match_id, session.auto_batsman_enabled)
+        prompt = False
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode='HTML', reply_markup=markup)
+
+
+@register_callback('playipl_set_next_bowler')
+async def on_playipl_set_next_bowler(callback_query):
+    mid = int(callback_query['data'].split(':')[1]); session = get_playipl_session(mid)
+    if session is None: return
+    uid = int(callback_query['from']['id'])
+    if uid != int(session.bowling_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the bowling side can set the next bowler.', show_alert=True); return
+    session.pending_next_bowler_id = None
+    await app.answer_callback_query(callback_query['id'], 'Choose the next over bowler.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), None, session.auto_bowler_enabled))
+
+
+@register_callback('playipl_schedule_bowler')
+async def on_playipl_schedule_bowler(callback_query):
+    _, mid_s, pid_s = callback_query['data'].split(':')
+    session = get_playipl_session(int(mid_s)); pid = int(pid_s)
+    if session is None: return
+    uid = int(callback_query['from']['id'])
+    if uid != int(session.bowling_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the bowling side can set the next bowler.', show_alert=True); return
+    if session.auto_bowler_enabled:
+        await app.answer_callback_query(callback_query['id'], 'Turn off auto bowler before changing the schedule.', show_alert=True); return
+    valid = {int(p.get('player_id') or 0) for p in scheduled_bowler_candidates(session)}
+    if pid not in valid:
+        await app.answer_callback_query(callback_query['id'], 'That bowler is not available.', show_alert=True); return
+    session.pending_next_bowler_id = None if int(session.pending_next_bowler_id or -1) == pid else pid
+    await app.answer_callback_query(callback_query['id'], 'Bowler selected.' if session.pending_next_bowler_id else 'Selection removed.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), session.pending_next_bowler_id, session.auto_bowler_enabled))
+
+
+@register_callback('playipl_confirm_next_bowler')
+async def on_playipl_confirm_next_bowler(callback_query):
+    mid=int(callback_query['data'].split(':')[1]); session=get_playipl_session(mid)
+    if session is None: return
+    if int(callback_query['from']['id']) != int(session.bowling_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the bowling side can confirm the next bowler.', show_alert=True); return
+    try:
+        pid=confirm_next_bowler(session)
+    except Exception as exc:
+        await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True); return
+    await app.answer_callback_query(callback_query['id'], 'Next bowler added to the plan!')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_bowler_keyboard(session.match_id, scheduled_bowler_candidates(session), None, session.auto_bowler_enabled))
+
+
+@register_callback('playipl_start_auto_bowler')
+async def on_playipl_start_auto_bowler(callback_query):
+    mid=int(callback_query['data'].split(':')[1]); session=get_playipl_session(mid)
+    if session is None: return
+    if int(callback_query['from']['id']) != int(session.bowling_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the bowling side can start auto bowler.', show_alert=True); return
+    if session.auto_bowler_enabled:
+        await app.answer_callback_query(callback_query['id'], 'Auto bowler is already enabled.', show_alert=True); return
+    if not session.auto_bowler_queue:
+        await app.answer_callback_query(callback_query['id'], 'Schedule at least one next bowler first.', show_alert=True); return
+    session.auto_bowler_enabled=True
+    await app.answer_callback_query(callback_query['id'], 'Auto bowler enabled for the scheduled overs!')
+    # Keep the current over intact. The queued bowler is consumed only when
+    # the next over actually begins.
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled))
+
+
+@register_callback('playipl_auto_bowler_off')
+async def on_playipl_auto_bowler_off(callback_query):
+    mid=int(callback_query['data'].split(':')[1]); session=get_playipl_session(mid)
+    if session is None: return
+    if int(callback_query['from']['id']) != int(session.bowling_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the bowling side can turn auto bowler off.', show_alert=True); return
+    session.auto_bowler_enabled=False
+    await app.answer_callback_query(callback_query['id'], 'Auto bowler turned off.')
+    if session.stage == 'choose_tactic':
+        markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, False)
+        prompt=False
+    elif session.stage == 'choose_bowler':
+        markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), False)
+        prompt=True
+    else:
+        markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled)
+        prompt=False
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=prompt), parse_mode='HTML', reply_markup=markup)
+
+
+@register_callback('playipl_set_next_batsman')
+async def on_playipl_set_next_batsman(callback_query):
+    mid=int(callback_query['data'].split(':')[1]); session=get_playipl_session(mid)
+    if session is None: return
+    uid=int(callback_query['from']['id'])
+    if uid != int(session.batting_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the batting side can set the next batsman.', show_alert=True); return
+    session.pending_batsman_order.clear()
+    await app.answer_callback_query(callback_query['id'], 'Select your next batting order.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_batsman_keyboard(session.match_id, future_batting_candidates(session), session.pending_batsman_order))
+
+
+@register_callback('playipl_schedule_batsman')
+async def on_playipl_schedule_batsman(callback_query):
+    _, mid_s, pid_s=callback_query['data'].split(':'); session=get_playipl_session(int(mid_s)); pid=int(pid_s)
+    if session is None: return
+    uid=int(callback_query['from']['id'])
+    if uid != int(session.batting_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the batting side can set the next batsman.', show_alert=True); return
+    valid={int(p.get('player_id') or 0) for p in future_batting_candidates(session)}
+    if pid not in valid:
+        await app.answer_callback_query(callback_query['id'], 'That batsman is not available.', show_alert=True); return
+    if pid in session.pending_batsman_order:
+        session.pending_batsman_order.remove(pid); msg='Selection removed.'
+    else:
+        session.pending_batsman_order.append(pid); msg='Batsman selected.'
+    await app.answer_callback_query(callback_query['id'], msg)
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=schedule_batsman_keyboard(session.match_id, future_batting_candidates(session), session.pending_batsman_order))
+
+
+@register_callback('playipl_confirm_batsman')
+async def on_playipl_confirm_batsman(callback_query):
+    mid=int(callback_query['data'].split(':')[1]); session=get_playipl_session(mid)
+    if session is None: return
+    if int(callback_query['from']['id']) != int(session.batting_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the batting side can confirm the next batsman order.', show_alert=True); return
+    try:
+        confirm_batting_order(session)
+    except Exception as exc:
+        await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True); return
+    await app.answer_callback_query(callback_query['id'], 'Batting order saved. Auto play enabled!')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, True))
+
+
+@register_callback('playipl_cancel_batsman_schedule')
+async def on_playipl_cancel_batsman_schedule(callback_query):
+    mid=int(callback_query['data'].split(':')[1]); session=get_playipl_session(mid)
+    if session is None: return
+    if int(callback_query['from']['id']) != int(session.batting_team_id):
+        return
+    session.pending_batsman_order.clear()
+    await app.answer_callback_query(callback_query['id'], 'Batting-order selection cancelled.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, session.auto_batsman_enabled))
+
+
+@register_callback('playipl_auto_batsman_off')
+async def on_playipl_auto_batsman_off(callback_query):
+    mid=int(callback_query['data'].split(':')[1]); session=get_playipl_session(mid)
+    if session is None: return
+    if int(callback_query['from']['id']) != int(session.batting_team_id):
+        await app.answer_callback_query(callback_query['id'], 'Only the batting side can turn auto play off.', show_alert=True); return
+    session.auto_batsman_enabled=False
+    await app.answer_callback_query(callback_query['id'], 'Auto batsman turned off.')
+    await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=strategy_keyboard(session.match_id, False))
 
 async def _safe_send(chat_id, text, **kwargs):
     try:
@@ -770,11 +1067,30 @@ async def _finish_over_and_prompt_next(session) -> None:
     session.this_over = []
     session.over_commentary = []
 
+    # Auto-bowler consumes the next pre-planned bowler without asking again.
+    if session.auto_bowler_enabled and session.auto_bowler_queue:
+        player = consume_next_scheduled_bowler(session)
+        if player and assign_bowler(session, player):
+            session.stage = "choose_tactic"
+            live = await _safe_send(
+                session.chat_id,
+                render_live_scorecard(session, bowler_prompt=False),
+                parse_mode="HTML",
+                reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled),
+            )
+            if live.get("message_id"):
+                session.live_message_id = live["message_id"]
+            return
+        session.auto_bowler_enabled = False
+
+    if session.auto_bowler_enabled and not session.auto_bowler_queue:
+        session.auto_bowler_enabled = False
+
     live = await _safe_send(
         session.chat_id,
         render_live_scorecard(session, bowler_prompt=True),
         parse_mode="HTML",
-        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session)),
+        reply_markup=bowler_selection_keyboard(session.match_id, next_bowler_card(session), session.auto_bowler_enabled),
     )
     if live.get("message_id"):
         session.live_message_id = live["message_id"]
