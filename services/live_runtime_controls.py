@@ -10,21 +10,21 @@ MAX_BOWLER_OVERS = 4
 
 
 def impact_batting_position_allowed(session: Any, team_id: int) -> bool:
-    """Return whether this Impact replacement needs a batting-order step.
+    """Return whether the selected Impact IN player needs batting positioning.
 
-    A batting-side replacement always needs positioning in the current innings.
-    During innings 1, the bowling side is the next innings batting side, so its
-    new Impact Player also needs a future batting position. In innings 2 the
-    bowling side has no later innings, so it must return directly to its normal
-    bowling stage.
+    Positioning is determined by the incoming player's role, not by which side
+    is currently batting or bowling. Only Batsman/AllRounder Impact players
+    receive the batting-position step. Bowlers and other roles return directly
+    to the normal runtime stage.
     """
     team_id = int(team_id)
-    if team_id == int(session.batting_team_id):
-        return True
-    return (
-        int(getattr(session.innings, "innings_number", 1) or 1) == 1
-        and team_id == int(session.bowling_team_id)
-    )
+    state = ensure_impact_state(session, team_id)
+    in_id = int(state.get("in_id") or 0)
+    if not in_id:
+        return False
+    player = find_player(session, team_id, in_id) or {}
+    role = str(player.get("role") or "").strip().lower().replace(" ", "").replace("-", "")
+    return role in {"batsman", "allrounder"}
 
 
 def impact_player_name_html(session: Any, player_id: int, name: str) -> str:
@@ -532,14 +532,22 @@ def move_batting_player_to_position(session: Any, player_id: int, target_positio
     target_position = int(target_position)
     order = session.innings.batting_order
     start = int(session.innings.next_batter_index or 0)
-    if target_position <= start:
-        target_position = start + 1
+
+    # An Impact IN may already have replaced an active/current batter whose
+    # original slot is before the normal next-batter cursor. The old lookup
+    # searched only order[start:], which caused the false "not available"
+    # exception even though the player was present in batting_order. Locate the
+    # player in the full order, then clamp the requested destination to the
+    # editable portion of the innings order.
     source_index = next(
-        (idx for idx in range(start, len(order)) if int(order[idx].player_id or 0) == player_id),
+        (idx for idx, slot in enumerate(order) if int(slot.player_id or 0) == player_id),
         None,
     )
     if source_index is None:
-        raise ValueError("Impact Player is not available in the remaining batting order.")
+        raise ValueError("Impact Player is not available in the batting order.")
+
+    if target_position <= start:
+        target_position = start + 1
     slot = order.pop(source_index)
     insert_index = min(max(start, target_position - 1), len(order))
     order.insert(insert_index, slot)
