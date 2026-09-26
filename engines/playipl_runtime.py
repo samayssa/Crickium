@@ -72,6 +72,8 @@ class PlaySession:
     auto_batsman_queue: list[int] = field(default_factory=list)
     pending_batsman_order: list[int] = field(default_factory=list)
     impact_state: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Separate post-innings Impact Player messages, one per participant.
+    impact_message_ids: dict[int, int] = field(default_factory=dict)
 
 
 _PLAYIPL_SESSIONS: dict[int, PlaySession] = {}
