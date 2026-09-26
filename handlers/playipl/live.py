@@ -829,9 +829,10 @@ async def on_playipl_impact_confirm_in(callback_query):
     # batting-order selector. Runtime uses the same rule: batting-side now, or
     # bowling-side only during innings one because it bats next.
     if context == 'innings_break':
-        # Only the team that will BAT in innings two gets the batting-order
-        # selector. The team that will BOWL in innings two confirms directly.
-        if owner == int(session.bowling_team_id):
+        # Batting-position eligibility is based on the incoming player's role.
+        # This works for both participants regardless of which side bats/bowls
+        # in the next innings. Bowlers confirm directly.
+        if impact_batting_position_allowed(session, owner):
             st['stage'] = 'batpos'
             st['context'] = 'innings_break'
             positions = future_batting_candidates(session, owner)
