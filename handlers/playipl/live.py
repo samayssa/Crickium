@@ -46,6 +46,7 @@ from handlers.registry import register_callback
 from services.live_runtime_controls import (
     ensure_impact_state, reset_impact_pending, full_squad, current_xi, set_current_xi,
     impact_out_candidates, impact_in_candidates, apply_impact_replacement, future_batting_candidates,
+    find_player,
     confirm_batting_order, consume_next_scheduled_bowler, scheduled_bowler_candidates, scheduled_bowler_targets,
     current_over_number, ordinal, confirm_next_bowler, clear_bowler_schedule_selection, scheduled_bowler_player, move_future_batting_player_to_position, impact_batting_position_allowed,
 )
@@ -370,8 +371,8 @@ def _impact_team_code(session: Any, team_id: int) -> str | None:
 
 
 def _team_owner(session: Any, code: str) -> tuple[int, bool]:
-    # Impact callbacks carry the Telegram user ID because the live message
-    # is shared by both teams. Team-code callbacks can still use IPL codes.
+    # Impact callbacks carry the Telegram user ID. Team-code callbacks can
+    # still use IPL codes. Post-innings Impact screens are separate messages.
     raw = str(code)
     if raw.isdigit():
         uid = int(raw)
@@ -384,6 +385,90 @@ def _team_owner(session: Any, code: str) -> tuple[int, bool]:
     if raw == str(session.match.get('opponent_team_code') or ''):
         return int(session.match['opponent_id']), False
     return 0, False
+
+
+def _impact_message_id(session: Any, owner: int) -> int | None:
+    """Return the message that belongs to this owner's Impact flow."""
+    st = ensure_impact_state(session, int(owner))
+    if st.get('context') == 'innings_break':
+        return session.impact_message_ids.get(int(owner))
+    return session.live_message_id
+
+
+def _impact_player_display(session: Any, team_id: int, player_id: int | None, impact_type: str) -> str:
+    pid = int(player_id or 0)
+    if pid <= 0:
+        return 'Player'
+    player = find_player(session, int(team_id), pid) or {}
+    name = str(player.get('name') or 'Player')
+    return impact_player_name_html(session, pid, name)
+
+
+def _impact_position_label(position: int | None, player_name: str = '') -> str:
+    pos = int(position or 0)
+    if pos == 1:
+        label = 'STRIKER'
+    elif pos == 2:
+        label = 'NON-STRIKER'
+    elif pos > 0:
+        label = f'#{pos}'
+    else:
+        return player_name or 'Not selected'
+    return f'{label} • {player_name}' if player_name else label
+
+
+def _impact_break_text(session: Any, owner: int) -> str:
+    """Render a private-to-team presentation of the innings-break Impact flow."""
+    owner = int(owner)
+    st = ensure_impact_state(session, owner)
+    code = _impact_team_code(session, owner)
+    if not code:
+        return '<b>⚡ IMPACT PLAYER</b>\n\nImpact Player flow unavailable.'
+
+    team_title = f"{ipl_team_emoji_html(code)} {team_name(code)} ({team_short(code)})"
+    username = mention_html(
+        session.match.get('challenger_id') if owner == int(session.match.get('challenger_id') or 0) else session.match.get('opponent_id'),
+        session.match.get('challenger_username') if owner == int(session.match.get('challenger_id') or 0) else session.match.get('opponent_username'),
+        session.match.get('challenger_name') if owner == int(session.match.get('challenger_id') or 0) else session.match.get('opponent_name'),
+    )
+
+    out_id = int(st.get('impact_out_id') or st.get('out_id') or 0)
+    in_id = int(st.get('impact_in_id') or st.get('in_id') or 0)
+    out_name = _impact_player_display(session, owner, out_id, 'out') if out_id else 'Not selected'
+    in_name = _impact_player_display(session, owner, in_id, 'in') if in_id else 'Not selected'
+
+    header = (
+        '<b>╭━━〔 ⚡ IMPACT PLAYER 〕━━╮</b>\n\n'
+        f'👤 <b>User:</b> {username}\n'
+        f'🏏 <b>Team:</b> {team_title}\n'
+    )
+
+    stage = str(st.get('stage') or 'idle')
+    if stage == 'out':
+        return header + '\n🎯 <b>Choose your Impact OUT player.</b>'
+    if stage == 'in':
+        return header + (
+            f'\n❌ <b>Impact OUT:</b> {out_name}\n'
+            '⚡ <b>Choose your Impact IN player.</b>'
+        )
+    if stage == 'batpos':
+        return header + (
+            f'\n❌ <b>Impact OUT:</b> {out_name}\n'
+            f'⚡ <b>Impact IN:</b> {in_name}\n\n'
+            f'🎯 <b>Choose {in_name} batting position.</b>'
+        )
+
+    position = st.get('confirmed_position')
+    position_player = in_name
+    position_line = _impact_position_label(position, position_player) if position else ''
+    text = (
+        header + '\n✅ <b>Impact Player confirmed!</b>\n\n'
+        f'❌ <b>Impact OUT:</b> {out_name}\n'
+        f'⚡ <b>Impact IN:</b> {in_name}\n'
+    )
+    if position_line:
+        text += f'🏏 <b>Batting Position:</b> {position_line}\n'
+    return text + '\n╰━━━━━━━━━━━━━━━━━━━━╯'
 
 
 def _impact_text(session: Any, *, team_id: int | None = None, context: str = 'innings_break') -> str:
@@ -467,41 +552,54 @@ def _impact_markup(session: Any, *, team_id: int | None = None, context: str = '
 
 async def _start_impact_flow(session, innings_1_snapshot: dict[str, Any]) -> None:
     _impact_state(session)
-    unused = [
+    session.impact_message_ids.clear()
+    all_users = [
         int(uid) for uid in (session.match.get('challenger_id'), session.match.get('opponent_id'))
-        if uid and not ensure_impact_state(session, int(uid)).get('used')
+        if uid
     ]
-    for uid in unused:
-        reset_impact_pending(session, uid, context='innings_break', return_stage=None)
-    if not unused:
-        # Both players already used their Impact Player. Show only the innings
-        # event card and skip the Impact-selection stage entirely.
+    unused = []
+    for uid in all_users:
+        st = ensure_impact_state(session, uid)
+        if not st.get('used'):
+            st['confirmed_position'] = None
+            reset_impact_pending(session, uid, context='innings_break', return_stage=None)
+            unused.append(uid)
+
+    if not all_users:
+        await _continue_after_impact_break(session)
+        return
+
+    # From the innings break onward, each participant gets a separate Impact
+    # message. Only the team batting in innings two receives a batting-position
+    # step after confirming its replacement.
+    for uid in all_users:
+        markup = None if ensure_impact_state(session, uid).get('used') else _impact_markup(
+            session, team_id=uid, context='innings_break'
+        )
         sent = await _safe_send(
             session.chat_id,
-            _impact_text(session, context='innings_break').split("\n\n<b>⚡ IMPACT PLAYER</b>", 1)[0] + "\n\n✅ <b>Both teams have already used their Impact Player.</b>",
+            _impact_break_text(session, uid),
             parse_mode='HTML',
+            reply_markup=markup,
         )
-        session.live_message_id = sent.get('message_id') if sent else None
+        if sent and sent.get('message_id'):
+            session.impact_message_ids[uid] = int(sent['message_id'])
+
+    if not unused:
         await asyncio.sleep(3)
         await _continue_after_impact_break(session)
         return
-    sent = await _safe_send(
-        session.chat_id,
-        _impact_text(session, context='innings_break'),
-        parse_mode='HTML',
-        reply_markup=_impact_markup(session, context='innings_break'),
-    )
-    session.live_message_id = sent.get('message_id') if sent else None
+
     await sync_after_change('PLAYIPL', int(session.match_id))
 
 
 async def _continue_after_impact_break(session: Any) -> None:
-    if session.live_message_id:
+    for mid in list(session.impact_message_ids.values()):
         try:
-            await app.delete_message(session.chat_id, session.live_message_id)
+            await app.delete_message(session.chat_id, int(mid))
         except Exception as exc:
             print(f'[playipl] Impact/break cleanup failed: {exc!r}')
-        session.live_message_id = None
+    session.impact_message_ids.clear()
     await asyncio.sleep(1.0)
     innings_1_snapshot = session.innings_history[0] if session.innings_history else snapshot_innings(session)
     target = innings_1_snapshot['runs'] + 1
@@ -613,7 +711,15 @@ async def on_playipl_impact_out(callback_query):
             return
     st['out_id'] = None if int(st.get('out_id') or -1) == pid else pid
     await app.answer_callback_query(callback_query['id'], 'Player selected.' if st['out_id'] else 'Selection removed.')
-    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=owner, context=st.get('context') or 'runtime'), parse_mode='HTML', reply_markup=_impact_markup(session, team_id=owner, context=st.get('context') or 'runtime'))
+    target_mid = _impact_message_id(session, owner)
+    if target_mid:
+        if st.get('context') == 'innings_break':
+            text = _impact_break_text(session, owner)
+            markup = _impact_markup(session, team_id=owner, context='innings_break')
+        else:
+            text = _impact_text(session, team_id=owner, context='runtime')
+            markup = _impact_markup(session, team_id=owner, context='runtime')
+        await app.edit_message_text(session.chat_id, target_mid, text, parse_mode='HTML', reply_markup=markup)
 
 
 @register_callback('playipl_impact_confirm_out')
@@ -639,7 +745,15 @@ async def on_playipl_impact_confirm_out(callback_query):
         return
     st['stage'] = 'in'
     await app.answer_callback_query(callback_query['id'], 'Choose your Impact Player!')
-    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=owner, context=st.get('context') or 'runtime'), parse_mode='HTML', reply_markup=_impact_markup(session, team_id=owner, context=st.get('context') or 'runtime'))
+    target_mid = _impact_message_id(session, owner)
+    if target_mid:
+        if st.get('context') == 'innings_break':
+            text = _impact_break_text(session, owner)
+            markup = _impact_markup(session, team_id=owner, context='innings_break')
+        else:
+            text = _impact_text(session, team_id=owner, context='runtime')
+            markup = _impact_markup(session, team_id=owner, context='runtime')
+        await app.edit_message_text(session.chat_id, target_mid, text, parse_mode='HTML', reply_markup=markup)
 
 
 @register_callback('playipl_impact_in')
@@ -666,7 +780,15 @@ async def on_playipl_impact_in(callback_query):
         return
     st['in_id'] = None if int(st.get('in_id') or -1) == pid else pid
     await app.answer_callback_query(callback_query['id'], 'Impact Player selected.' if st['in_id'] else 'Selection removed.')
-    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=owner, context=st.get('context') or 'runtime'), parse_mode='HTML', reply_markup=_impact_markup(session, team_id=owner, context=st.get('context') or 'runtime'))
+    target_mid = _impact_message_id(session, owner)
+    if target_mid:
+        if st.get('context') == 'innings_break':
+            text = _impact_break_text(session, owner)
+            markup = _impact_markup(session, team_id=owner, context='innings_break')
+        else:
+            text = _impact_text(session, team_id=owner, context='runtime')
+            markup = _impact_markup(session, team_id=owner, context='runtime')
+        await app.edit_message_text(session.chat_id, target_mid, text, parse_mode='HTML', reply_markup=markup)
 
 
 @register_callback('playipl_impact_confirm_in')
@@ -707,19 +829,28 @@ async def on_playipl_impact_confirm_in(callback_query):
     # batting-order selector. Runtime uses the same rule: batting-side now, or
     # bowling-side only during innings one because it bats next.
     if context == 'innings_break':
-        if impact_batting_position_allowed(session, owner):
+        # Only the team that will BAT in innings two gets the batting-order
+        # selector. The team that will BOWL in innings two confirms directly.
+        if owner == int(session.bowling_team_id):
             st['stage'] = 'batpos'
             st['context'] = 'innings_break'
             positions = future_batting_candidates(session, owner)
-            await app.edit_message_text(
-                session.chat_id, session.live_message_id,
-                _impact_text(session, team_id=owner, context='innings_break'),
-                parse_mode='HTML',
-                reply_markup=impact_batting_position_keyboard('playipl', session.match_id, positions, st.get('position')),
-            )
+            target_mid = _impact_message_id(session, owner)
+            if target_mid:
+                await app.edit_message_text(
+                    session.chat_id, target_mid,
+                    _impact_break_text(session, owner),
+                    parse_mode='HTML',
+                    reply_markup=impact_batting_position_keyboard('playipl', session.match_id, positions, st.get('position')),
+                )
         else:
-            st.update({'stage':'done', 'context':None, 'return_stage':None, 'position':None, 'entry_role':None})
-            await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, context='innings_break'), parse_mode='HTML', reply_markup=_impact_markup(session, context='innings_break'))
+            target_mid = session.impact_message_ids.get(int(owner))
+            st.update({'stage':'done', 'context':None, 'return_stage':None, 'position':None, 'entry_role':None, 'confirmed_position':None})
+            if target_mid:
+                await app.edit_message_text(
+                    session.chat_id, target_mid, _impact_break_text(session, owner),
+                    parse_mode='HTML', reply_markup={'inline_keyboard': []}
+                )
             await _maybe_finish_impact_flow(session)
         return
 
@@ -768,7 +899,13 @@ async def on_playipl_impact_batpos(callback_query):
         return
     st['position'] = None if int(st.get('position') or -1) == position else position
     await app.answer_callback_query(callback_query['id'], 'Position selected.' if st['position'] else 'Selection removed.')
-    await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=uid, context='runtime'), parse_mode='HTML', reply_markup=impact_batting_position_keyboard('playipl', session.match_id, positions, st.get('position')))
+    target_mid = _impact_message_id(session, uid)
+    if target_mid:
+        if st.get('context') == 'innings_break':
+            text = _impact_break_text(session, uid)
+        else:
+            text = _impact_text(session, team_id=uid, context='runtime')
+        await app.edit_message_text(session.chat_id, target_mid, text, parse_mode='HTML', reply_markup=impact_batting_position_keyboard('playipl', session.match_id, positions, st.get('position')))
 
 
 @register_callback('playipl_impact_confirm_batpos')
@@ -805,10 +942,14 @@ async def on_playipl_impact_confirm_batpos(callback_query):
 
     context = st.get('context') or 'runtime'
     return_stage = st.get('return_stage') or session.stage
+    if context == 'innings_break':
+        st['confirmed_position'] = int(st.get('position') or 0)
     st.update({'stage': 'done', 'context': None, 'return_stage': None, 'position': None, 'entry_role': None})
     await app.answer_callback_query(callback_query['id'], 'Batting position confirmed!')
     if context == 'innings_break':
-        await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, context='innings_break'), parse_mode='HTML', reply_markup=_impact_markup(session, context='innings_break'))
+        target_mid = session.impact_message_ids.get(int(uid))
+        if target_mid:
+            await app.edit_message_text(session.chat_id, target_mid, _impact_break_text(session, uid), parse_mode='HTML', reply_markup={'inline_keyboard': []})
         await _maybe_finish_impact_flow(session)
         return
     session.stage = return_stage
