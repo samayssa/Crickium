@@ -29,6 +29,7 @@ from services.player_card import overall_rating
 from utils.PremiumEmoji import get_ipl_team_emoji
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
+from utils.overseas import classify_country, is_overseas_player
 
 # Avoid a dependency on any existing game's rendering layer. These are the
 # canonical IPL teams already used by the existing PlayIPL engine.
@@ -671,6 +672,8 @@ async def validate_pool_players(pools: list[dict], errors: list[dict]) -> tuple[
             "pool_name": str(pool["pool_name"]),
             "base_price": int(pool["base_price"] or 0),
             "players": [],
+            "overseas_players": [],
+            "non_overseas_players": [],
         }
         for line_no, player_text in pool.get("player_lines", []):
             raw_name = str(player_text).strip()
@@ -748,6 +751,12 @@ async def validate_pool_players(pools: list[dict], errors: list[dict]) -> tuple[
             player["ovr"] = overall_rating(player.get("bat_level"), player.get("bowl_level"))
             player["country"] = player.get("country")
             player["role"] = player.get("role")
+            player["country_class"] = classify_country(player.get("country"))
+            player["is_overseas"] = is_overseas_player(player)
+            player["overseas_group"] = "overseas" if player["is_overseas"] else "non_overseas"
+            clean_pool.setdefault("overseas_players", [])
+            clean_pool.setdefault("non_overseas_players", [])
+            clean_pool["overseas_players" if player["is_overseas"] else "non_overseas_players"].append(player["identity_key"])
             clean_pool["players"].append(player)
             success += 1
 
