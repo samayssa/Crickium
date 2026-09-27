@@ -34,7 +34,7 @@ from database.auction_tournament_repo import (
 )
 from database.query import fetchrow
 from database.squads_repo import get_team_squad
-from services.auction_tournament_session import sync_tournament_session
+from services.auction_tournament_session import sync_tournament_session, has_active_prompt_message
 from services.auction_tournament import (
     IPL_TEAM_MAP,
     IPL_TEAM_ORDER,
@@ -173,7 +173,8 @@ async def create_tour_command(message: dict):
 
 def _pool_player_preview_line(player: dict) -> str:
     edition = f" ({esc(player.get("edition"))})" if player.get("edition") else ""
-    return f"├ {esc(player.get("name"))}{edition} • OVR {int(player.get("ovr") or 0)}"
+    overseas_mark = " 🌍 Overseas" if bool(player.get("is_overseas")) else " 🇮🇳 Indian" if player.get("country_class") == "indian" else ""
+    return f"├ {esc(player.get("name"))}{edition} • OVR {int(player.get("ovr") or 0)}{overseas_mark}"
 
 
 @register("setpool")
@@ -689,9 +690,20 @@ async def prize_command(message: dict):
 async def handle_non_command_message(message: dict) -> bool:
     """Called by main.py only for non-command messages.
 
-    Returns True when the message was consumed by the auction creation flow.
+    The persistent session mirror is checked first. This is deliberately
+    fail-closed for ordinary replies so a busy group cannot generate a
+    PostgreSQL query for every conversation message.
     """
     try:
+        chat = message.get("chat") or {}
+        reply = message.get("reply_to_message") or {}
+        if not reply:
+            return False
+        user_id = int((message.get("from") or {}).get("id") or 0)
+        chat_id = int(chat.get("id") or 0)
+        reply_id = int(reply.get("message_id") or 0)
+        if not has_active_prompt_message(user_id, chat_id, reply_id):
+            return False
         return await handle_tournament_reply(message)
     except Exception as exc:
         print(f"[tournament] non-command reply handling failed: {exc!r}")
