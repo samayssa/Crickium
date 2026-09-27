@@ -9,6 +9,7 @@ from utils.PremiumEmoji import ipl_team_emoji_html
 from buttons.playipl_challenger_buttons import challenger_xi_keyboard
 from buttons.playipl_opponent_buttons import opponent_xi_keyboard
 from utils.mentions import mention_html
+from utils.overseas import MAX_OVERSEAS_PLAYERS, count_overseas, within_overseas_limit
 
 NO_KEYBOARD={'inline_keyboard':[]}
 
@@ -35,16 +36,25 @@ def _role_counts(players):
 
 def _valid(players):
     c=_role_counts(players)
-    return len(players)==11 and c['Batsman']>=1 and 2<=c['AllRounder']<=4 and 3<=c['Bowler']<=4 and c['Wicketkeeper']>=1
+    return (
+        len(players)==11
+        and c['Batsman']>=1
+        and 2<=c['AllRounder']<=4
+        and 3<=c['Bowler']<=4
+        and c['Wicketkeeper']>=1
+        and within_overseas_limit(players)
+    )
 
 def _build_text(code,players,selected):
     c=_role_counts([p for p in players if int(p.get('player_id') or 0) in selected])
-    status='✅ Team Valid' if _valid([p for p in players if int(p.get('player_id') or 0) in selected]) else '⚠️ Team Invalid'
+    chosen=[p for p in players if int(p.get('player_id') or 0) in selected]
+    overseas_count=count_overseas(chosen)
+    status='✅ Team Valid' if _valid(chosen) else '⚠️ Team Invalid'
     team_display=f"{ipl_team_emoji_html(code)} {team_name(code).upper()}"
     lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_display} ({code})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
     chosen=_chosen_in_order(players, selected)
     lines.extend([p.get('name','Player') for p in chosen])
-    lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
+    lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",f"🌍 Overseas: {overseas_count}/{MAX_OVERSEAS_PLAYERS}",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
     return '\n'.join(lines)
 
 async def _players(code):
@@ -138,7 +148,7 @@ async def playipl_xi_confirm(callback_query):
         await app.answer_callback_query(callback_query['id'],'You are not part of this match.',show_alert=True); return
     field='challenger_xi' if is_ch else 'opponent_xi'; selected=_decode_ids(match.get(field)); players=await _players(code); chosen=_chosen_in_order(players, selected)
     if not _valid(chosen):
-        await app.answer_callback_query(callback_query['id'],'Team is invalid. Complete the required role limits first.',show_alert=True); return
+        await app.answer_callback_query(callback_query['id'],f'Team is invalid. Maximum {MAX_OVERSEAS_PLAYERS} overseas players are allowed, with all existing role limits still required.',show_alert=True); return
     await set_xi_confirmed(mid,uid); await save_recent_playing_xi(uid,code,selected)
     await app.answer_callback_query(callback_query['id'],'Playing XI confirmed!')
     await app.delete_message(callback_query['message']['chat']['id'],callback_query['message']['message_id'])

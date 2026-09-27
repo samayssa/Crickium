@@ -39,6 +39,7 @@ from services.search import find_stadium_image_url
 from services.match_summary import send_match_summary, player_details
 from utils.mentions import mention_html
 from utils.PremiumEmoji import ipl_team_emoji_html
+from utils.overseas import MAX_OVERSEAS_PLAYERS, is_overseas_player
 from database.playipl_teams_repo import team_name, team_color, team_short, team_label, team_short_label
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
@@ -813,6 +814,31 @@ async def on_playipl_impact_confirm_in(callback_query):
         and session.current_bowler is not None
         and int(session.current_bowler.get('player_id') or 0) == int(st['out_id'])
     )
+
+    # The four-overseas rule also applies to Impact Player replacements.
+    # Validate the projected XI before mutating runtime state so a fifth
+    # overseas player can never enter the team, while a 4->4 replacement
+    # (overseas for overseas) remains valid.
+    current_xi_players = current_xi(session, owner)
+    out_player_preview = next(
+        (p for p in current_xi_players if int(p.get('player_id') or 0) == int(st['out_id'])),
+        None,
+    )
+    in_player_preview = find_player(session, owner, int(st['in_id']))
+    current_overseas = sum(1 for p in current_xi_players if is_overseas_player(p))
+    projected_overseas = current_overseas
+    if out_player_preview is not None and is_overseas_player(out_player_preview):
+        projected_overseas -= 1
+    if in_player_preview is not None and is_overseas_player(in_player_preview):
+        projected_overseas += 1
+    if projected_overseas > MAX_OVERSEAS_PLAYERS:
+        await app.answer_callback_query(
+            callback_query['id'],
+            'You already have 4 overseas players. You must remove an overseas player before adding another.',
+            show_alert=True,
+        )
+        return
+
     try:
         out_player, in_player = apply_impact_replacement(session, owner, int(st['out_id']), int(st['in_id']))
     except Exception as exc:
