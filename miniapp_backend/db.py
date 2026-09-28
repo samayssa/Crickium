@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator
 
 import asyncpg
 
-from .config import DATABASE_URL
+from database.connection import get_asyncpg_connect_kwargs
 
 _pool: asyncpg.Pool | None = None
 
@@ -13,7 +13,7 @@ _pool: asyncpg.Pool | None = None
 async def connect() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=0, max_size=3)
+        _pool = await asyncpg.create_pool(**get_asyncpg_connect_kwargs(), min_size=0, max_size=3, max_inactive_connection_lifetime=300.0)
     return _pool
 
 
