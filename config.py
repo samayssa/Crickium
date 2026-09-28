@@ -21,7 +21,7 @@ ADMIN_USER_ID = 1766243373
 # ==========================
 
 DATABASE_URL = (
-    "postgresql://neondb_owner:npg_dKXwPfiZ26mI@ep-mute-bonus-b5ddh5ut-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    "postgresql://arpit:3M9a5QM_sowTbNhEiGGDjw@tide-walker-21592.jxf.gcp-asia-south1.cockroachlabs.cloud:26257/defaultdb?sslmode=verify-full"
 )
 
 # ==========================
