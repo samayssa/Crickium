@@ -518,14 +518,19 @@ async def import_tables(raw_bytes: bytes) -> dict[str, int]:
         metadata = {table: await _table_column_metadata(conn, table) for table in present}
 
         async with conn.transaction():
-            # TRUNCATE is executed only for tables represented by the backup.
-            # A new-format full backup contains every public application table,
-            # so it is a complete replacement. A /cleardata backup remains a
-            # partial restore exactly as before.
-            truncate_list = ", ".join(f'"{table}"' for table in present)
-            await conn.execute(
-                f"TRUNCATE TABLE {truncate_list} RESTART IDENTITY CASCADE;"
-            )
+            # CockroachDB does not support PostgreSQL's
+            # `TRUNCATE ... RESTART IDENTITY` clause. Truncate the backup
+            # tables individually in child-first order so foreign-key
+            # dependencies are satisfied without relying on a multi-table
+            # PostgreSQL-specific statement. Sequence/identity counters are
+            # reset explicitly after the rows are restored by _reset_sequences.
+            #
+            # Keep CASCADE for compatibility with the existing /cleardata
+            # semantics. The set of tables is still restricted to the backup
+            # payload, and the operation remains inside the same transaction.
+            truncate_order = list(reversed(ordered))
+            for table in truncate_order:
+                await conn.execute(f'TRUNCATE TABLE "{table}" CASCADE;')
 
             for table in ordered:
                 results[table] = await _restore_rows(conn, table, tables.get(table) or [], metadata[table])
