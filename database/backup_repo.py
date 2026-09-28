@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import re
 from collections import defaultdict, deque
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -363,29 +364,66 @@ async def _foreign_key_order(conn, tables: list[str]) -> list[str]:
 
 
 async def _reset_sequences(conn, tables: list[str], metadata: dict[str, dict[str, dict]]):
+    """Reset SERIAL/identity-backed sequences after a logical restore.
+
+    PostgreSQL exposes pg_get_serial_sequence(); CockroachDB does not require
+    the application to depend on that PostgreSQL helper. For CockroachDB we
+    resolve sequence names from the column default and use ALTER SEQUENCE.
+    """
+    version_text = str(await conn.fetchval("SELECT version();") or "")
+    is_cockroach = "cockroachdb" in version_text.lower()
+
     for table in tables:
         columns = metadata.get(table, {})
         for column, info in columns.items():
-            default = info.get("column_default") or ""
+            default = str(info.get("column_default") or "")
             is_identity = info.get("is_identity") == "YES"
             if "nextval(" not in default and not is_identity:
                 continue
 
+            max_value = await conn.fetchval(
+                f'SELECT MAX("{column}") FROM "{table}";'
+            )
+            next_value = 1 if max_value is None else int(max_value) + 1
+
+            if is_cockroach:
+                # Typical PostgreSQL-compatible SERIAL defaults are of the form
+                # nextval('public.table_id_seq'::REGCLASS). CockroachDB exposes
+                # the same default text for sequence-backed SERIAL columns.
+                match = re.search(r"nextval\('([^']+)'", default)
+                if not match:
+                    # Identity/managed columns do not always expose a nextval()
+                    # default. Leave those alone; their identity mechanism owns
+                    # its own counter and the restored explicit IDs remain valid.
+                    continue
+
+                raw_sequence = match.group(1)
+                sequence_parts = [part.strip().strip('"') for part in raw_sequence.split('.')]
+                if len(sequence_parts) == 1:
+                    sequence_schema, sequence_name = "public", sequence_parts[0]
+                else:
+                    sequence_schema, sequence_name = sequence_parts[-2], sequence_parts[-1]
+
+                def _ident(value: str) -> str:
+                    return '"' + value.replace('"', '""') + '"'
+
+                await conn.execute(
+                    f'ALTER SEQUENCE {_ident(sequence_schema)}.{_ident(sequence_name)} RESTART WITH {next_value};'
+                )
+                continue
+
             sequence_name = await conn.fetchval(
-                "SELECT pg_get_serial_sequence($1, $2)",
+                "SELECT pg_get_serial_sequence($1, $2);",
                 f"public.{table}",
                 column,
             )
             if not sequence_name:
                 continue
 
-            max_value = await conn.fetchval(
-                f'SELECT MAX("{column}") FROM "{table}";'
-            )
             if max_value is None:
                 await conn.execute("SELECT setval($1, 1, false);", sequence_name)
             else:
-                await conn.execute("SELECT setval($1, $2, true);", sequence_name, max_value)
+                await conn.execute("SELECT setval($1, $2, false);", sequence_name, next_value)
 
 
 async def _restore_rows(conn, table: str, rows: list[dict], metadata: dict[str, dict]):

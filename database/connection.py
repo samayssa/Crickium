@@ -1,8 +1,18 @@
+import base64
+import os
+import ssl
 import time
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
 
-from config import DATABASE_URL
+from config import (
+    COCKROACH_CA_CERT,
+    COCKROACH_CA_CERT_B64,
+    COCKROACH_CA_CERT_FILE,
+    DATABASE_URL,
+)
 
 _pool = None
 _DB_BLOCKED_UNTIL = 0.0
@@ -48,6 +58,91 @@ def is_database_quota_error(exc: BaseException) -> bool:
     return _quota_error(exc)
 
 
+def _is_cockroach_url(dsn: str) -> bool:
+    try:
+        host = urlsplit(dsn).hostname or ""
+    except ValueError:
+        return False
+    return host.endswith(".cockroachlabs.cloud") or "cockroachlabs.cloud" in host
+
+
+def _remove_query_keys(dsn: str, keys: set[str]) -> str:
+    parts = urlsplit(dsn)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k not in keys]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _ca_pem_from_environment() -> str | None:
+    if COCKROACH_CA_CERT_FILE:
+        path = Path(COCKROACH_CA_CERT_FILE).expanduser()
+        if not path.is_file():
+            raise RuntimeError(
+                f"COCKROACH_CA_CERT_FILE points to '{path}', but that file does not exist. "
+                "Download the CockroachDB Cloud cluster CA certificate and set the file path correctly."
+            )
+        return path.read_text(encoding="utf-8")
+
+    if COCKROACH_CA_CERT_B64:
+        try:
+            return base64.b64decode(COCKROACH_CA_CERT_B64).decode("utf-8")
+        except Exception as exc:
+            raise RuntimeError("COCKROACH_CA_CERT_B64 is not valid base64-encoded PEM data.") from exc
+
+    if COCKROACH_CA_CERT:
+        return COCKROACH_CA_CERT.replace("\\n", "\n")
+
+    return None
+
+
+def get_asyncpg_connect_kwargs() -> dict:
+    """Build asyncpg connection arguments, including secure Cockroach TLS."""
+    dsn = DATABASE_URL
+    if not dsn:
+        raise RuntimeError("DATABASE_URL is not configured.")
+
+    parts = urlsplit(dsn)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    sslmode = (query.get("sslmode") or "verify-full").lower()
+    embedded_root = query.get("sslrootcert")
+    ca_pem = _ca_pem_from_environment()
+    is_cockroach = _is_cockroach_url(dsn)
+
+    if ca_pem:
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cadata=ca_pem)
+        ctx.check_hostname = sslmode == "verify-full"
+        dsn_without_cert = _remove_query_keys(dsn, {"sslrootcert"})
+        return {"dsn": dsn_without_cert, "ssl": ctx}
+
+    if embedded_root and embedded_root not in {"~/.postgresql/root.crt", "/root/.postgresql/root.crt"}:
+        path = Path(embedded_root).expanduser()
+        if path.is_file():
+            ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(path))
+            ctx.check_hostname = sslmode == "verify-full"
+            return {"dsn": _remove_query_keys(dsn, {"sslrootcert"}), "ssl": ctx}
+
+    if sslmode in {"verify-full", "verify-ca"}:
+        if is_cockroach:
+            raise RuntimeError(
+                "CockroachDB Cloud requires its cluster CA certificate for secure verification. "
+                "Set COCKROACH_CA_CERT_FILE to the downloaded CA file, or COCKROACH_CA_CERT/COCKROACH_CA_CERT_B64 in Railway. "
+                "The old /root/.postgresql/root.crt fallback is intentionally not used because Railway does not contain that file."
+            )
+        # For providers whose server certificate chains to a public CA (for example
+        # many managed PostgreSQL services), use the platform trust store instead of
+        # asyncpg's ~/.postgresql/root.crt fallback when no custom CA file is supplied.
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        ctx.check_hostname = sslmode == "verify-full"
+        return {"dsn": _remove_query_keys(dsn, {"sslrootcert"}), "ssl": ctx}
+
+    # Explicit ssl=require remains encrypted but skips server-certificate verification.
+    # It should only be used deliberately for non-production/testing scenarios.
+    return {"dsn": dsn}
+
+
+def is_retryable_transaction_error(exc: BaseException) -> bool:
+    return getattr(exc, "sqlstate", None) == "40001"
+
+
 async def connect():
     global _pool
 
@@ -60,9 +155,10 @@ async def connect():
         print("[db/connection] No existing pool, creating new asyncpg pool...")
         try:
             _pool = await asyncpg.create_pool(
-                dsn=DATABASE_URL,
+                **get_asyncpg_connect_kwargs(),
                 min_size=0,
-                max_size=5
+                max_size=5,
+                max_inactive_connection_lifetime=300.0,
             )
             clear_database_quota_block()
             print("[db/connection] Pool created successfully.")
