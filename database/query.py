@@ -1,5 +1,13 @@
 
-from database.connection import get_pool, mark_database_quota_exhausted, is_database_quota_error
+import asyncio
+import random
+
+from database.connection import (
+    get_pool,
+    is_database_quota_error,
+    is_retryable_transaction_error,
+    mark_database_quota_exhausted,
+)
 
 MAX_LOG_VALUE = 180
 MAX_LOG_QUERY = 120
@@ -113,18 +121,38 @@ async def fetchval(query, *args):
         raise
 
 
-async def transaction(callback):
-    print("[db/query] TRANSACTION start")
-    pool = get_pool()
+async def transaction(callback, *, max_retries: int = 5):
+    """Run one callback in a DB transaction, retrying Cockroach serialization conflicts.
 
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                result = await callback(conn)
-        print("[db/query] TRANSACTION committed")
-        return result
-    except Exception as e:
-        if is_database_quota_error(e):
-            mark_database_quota_exhausted(e)
-        print(f"[db/query] !! TRANSACTION FAILED (rolled back): {e!r}")
-        raise
+    CockroachDB can abort a serializable transaction with SQLSTATE 40001 when
+    concurrent game/user actions contend. The callback is retried only for that
+    specific condition; all other exceptions propagate unchanged.
+    """
+    pool = get_pool()
+    attempts = max(1, int(max_retries))
+
+    for attempt in range(attempts):
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    result = await callback(conn)
+            return result
+        except Exception as e:
+            if is_database_quota_error(e):
+                mark_database_quota_exhausted(e)
+
+            if is_retryable_transaction_error(e) and attempt < attempts - 1:
+                # Small exponential backoff with jitter prevents two competing
+                # callbacks from immediately colliding again.
+                delay = min(0.80, 0.05 * (2 ** attempt)) + random.uniform(0.0, 0.05)
+                print(
+                    f"[db/query] TRANSACTION retry {attempt + 1}/{attempts - 1} "
+                    f"after Cockroach serialization conflict; sleeping {delay:.3f}s"
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            print(f"[db/query] !! TRANSACTION FAILED (rolled back): {e!r}")
+            raise
+
+    raise RuntimeError("Database transaction retry loop exited unexpectedly.")

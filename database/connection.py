@@ -154,8 +154,18 @@ async def connect():
     if _pool is None:
         print("[db/connection] No existing pool, creating new asyncpg pool...")
         try:
+            connect_kwargs = get_asyncpg_connect_kwargs()
+            # CockroachDB exposes this session setting to allow pgwire portal
+            # execution that asyncpg can otherwise trigger when statements are
+            # prepared/executed back-to-back inside one transaction. Keep it
+            # scoped to CockroachDB so the same code remains compatible with
+            # ordinary PostgreSQL if the DATABASE_URL is ever switched back.
+            if _is_cockroach_url(DATABASE_URL):
+                connect_kwargs["server_settings"] = {
+                    "multiple_active_portals_enabled": "true",
+                }
             _pool = await asyncpg.create_pool(
-                **get_asyncpg_connect_kwargs(),
+                **connect_kwargs,
                 min_size=0,
                 max_size=5,
                 max_inactive_connection_lifetime=300.0,
