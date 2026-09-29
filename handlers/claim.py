@@ -5,6 +5,7 @@ print("claim.py loaded")
 import asyncio
 import html
 import json
+import random
 from datetime import datetime
 
 from pyrogram.errors import ChatWriteForbidden
@@ -21,7 +22,7 @@ from buttons.claim_buttons import retain_release_keyboard
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
 from utils.debut_gate import has_completed_debut
-from utils.randomiser import get_random_claim_player
+from utils.randomiser import weighted_claim_band
 
 CLAIM_COOLDOWN_SECONDS = 3600
 CLAIM_ATTEMPT_COOLDOWN_SECONDS = 10
@@ -52,6 +53,45 @@ def _escape(value: object | None) -> str:
     return html.escape("" if value is None else str(value))
 
 
+async def _get_random_claim_player_cockroach() -> dict | None:
+    """Choose a claim player without Cockroach pausable-portal patterns.
+
+    CockroachDB can keep a pausable pgwire portal open for some read queries
+    involving ORDER BY/LIMIT. The previous claim path selected with
+    `ORDER BY random() LIMIT 1`, then immediately started a write transaction;
+    on a reused asyncpg connection that could make the following INSERT/UPDATE
+    fail with a `multiple active portals` FeatureNotSupportedError.
+
+    Preserve the exact weighted level band and uniform-in-band randomness, but
+    fetch only player IDs with a simple read-only query, choose one in Python,
+    and fetch that player by primary key. Both result sets are fully consumed
+    before the write transaction begins.
+    """
+    band = weighted_claim_band()
+
+    rows = await fetch(
+        """
+        SELECT player_id
+        FROM players
+        WHERE GREATEST(COALESCE(bat_level, 0), COALESCE(bowl_level, 0)) BETWEEN $1 AND $2;
+        """,
+        int(band["min"]),
+        int(band["max"]),
+    )
+
+    if not rows:
+        return None
+
+    player_id = int(random.choice(rows)["player_id"])
+
+    player = await fetchrow(
+        "SELECT * FROM players WHERE player_id = $1;",
+        player_id,
+    )
+
+    return dict(player) if player else None
+
+
 def _player_card_text(
     player: dict,
     header: str,
@@ -80,7 +120,6 @@ def _player_card_text(
         "┗━━━━━━━━━━━━━━━━━━━━┛"
     )
 
-    # User mention block
     user_display = f"👤 <b>Claimed By:</b> @{username}\n\n" if username else ""
 
     quote_block = (
@@ -118,18 +157,28 @@ def _player_card_text(
 
 
 async def _claim_attempt_gate(conn, user_id: int):
-    row = await conn.fetchrow("""
+    row = await conn.fetchrow(
+        """
         SELECT claim_attempt_at,
                EXTRACT(EPOCH FROM (NOW() - claim_attempt_at)) AS elapsed
         FROM users
         WHERE user_id = $1
         FOR UPDATE;
-    """, user_id)
+        """,
+        user_id,
+    )
+
     if row and row["claim_attempt_at"] is not None:
         elapsed = float(row["elapsed"] or 0)
+
         if elapsed < CLAIM_ATTEMPT_COOLDOWN_SECONDS:
             return CLAIM_ATTEMPT_COOLDOWN_SECONDS - elapsed
-    await conn.execute("UPDATE users SET claim_attempt_at = NOW() WHERE user_id = $1;", user_id)
+
+    await conn.execute(
+        "UPDATE users SET claim_attempt_at = NOW() WHERE user_id = $1;",
+        user_id,
+    )
+
     return None
 
 
@@ -151,38 +200,48 @@ async def _auto_release_claim_once(claim_id: int) -> bool:
             """,
             int(claim_id),
         )
+
         if not claim:
             return None
+
         if claim["status"] != "pending":
             return None
 
-        # Keep the expiry rule identical to the previous maintenance worker.
-        # A task can wake a fraction early because of scheduler timing, so the
-        # database remains the final authority on whether the claim has expired.
         due = await conn.fetchrow(
             "SELECT EXTRACT(EPOCH FROM (NOW() - $1::timestamptz)) AS elapsed;",
             claim["claimed_at"],
         )
+
         elapsed = float(due["elapsed"] or 0.0) if due else 0.0
+
         if elapsed < CLAIM_PENDING_TIMEOUT_SECONDS:
             return {
                 "kind": "not_due",
-                "remaining": max(0.0, CLAIM_PENDING_TIMEOUT_SECONDS - elapsed),
+                "remaining": max(
+                    0.0,
+                    CLAIM_PENDING_TIMEOUT_SECONDS - elapsed,
+                ),
             }
 
         player = await conn.fetchrow(
             "SELECT * FROM players WHERE player_id = $1;",
             int(claim["player_id"]),
         )
+
         if not player:
-            # Preserve the old behavior for a missing player: resolve the claim
-            # without attempting to credit a nonexistent player's sell value.
             updated = await conn.execute(
-                "UPDATE player_claims SET status = 'released' WHERE claim_id = $1 AND status = 'pending';",
+                """
+                UPDATE player_claims
+                SET status = 'released'
+                WHERE claim_id = $1
+                  AND status = 'pending';
+                """,
                 int(claim_id),
             )
+
             if not updated.endswith(" 1"):
                 return None
+
             return {
                 "kind": "released",
                 "chat_id": claim["chat_id"],
@@ -194,20 +253,33 @@ async def _auto_release_claim_once(claim_id: int) -> bool:
             int(player.get("bat_level") or 0),
             int(player.get("bowl_level") or 0),
         )
+
         _buy_price, sell_price = get_price(ovr)
 
         updated = await conn.execute(
-            "UPDATE player_claims SET status = 'released' WHERE claim_id = $1 AND status = 'pending';",
+            """
+            UPDATE player_claims
+            SET status = 'released'
+            WHERE claim_id = $1
+              AND status = 'pending';
+            """,
             int(claim_id),
         )
+
         if not updated.endswith(" 1"):
             return None
 
         credited = await conn.execute(
-            "UPDATE users SET balance = balance + $1, last_seen_at = NOW() WHERE user_id = $2;",
+            """
+            UPDATE users
+            SET balance = balance + $1,
+                last_seen_at = NOW()
+            WHERE user_id = $2;
+            """,
             int(sell_price),
             int(claim["user_id"]),
         )
+
         if not credited.endswith(" 1"):
             raise RuntimeError(
                 f"Could not credit auto-release reward for user_id={claim['user_id']}"
@@ -216,47 +288,75 @@ async def _auto_release_claim_once(claim_id: int) -> bool:
         return {
             "kind": "released",
             "claim_id": int(claim_id),
-            "chat_id": int(claim["chat_id"]) if claim["chat_id"] is not None else None,
-            "message_id": int(claim["message_id"]) if claim["message_id"] is not None else None,
+            "chat_id": (
+                int(claim["chat_id"])
+                if claim["chat_id"] is not None
+                else None
+            ),
+            "message_id": (
+                int(claim["message_id"])
+                if claim["message_id"] is not None
+                else None
+            ),
         }
 
     result = await transaction(_tx)
+
     if not result:
         return False
+
     if result.get("kind") == "not_due":
         return False
 
     chat_id = result.get("chat_id")
     message_id = result.get("message_id")
+
     if chat_id is not None and message_id is not None:
         text = (
             "<b>⏱️ CLAIM EXPIRED</b>\n\n"
             "<b>⏳ You didn't choose Retain or Release within 1 minute.</b>\n\n"
             "<b>🔄 The player was automatically released.</b>"
         )
+
         try:
             await app.edit_message_text(
-                chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+                chat_id,
+                message_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=NO_KEYBOARD,
             )
         except Exception:
             try:
                 await app.edit_message_caption(
-                    chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD
+                    chat_id,
+                    message_id,
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=NO_KEYBOARD,
                 )
             except Exception as exc:
                 print(
-                    f"[claim] Could not update expired claim message claim_id={claim_id}: {exc!r}"
+                    f"[claim] Could not update expired claim "
+                    f"message claim_id={claim_id}: {exc!r}"
                 )
-    print(f"[claim] Auto-released claim_id={claim_id} after 60 seconds.")
+
+    print(
+        f"[claim] Auto-released claim_id={claim_id} after 60 seconds."
+    )
+
     return True
 
 
 def _cancel_claim_release_task(claim_id: int) -> None:
     """Cancel and forget the in-memory expiry task for one claim."""
     task = _CLAIM_RELEASE_TASKS.pop(int(claim_id), None)
+
     if task is None or task.done():
         return
+
     current = asyncio.current_task()
+
     if task is not current:
         task.cancel()
 
@@ -264,35 +364,47 @@ def _cancel_claim_release_task(claim_id: int) -> None:
 def _schedule_claim_release_task(claim_id: int, delay: float) -> None:
     """Schedule exactly one in-memory expiry task for a pending claim."""
     claim_id = int(claim_id)
+
     _cancel_claim_release_task(claim_id)
+
     delay = max(0.0, float(delay))
 
     async def _runner() -> None:
         current = asyncio.current_task()
+
         try:
             if delay > 0:
                 await asyncio.sleep(delay)
-            # Retry transient database/runtime failures a few times without
-            # introducing a permanent background polling loop.
+
             retry_delays = (5.0, 15.0, 30.0)
+
             for attempt in range(len(retry_delays) + 1):
                 try:
                     await _auto_release_claim_once(claim_id)
                     return
+
                 except asyncio.CancelledError:
                     raise
+
                 except Exception as exc:
                     if attempt >= len(retry_delays):
                         print(
-                            f"[claim] Expiry task failed permanently for claim_id={claim_id}: {exc!r}"
+                            f"[claim] Expiry task failed permanently "
+                            f"for claim_id={claim_id}: {exc!r}"
                         )
                         return
+
                     print(
-                        f"[claim] Expiry task retry {attempt + 1}/{len(retry_delays)} for claim_id={claim_id}: {exc!r}"
+                        f"[claim] Expiry task retry "
+                        f"{attempt + 1}/{len(retry_delays)} "
+                        f"for claim_id={claim_id}: {exc!r}"
                     )
+
                     await asyncio.sleep(retry_delays[attempt])
+
         except asyncio.CancelledError:
             return
+
         finally:
             if _CLAIM_RELEASE_TASKS.get(claim_id) is current:
                 _CLAIM_RELEASE_TASKS.pop(claim_id, None)
@@ -300,8 +412,6 @@ def _schedule_claim_release_task(claim_id: int, delay: float) -> None:
     try:
         _CLAIM_RELEASE_TASKS[claim_id] = asyncio.create_task(_runner())
     except RuntimeError:
-        # No running event loop. Startup recovery will handle persisted pending
-        # claims, so do not leave an invalid task reference behind.
         _CLAIM_RELEASE_TASKS.pop(claim_id, None)
 
 
@@ -309,40 +419,68 @@ async def start_claim_maintenance():
     """Recover and reschedule pending claim expiries after process startup."""
     rows = await fetch(
         """
-        SELECT claim_id, claimed_at,
+        SELECT claim_id,
+               claimed_at,
                EXTRACT(EPOCH FROM (NOW() - claimed_at)) AS elapsed
         FROM player_claims
         WHERE status = 'pending'
         ORDER BY claimed_at ASC;
         """
     )
+
     recovered = 0
     scheduled = 0
+
     for row in rows:
         claim_id = int(row["claim_id"])
         elapsed = float(row["elapsed"] or 0.0)
-        remaining = max(0.0, CLAIM_PENDING_TIMEOUT_SECONDS - elapsed)
+
+        remaining = max(
+            0.0,
+            CLAIM_PENDING_TIMEOUT_SECONDS - elapsed,
+        )
+
         if remaining <= 0:
             try:
                 if await _auto_release_claim_once(claim_id):
                     recovered += 1
+
             except Exception as exc:
-                print(f"[claim] Startup expiry recovery failed claim_id={claim_id}: {exc!r}")
+                print(
+                    f"[claim] Startup expiry recovery failed "
+                    f"claim_id={claim_id}: {exc!r}"
+                )
         else:
-            _schedule_claim_release_task(claim_id, remaining)
+            _schedule_claim_release_task(
+                claim_id,
+                remaining,
+            )
             scheduled += 1
+
     if recovered or scheduled:
-        print(f"[claim] Startup claim maintenance: released={recovered}, timers={scheduled}.")
+        print(
+            f"[claim] Startup claim maintenance: "
+            f"released={recovered}, timers={scheduled}."
+        )
 
 
 @register("claim")
 async def claim_command(message):
     chat_id = message["chat"]["id"]
-    from_user = message.get("from", {})
-    user_id = from_user.get("id")
-    username = from_user.get("username") or from_user.get("first_name") or "User"
 
-    print(f"[claim] /claim invoked by user_id={user_id}")
+    from_user = message.get("from", {})
+
+    user_id = from_user.get("id")
+
+    username = (
+        from_user.get("username")
+        or from_user.get("first_name")
+        or "User"
+    )
+
+    print(
+        f"[claim] /claim invoked by user_id={user_id}"
+    )
 
     if not await has_completed_debut(int(user_id)):
         await _safe_claim_send_message(
@@ -354,85 +492,192 @@ async def claim_command(message):
 
     await execute(
         """
-        INSERT INTO users (user_id, username, first_name, last_seen_at)
+        INSERT INTO users (
+            user_id,
+            username,
+            first_name,
+            last_seen_at
+        )
         VALUES ($1, $2, $3, NOW())
-        ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username, last_seen_at = NOW();
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            username = EXCLUDED.username,
+            last_seen_at = NOW();
         """,
-        user_id, from_user.get("username"), from_user.get("first_name"),
+        user_id,
+        from_user.get("username"),
+        from_user.get("first_name"),
     )
 
     async def _attempt_tx(conn):
-        return await _claim_attempt_gate(conn, int(user_id))
+        return await _claim_attempt_gate(
+            conn,
+            int(user_id),
+        )
 
     attempt_remaining = await transaction(_attempt_tx)
+
     if attempt_remaining is not None:
         remaining_text = f"{max(1, int(attempt_remaining + 0.999))}s"
+
         await _safe_claim_send_message(
             chat_id,
-            f"<b>⏳ Claim cooldown active.</b>\n\n<b>You can use /claim again in {html.escape(remaining_text)}.</b>",
+            (
+                f"<b>⏳ Claim cooldown active.</b>\n\n"
+                f"<b>You can use /claim again in "
+                f"{html.escape(remaining_text)}.</b>"
+            ),
             parse_mode="HTML",
         )
         return
 
     current_squad = await get_team_squad(user_id) or []
+
     if len(current_squad) >= MAX_SQUAD_SIZE:
         await _safe_claim_send_message(
             chat_id,
-            f"<b>⚠️ Your squad is full ({MAX_SQUAD_SIZE}/{MAX_SQUAD_SIZE}).</b>\n"
-            "Sell a player before claiming another one.",
+            (
+                f"<b>⚠️ Your squad is full "
+                f"({MAX_SQUAD_SIZE}/{MAX_SQUAD_SIZE}).</b>\n"
+                "Sell a player before claiming another one."
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    # Select the random player before starting the write transaction.
+    # The selection uses fully-consumed read-only queries, while the actual
+    # reservation transaction below starts with a write. This avoids the
+    # CockroachDB pausable-portal incompatibility encountered when
+    # ORDER BY random() was followed immediately by writes on a reused
+    # asyncpg connection.
+    player = await _get_random_claim_player_cockroach()
+
+    if not player:
+        await _safe_claim_send_message(
+            chat_id,
+            (
+                "<b>⚠️ No players available to claim yet.</b>\n"
+                "Ask the bot admin to /upload_pl players first."
+            ),
             parse_mode="HTML",
         )
         return
 
     async def _claim_reservation_tx(conn):
-        # Serialize all claim attempts for the same user at the database level.
-        # CockroachDB does not provide PostgreSQL's pg_advisory_xact_lock(), so
-        # lock the existing user row instead. The row lock is held until this
-        # transaction commits/rolls back and preserves the same one-claim gate.
-        await conn.fetchrow(
-            "SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE;",
-            int(user_id),
-        )
-        row = await conn.fetchrow(
-            """SELECT EXTRACT(EPOCH FROM (NOW() - claimed_at)) AS elapsed
-                 FROM player_claims
-                WHERE user_id = $1
-                ORDER BY claimed_at DESC LIMIT 1;""",
-            int(user_id),
-        )
-        if row and row["elapsed"] is not None and float(row["elapsed"]) < CLAIM_COOLDOWN_SECONDS:
-            return max(0.0, float(row["elapsed"]))
-        player = await get_random_claim_player()
-        if not player:
-            return "no_player"
-        claim_row = await conn.fetchrow(
-            """INSERT INTO player_claims (user_id, player_id, status, chat_id, message_id)
-               VALUES ($1, $2, 'pending', $3, $4) RETURNING *;""",
-            int(user_id), int(player["player_id"]), int(chat_id), None,
-        )
+        # First statement is an atomic conditional UPDATE.
+        #
+        # It preserves the original one-hour cooldown by checking the latest
+        # claim history in the database while also crediting the +1000 reward.
+        #
+        # We intentionally avoid SELECT ... FOR UPDATE here. CockroachDB's
+        # pgwire pausable-portal implementation can reject a write after a
+        # locking SELECT has left a portal active on the same session.
+        #
+        # CockroachDB's serializable retry handling in database.query.transaction()
+        # handles concurrent transactions that contend on the same user row.
         updated = await conn.execute(
-            "UPDATE users SET balance = balance + 1000, last_seen_at = NOW() WHERE user_id = $1;",
+            """
+            UPDATE users
+               SET balance = balance + 1000,
+                   last_seen_at = NOW()
+             WHERE user_id = $1
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM player_claims
+                   WHERE user_id = $1
+                     AND claimed_at >= NOW() - INTERVAL '1 hour'
+               );
+            """,
             int(user_id),
         )
-        if not updated.endswith(" 1"):
-            raise RuntimeError(f"Could not credit claim reward for user_id={user_id}")
-        return {"claim": dict(claim_row), "player": player}
 
-    reservation = await transaction(_claim_reservation_tx)
-    if isinstance(reservation, (int, float)):
-        remaining_text = _format_remaining(float(reservation))
+        if not updated.endswith(" 1"):
+            return {
+                "kind": "cooldown"
+            }
+
+        # Keep the INSERT as the final statement in the transaction so its
+        # RETURNING portal does not need to coexist with another write/query.
+        claim_row = await conn.fetchrow(
+            """
+            INSERT INTO player_claims (
+                user_id,
+                player_id,
+                status,
+                chat_id,
+                message_id
+            )
+            VALUES ($1, $2, 'pending', $3, $4)
+            RETURNING *;
+            """,
+            int(user_id),
+            int(player["player_id"]),
+            int(chat_id),
+            None,
+        )
+
+        if not claim_row:
+            raise RuntimeError(
+                f"Could not create claim for user_id={user_id}"
+            )
+
+        return {
+            "kind": "reserved",
+            "claim": dict(claim_row),
+            "player": player,
+        }
+
+    reservation = await transaction(
+        _claim_reservation_tx
+    )
+
+    if (
+        isinstance(reservation, dict)
+        and reservation.get("kind") == "cooldown"
+    ):
+        # This read happens after the write transaction has completed,
+        # so it cannot hold a portal while the reservation transaction writes.
+        cooldown_row = await fetchrow(
+            """
+            SELECT EXTRACT(
+                EPOCH FROM (NOW() - claimed_at)
+            ) AS elapsed
+            FROM player_claims
+            WHERE user_id = $1
+            ORDER BY claimed_at DESC
+            LIMIT 1;
+            """,
+            int(user_id),
+        )
+
+        elapsed = (
+            float(cooldown_row["elapsed"] or 0.0)
+            if cooldown_row
+            else 0.0
+        )
+
+        remaining_text = _format_remaining(elapsed)
+
         await _safe_claim_send_message(
             chat_id,
-            f"<b>⏳ You've already claimed a player recently!</b>\n\n"
-            f"<b>Try again in {html.escape(remaining_text)}.</b>",
+            (
+                "<b>⏳ You've already claimed a player recently!</b>\n\n"
+                f"<b>Try again in "
+                f"{html.escape(remaining_text)}.</b>"
+            ),
             parse_mode="HTML",
         )
         return
+
     if reservation == "no_player":
+        # Compatibility with older transaction return shapes.
         await _safe_claim_send_message(
             chat_id,
-            "<b>⚠️ No players available to claim yet.</b>\n"
-            "Ask the bot admin to /upload_pl players first.",
+            (
+                "<b>⚠️ No players available to claim yet.</b>\n"
+                "Ask the bot admin to /upload_pl players first."
+            ),
             parse_mode="HTML",
         )
         return
@@ -441,6 +686,7 @@ async def claim_command(message):
     player = reservation["player"]
 
     squad = current_squad
+
     text = _player_card_text(
         player,
         "PLAYER ASSIGNMENT",
@@ -451,114 +697,251 @@ async def claim_command(message):
         max_squad_size=MAX_SQUAD_SIZE,
     )
 
-    keyboard = retain_release_keyboard(claim["claim_id"])
+    keyboard = retain_release_keyboard(
+        claim["claim_id"]
+    )
+
     sent_message = None
+
     try:
-        image_bytes, _is_custom = await get_player_card_bytes(player)
-        sent_message = await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML", reply_markup=keyboard)
+        image_bytes, _is_custom = await get_player_card_bytes(
+            player
+        )
+
+        sent_message = await app.send_photo(
+            chat_id,
+            photo=image_bytes,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
     except Exception as exc:
-        print(f"[claim] Card image failed ({exc!r}), falling back to a text-only message.")
-        sent_message = await _safe_claim_send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+        print(
+            f"[claim] Card image failed ({exc!r}), "
+            "falling back to a text-only message."
+        )
+
+        sent_message = await _safe_claim_send_message(
+            chat_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
 
     sent_message_id = None
+
     if isinstance(sent_message, dict):
         sent_message_id = sent_message.get("message_id")
     else:
-        sent_message_id = getattr(sent_message, "id", None)
+        sent_message_id = getattr(
+            sent_message,
+            "id",
+            None,
+        )
+
     if sent_message_id:
         try:
             await execute(
-                "UPDATE player_claims SET message_id = $1 WHERE claim_id = $2;",
-                int(sent_message_id), int(claim["claim_id"]),
+                """
+                UPDATE player_claims
+                SET message_id = $1
+                WHERE claim_id = $2;
+                """,
+                int(sent_message_id),
+                int(claim["claim_id"]),
             )
+
         except Exception as exc:
-            print(f"[claim] Could not save claim message_id for auto-expiry claim_id={claim['claim_id']}: {exc!r}")
+            print(
+                f"[claim] Could not save claim message_id "
+                f"for auto-expiry claim_id={claim['claim_id']}: {exc!r}"
+            )
 
     claimed_at = claim.get("claimed_at")
+
     delay = CLAIM_PENDING_TIMEOUT_SECONDS
+
     if claimed_at is not None:
         try:
-            now = datetime.now(tz=claimed_at.tzinfo) if getattr(claimed_at, "tzinfo", None) else datetime.now()
-            delay = max(0.0, CLAIM_PENDING_TIMEOUT_SECONDS - (now - claimed_at).total_seconds())
+            now = (
+                datetime.now(tz=claimed_at.tzinfo)
+                if getattr(claimed_at, "tzinfo", None)
+                else datetime.now()
+            )
+
+            delay = max(
+                0.0,
+                CLAIM_PENDING_TIMEOUT_SECONDS
+                - (now - claimed_at).total_seconds(),
+            )
+
         except Exception:
             delay = CLAIM_PENDING_TIMEOUT_SECONDS
-    _schedule_claim_release_task(int(claim["claim_id"]), delay)
 
-    print(f"[claim] user_id={user_id} claimed player_id={player['player_id']} ({player['name']}), claim_id={claim['claim_id']}, +1000 coins")
+    _schedule_claim_release_task(
+        int(claim["claim_id"]),
+        delay,
+    )
+
+    print(
+        f"[claim] user_id={user_id} "
+        f"claimed player_id={player['player_id']} "
+        f"({player['name']}), "
+        f"claim_id={claim['claim_id']}, "
+        "+1000 coins"
+    )
 
 
 @register_callback("claim_retain")
 async def on_claim_retain(callback_query):
-    claim_id = int(callback_query["data"].split(":")[1])
+    claim_id = int(
+        callback_query["data"].split(":")[1]
+    )
+
     presser = callback_query["from"]
+
     chat_id = callback_query["message"]["chat"]["id"]
     message_id = callback_query["message"]["message_id"]
+
     user_id = int(presser["id"])
-    username = presser.get("username") or presser.get("first_name") or "User"
+
+    username = (
+        presser.get("username")
+        or presser.get("first_name")
+        or "User"
+    )
 
     async def _retain_tx(conn):
-        # Serialize all clicks on this exact claim. CockroachDB does not
-        # provide PostgreSQL's pg_advisory_xact_lock(); the claim row itself is
-        # the natural transactional lock and is locked by FOR UPDATE below.
+        # Serialize all clicks on this exact claim.
+        # CockroachDB does not provide PostgreSQL's
+        # pg_advisory_xact_lock(); the claim row itself is the
+        # transactional lock and is locked by FOR UPDATE below.
         claim = await conn.fetchrow(
-            "SELECT * FROM player_claims WHERE claim_id = $1 FOR UPDATE;", claim_id
+            """
+            SELECT *
+            FROM player_claims
+            WHERE claim_id = $1
+            FOR UPDATE;
+            """,
+            claim_id,
         )
+
         if not claim or int(claim["user_id"]) != user_id:
             return {"kind": "invalid"}
+
         if claim["status"] != "pending":
             return {"kind": "resolved"}
 
         claimed_player = await conn.fetchrow(
-            "SELECT * FROM players WHERE player_id = $1;", int(claim["player_id"])
+            "SELECT * FROM players WHERE player_id = $1;",
+            int(claim["player_id"]),
         )
+
         if not claimed_player:
             await conn.execute(
-                "UPDATE player_claims SET status = 'retained' WHERE claim_id = $1 AND status = 'pending';",
+                """
+                UPDATE player_claims
+                SET status = 'retained'
+                WHERE claim_id = $1
+                  AND status = 'pending';
+                """,
                 claim_id,
             )
+
             return {"kind": "missing_player"}
 
         squad_row = await conn.fetchrow(
-            "SELECT squad FROM team_squads WHERE user_id = $1 FOR UPDATE;",
+            """
+            SELECT squad
+            FROM team_squads
+            WHERE user_id = $1
+            FOR UPDATE;
+            """,
             user_id,
         )
-        raw_squad = squad_row["squad"] if squad_row else []
+
+        raw_squad = (
+            squad_row["squad"]
+            if squad_row
+            else []
+        )
+
         if isinstance(raw_squad, str):
             squad = json.loads(raw_squad)
+
         elif isinstance(raw_squad, list):
             squad = list(raw_squad)
+
         else:
-            squad = json.loads(json.dumps(raw_squad, default=str))
+            squad = json.loads(
+                json.dumps(
+                    raw_squad,
+                    default=str,
+                )
+            )
 
         already_in_squad = any(
-            int(p.get("player_id") or 0) == int(claimed_player["player_id"])
+            int(p.get("player_id") or 0)
+            == int(claimed_player["player_id"])
             for p in squad
             if isinstance(p, dict)
         )
-        if not already_in_squad and len(squad) >= MAX_SQUAD_SIZE:
-            return {"kind": "full", "size": len(squad)}
+
+        if (
+            not already_in_squad
+            and len(squad) >= MAX_SQUAD_SIZE
+        ):
+            return {
+                "kind": "full",
+                "size": len(squad),
+            }
 
         if not already_in_squad:
             squad.append(dict(claimed_player))
-            squad_json = json.dumps(squad, default=str)
+
+            squad_json = json.dumps(
+                squad,
+                default=str,
+            )
+
             await conn.execute(
                 """
-                INSERT INTO team_squads (user_id, squad, updated_at)
+                INSERT INTO team_squads (
+                    user_id,
+                    squad,
+                    updated_at
+                )
                 VALUES ($1, $2::jsonb, NOW())
                 ON CONFLICT (user_id)
-                DO UPDATE SET squad = EXCLUDED.squad, updated_at = NOW();
+                DO UPDATE SET
+                    squad = EXCLUDED.squad,
+                    updated_at = NOW();
                 """,
-                user_id, squad_json,
+                user_id,
+                squad_json,
             )
+
             await conn.execute(
-                "DELETE FROM player_user_match_stats WHERE user_id = $1 AND player_id = $2;",
-                user_id, int(claimed_player["player_id"]),
+                """
+                DELETE FROM player_user_match_stats
+                WHERE user_id = $1
+                  AND player_id = $2;
+                """,
+                user_id,
+                int(claimed_player["player_id"]),
             )
 
         updated = await conn.execute(
-            "UPDATE player_claims SET status = 'retained' WHERE claim_id = $1 AND status = 'pending';",
+            """
+            UPDATE player_claims
+            SET status = 'retained'
+            WHERE claim_id = $1
+              AND status = 'pending';
+            """,
             claim_id,
         )
+
         if not updated.endswith(" 1"):
             return {"kind": "resolved"}
 
@@ -570,13 +953,28 @@ async def on_claim_retain(callback_query):
         }
 
     result = await transaction(_retain_tx)
+
     if result["kind"] == "invalid":
-        await app.answer_callback_query(callback_query["id"], "This isn't your claim!", show_alert=True)
+        await app.answer_callback_query(
+            callback_query["id"],
+            "This isn't your claim!",
+            show_alert=True,
+        )
         return
+
     if result["kind"] == "resolved":
-        await app.answer_callback_query(callback_query["id"], "This claim has already been resolved.", show_alert=True)
-        _cancel_claim_release_task(claim_id)
+        await app.answer_callback_query(
+            callback_query["id"],
+            "This claim has already been resolved.",
+            show_alert=True,
+        )
+
+        _cancel_claim_release_task(
+            claim_id
+        )
+
         return
+
     if result["kind"] == "full":
         await app.answer_callback_query(
             callback_query["id"],
@@ -585,18 +983,31 @@ async def on_claim_retain(callback_query):
         )
         return
 
-    _cancel_claim_release_task(claim_id)
+    _cancel_claim_release_task(
+        claim_id
+    )
+
     claimed_player = result.get("player")
+
     squad = result.get("squad") or []
+
     if result["kind"] == "missing_player":
-        text = "<b>🤝 Player retained and added to your collection!</b>"
+        text = (
+            "<b>🤝 Player retained and added "
+            "to your collection!</b>"
+        )
+
     else:
-        already_in_squad = bool(result.get("already_in_squad"))
+        already_in_squad = bool(
+            result.get("already_in_squad")
+        )
+
         footer = (
             "ℹ️ This player is already in your collection."
             if already_in_squad
             else "✅ This player has been successfully added to your collection!"
         )
+
         text = _player_card_text(
             claimed_player,
             "PLAYER ASSIGNED",
@@ -607,73 +1018,173 @@ async def on_claim_retain(callback_query):
             max_squad_size=MAX_SQUAD_SIZE,
         )
 
-    await app.answer_callback_query(callback_query["id"], "Player retained!")
-    if (callback_query.get("message") or {}).get("photo"):
-        await app.edit_message_caption(chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
+    await app.answer_callback_query(
+        callback_query["id"],
+        "Player retained!",
+    )
+
+    if (
+        callback_query.get("message") or {}
+    ).get("photo"):
+        await app.edit_message_caption(
+            chat_id,
+            message_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=NO_KEYBOARD,
+        )
     else:
-        await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        await app.edit_message_text(
+            chat_id,
+            message_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=NO_KEYBOARD,
+        )
 
     try:
         from services.referrals import refresh_referral_progress
-        await refresh_referral_progress(user_id)
+
+        await refresh_referral_progress(
+            user_id
+        )
+
     except Exception as exc:
-        print(f"[claim] Referral progress update failed for user_id={user_id}: {exc!r}")
+        print(
+            f"[claim] Referral progress update failed "
+            f"for user_id={user_id}: {exc!r}"
+        )
 
 
 @register_callback("claim_release")
 async def on_claim_release(callback_query):
-    claim_id = int(callback_query["data"].split(":")[1])
+    claim_id = int(
+        callback_query["data"].split(":")[1]
+    )
+
     presser = callback_query["from"]
+
     chat_id = callback_query["message"]["chat"]["id"]
     message_id = callback_query["message"]["message_id"]
-    username = presser.get("username") or presser.get("first_name") or "User"
 
-    claim = await get_claim(claim_id)
-    if not claim or claim["user_id"] != presser["id"]:
-        await app.answer_callback_query(callback_query["id"], "This isn't your claim!", show_alert=True)
+    username = (
+        presser.get("username")
+        or presser.get("first_name")
+        or "User"
+    )
+
+    claim = await get_claim(
+        claim_id
+    )
+
+    if (
+        not claim
+        or claim["user_id"] != presser["id"]
+    ):
+        await app.answer_callback_query(
+            callback_query["id"],
+            "This isn't your claim!",
+            show_alert=True,
+        )
         return
+
     if claim["status"] != "pending":
-        await app.answer_callback_query(callback_query["id"], "This claim has already been resolved.", show_alert=True)
+        await app.answer_callback_query(
+            callback_query["id"],
+            "This claim has already been resolved.",
+            show_alert=True,
+        )
         return
 
-    # Release is a sell-like operation: credit the player's current sell value
-    # and resolve the claim in one DB transaction so a double-click cannot
-    # grant the reward twice.  The existing response text below is unchanged.
-    claimed_player = await fetchrow("SELECT * FROM players WHERE player_id = $1;", claim["player_id"])
+    claimed_player = await fetchrow(
+        "SELECT * FROM players WHERE player_id = $1;",
+        claim["player_id"],
+    )
+
     if not claimed_player:
-        await app.answer_callback_query(callback_query["id"], "Player could not be found.", show_alert=True)
+        await app.answer_callback_query(
+            callback_query["id"],
+            "Player could not be found.",
+            show_alert=True,
+        )
         return
 
-    ovr = overall_rating(int(claimed_player.get("bat_level") or 0), int(claimed_player.get("bowl_level") or 0))
+    ovr = overall_rating(
+        int(claimed_player.get("bat_level") or 0),
+        int(claimed_player.get("bowl_level") or 0),
+    )
+
     _buy_price, sell_price = get_price(ovr)
 
     async def _release_tx(conn):
         row = await conn.fetchrow(
-            "SELECT status FROM player_claims WHERE claim_id = $1 FOR UPDATE;",
+            """
+            SELECT status
+            FROM player_claims
+            WHERE claim_id = $1
+            FOR UPDATE;
+            """,
             claim_id,
         )
+
         if not row or row["status"] != "pending":
             return False
+
         await conn.execute(
-            "UPDATE player_claims SET status = 'released' WHERE claim_id = $1;",
+            """
+            UPDATE player_claims
+            SET status = 'released'
+            WHERE claim_id = $1;
+            """,
             claim_id,
         )
+
         updated = await conn.execute(
-            "UPDATE users SET balance = balance + $1, last_seen_at = NOW() WHERE user_id = $2;",
-            int(sell_price), int(presser["id"]),
+            """
+            UPDATE users
+            SET balance = balance + $1,
+                last_seen_at = NOW()
+            WHERE user_id = $2;
+            """,
+            int(sell_price),
+            int(presser["id"]),
         )
+
         if not updated.endswith(" 1"):
-            raise RuntimeError(f"Could not credit release reward for user_id={presser['id']}")
+            raise RuntimeError(
+                f"Could not credit release reward "
+                f"for user_id={presser['id']}"
+            )
+
         return True
 
-    released = await transaction(_release_tx)
+    released = await transaction(
+        _release_tx
+    )
+
     if not released:
-        await app.answer_callback_query(callback_query["id"], "This claim has already been resolved.", show_alert=True)
-        _cancel_claim_release_task(claim_id)
+        await app.answer_callback_query(
+            callback_query["id"],
+            "This claim has already been resolved.",
+            show_alert=True,
+        )
+
+        _cancel_claim_release_task(
+            claim_id
+        )
+
         return
-    _cancel_claim_release_task(claim_id)
+
+    _cancel_claim_release_task(
+        claim_id
+    )
+
     if claimed_player:
-        footer = "🔄 This player has been released back to the global pool."
+        footer = (
+            "🔄 This player has been released "
+            "back to the global pool."
+        )
+
         text = _player_card_text(
             claimed_player,
             "PLAYER RELEASED",
@@ -682,10 +1193,31 @@ async def on_claim_release(callback_query):
             footer=footer,
         )
     else:
-        text = "<b>🔄 Player released back to the pool.</b>"
+        text = (
+            "<b>🔄 Player released back "
+            "to the pool.</b>"
+        )
 
-    await app.answer_callback_query(callback_query["id"], "Player released.")
-    if (callback_query.get("message") or {}).get("photo"):
-        await app.edit_message_caption(chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
+    await app.answer_callback_query(
+        callback_query["id"],
+        "Player released.",
+    )
+
+    if (
+        callback_query.get("message") or {}
+    ).get("photo"):
+        await app.edit_message_caption(
+            chat_id,
+            message_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=NO_KEYBOARD,
+        )
     else:
-        await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        await app.edit_message_text(
+            chat_id,
+            message_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=NO_KEYBOARD,
+        )
