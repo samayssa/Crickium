@@ -386,9 +386,13 @@ async def claim_command(message):
 
     async def _claim_reservation_tx(conn):
         # Serialize all claim attempts for the same user at the database level.
-        # The latest claim check and the reservation are therefore one atomic
-        # decision: concurrent requests cannot both earn the same hourly slot.
-        await conn.execute("SELECT pg_advisory_xact_lock($1);", int(user_id))
+        # CockroachDB does not provide PostgreSQL's pg_advisory_xact_lock(), so
+        # lock the existing user row instead. The row lock is held until this
+        # transaction commits/rolls back and preserves the same one-claim gate.
+        await conn.fetchrow(
+            "SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE;",
+            int(user_id),
+        )
         row = await conn.fetchrow(
             """SELECT EXTRACT(EPOCH FROM (NOW() - claimed_at)) AS elapsed
                  FROM player_claims
@@ -493,10 +497,9 @@ async def on_claim_retain(callback_query):
     username = presser.get("username") or presser.get("first_name") or "User"
 
     async def _retain_tx(conn):
-        # Serialize all clicks on this exact claim. The squad write and the
-        # status transition happen in the same transaction, preventing a
-        # double-click/racing callback from adding the player twice.
-        await conn.execute("SELECT pg_advisory_xact_lock($1);", int(claim_id))
+        # Serialize all clicks on this exact claim. CockroachDB does not
+        # provide PostgreSQL's pg_advisory_xact_lock(); the claim row itself is
+        # the natural transactional lock and is locked by FOR UPDATE below.
         claim = await conn.fetchrow(
             "SELECT * FROM player_claims WHERE claim_id = $1 FOR UPDATE;", claim_id
         )
