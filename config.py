@@ -24,9 +24,7 @@ ADMIN_USER_ID = 1766243373
 # Intentionally self-contained for Railway redeploys. No Railway database
 # environment variable is required.
 DATABASE_URL = (
-    "postgresql://arpit:3M9a5QM_sowTbNhEiGGDjw@"
-    "tide-walker-21592.jxf.gcp-asia-south1.cockroachlabs.cloud:26257/"
-    "defaultdb?sslmode=verify-full"
+    "postgresql://neondb_owner:npg_2nWk1zLQtjau@ep-bitter-hall-a4ihpydn-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 ).strip()
 
 # CockroachDB Cloud cluster CA endpoint. The database connection layer checks
