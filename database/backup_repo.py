@@ -1461,14 +1461,26 @@ async def import_tables(
                     )
                 )
 
-            # Individual TRUNCATE statements keep the CockroachDB-compatible
-            # recovery behaviour. Do not use PostgreSQL's multi-table
-            # `RESTART IDENTITY` syntax here.
+            # Use row-level DELETE rather than TRUNCATE during recovery.
+            #
+            # CockroachDB can reject TRUNCATE when a table participates in an
+            # index-drop/rebuild operation, producing errors such as:
+            #   cannot perform TRUNCATE on "special_player_card_images"
+            #   which has indexes being dropped
+            #
+            # DELETE does not perform that schema/index operation. We execute
+            # tables in reverse foreign-key order so dependent rows are removed
+            # before their parents. This also avoids CASCADE deleting protected
+            # identity data such as `users` and `broadcast_targets`.
+            #
+            # Sequences are reset explicitly after restoration by
+            # `_reset_sequences`, so switching from TRUNCATE to DELETE does not
+            # leave restored SERIAL/BIGSERIAL IDs in a bad state.
             for table in reversed(
                 ordered_clear
             ):
                 await conn.execute(
-                    f'TRUNCATE TABLE "{table}" CASCADE;'
+                    f'DELETE FROM "{table}";'
                 )
 
             # Existing live identity records win. Backup-only users/groups
