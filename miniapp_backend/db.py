@@ -13,7 +13,7 @@ _pool: asyncpg.Pool | None = None
 async def connect() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(**get_asyncpg_connect_kwargs(), min_size=0, max_size=3, max_inactive_connection_lifetime=300.0)
+        _pool = await asyncpg.create_pool(**await get_asyncpg_connect_kwargs(), min_size=0, max_size=3, max_inactive_connection_lifetime=300.0)
     return _pool
 
 
