@@ -49,6 +49,15 @@ NEVER_CLEARED_TABLES = [
     "stadium_images",
 ]
 
+# /recover treats these identity registries as merge-only data. Current rows
+# always win; rows that exist only in the backup are inserted. All other
+# application data is restored from the backup as the authoritative state.
+# Users are keyed by Telegram user_id; known groups/channels are keyed by chat_id.
+PROTECTED_MERGE_KEYS = {
+    "users": "user_id",
+    "broadcast_targets": "chat_id",
+}
+
 # Compatibility list for callers/tools that imported this constant from an
 # older version. /sync itself no longer depends on this fixed list.
 FULL_BACKUP_TABLES = [
@@ -461,8 +470,74 @@ async def _restore_rows(conn, table: str, rows: list[dict], metadata: dict[str, 
     return len(normalized_rows)
 
 
+async def _restore_or_merge_rows(
+    conn,
+    table: str,
+    rows: list[dict],
+    metadata: dict[str, dict],
+    *,
+    conflict_column: str | None = None,
+) -> int:
+    """Restore rows, or merge identity rows without overwriting live data."""
+    if not rows:
+        return 0
+
+    normalized_rows = []
+    current_columns = metadata
+
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Backup row {row_index} in {table!r} is not an object.")
+
+        unsupported_cols = sorted(set(row) - set(current_columns))
+        if unsupported_cols:
+            raise ValueError(
+                f"Backup table {table!r} contains unknown column(s): "
+                + ", ".join(unsupported_cols)
+            )
+
+        columns = list(row.keys())
+        if conflict_column and conflict_column not in columns:
+            raise ValueError(
+                f"Backup table {table!r} is missing its merge key column {conflict_column!r}."
+            )
+
+        record = tuple(
+            _coerce_value(row.get(column), current_columns[column]["data_type"])
+            for column in columns
+        )
+        normalized_rows.append((columns, record))
+
+    first_columns = normalized_rows[0][0]
+    if any(columns != first_columns for columns, _ in normalized_rows):
+        raise ValueError(f"Backup table {table!r} has inconsistent row columns.")
+
+    col_list = ", ".join(f'"{column}"' for column in first_columns)
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(first_columns)))
+
+    if conflict_column:
+        insert_sql = (
+            f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders}) '
+            f'ON CONFLICT ("{conflict_column}") DO NOTHING;'
+        )
+    else:
+        insert_sql = f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders});'
+
+    await conn.executemany(insert_sql, [record for _, record in normalized_rows])
+    return len(normalized_rows)
+
+
 async def import_tables(raw_bytes: bytes) -> dict[str, int]:
-    """Restore a backup produced by :func:`export_tables` transactionally."""
+    """Restore a backup, with live users/known chats merged instead of replaced.
+
+    Full /sync backups are authoritative for all non-identity application data:
+    the current rows are removed and the backup rows are restored. The `users`
+    and `broadcast_targets` registries are the exception: existing live rows are
+    preserved, and only backup rows missing from the live database are added.
+
+    Partial /cleardata backups retain their historical scope: only tables in the
+    partial backup are replaced/restored, with the same identity-registry merge.
+    """
     payload = _decode_backup(raw_bytes)
     if not isinstance(payload, dict):
         raise ValueError("Invalid backup file: top-level JSON must be an object.")
@@ -493,49 +568,73 @@ async def import_tables(raw_bytes: bytes) -> dict[str, int]:
                 + ", ".join(unknown)
             )
 
-        # New-format /sync is deliberately strict. It must represent every
-        # current application table exactly, otherwise a restore could silently
-        # delete or fail to restore data from a newer/older schema.
         if backup_type == "sync" and int(payload.get("backup_format_version") or 1) >= BACKUP_FORMAT_VERSION:
             declared = set(payload.get("schema_tables") or [])
             if declared != backup_set:
                 raise ValueError("Full backup manifest does not match its table payload.")
-            if current_set != backup_set:
-                missing = sorted(current_set - backup_set)
-                extra = sorted(backup_set - current_set)
-                detail = []
-                if missing:
-                    detail.append("missing current tables: " + ", ".join(missing))
-                if extra:
-                    detail.append("backup-only tables: " + ", ".join(extra))
-                raise ValueError(
-                    "This full backup was created against a different database schema. "
-                    + " | ".join(detail)
-                )
 
-        present = list(tables)
-        ordered = await _foreign_key_order(conn, present)
-        metadata = {table: await _table_column_metadata(conn, table) for table in present}
+        protected = set(PROTECTED_MERGE_KEYS)
+
+        if backup_type == "sync":
+            # A full /sync backup is authoritative for every normal application
+            # table, including any table that was added after the backup was made.
+            # Such current-only tables therefore become empty when absent from the
+            # backup, while protected identity tables remain intact.
+            clear_set = current_set - protected
+        else:
+            # /cleardata backups are intentionally partial. Keep all tables that
+            # the partial backup never represented, preserving the old scope.
+            clear_set = backup_set - protected
+
+        # Restore order must cover everything we intend to clear and everything
+        # we intend to restore. Metadata is read before writes so the transaction
+        # never has to discover schema midway through the replacement.
+        ordered_clear = await _foreign_key_order(conn, list(clear_set))
+        ordered_restore = await _foreign_key_order(conn, list(backup_set - protected))
+
+        metadata: dict[str, dict[str, dict]] = {}
+        for table in sorted(set(clear_set) | backup_set):
+            metadata[table] = await _table_column_metadata(conn, table)
 
         async with conn.transaction():
-            # CockroachDB does not support PostgreSQL's
-            # `TRUNCATE ... RESTART IDENTITY` clause. Truncate the backup
-            # tables individually in child-first order so foreign-key
-            # dependencies are satisfied without relying on a multi-table
-            # PostgreSQL-specific statement. Sequence/identity counters are
-            # reset explicitly after the rows are restored by _reset_sequences.
-            #
-            # Keep CASCADE for compatibility with the existing /cleardata
-            # semantics. The set of tables is still restricted to the backup
-            # payload, and the operation remains inside the same transaction.
-            truncate_order = list(reversed(ordered))
-            for table in truncate_order:
+            # Delete every authoritative non-protected table. We intentionally
+            # keep users and known chat targets untouched so their live identity
+            # records survive a restore. Individual TRUNCATE statements avoid the
+            # PostgreSQL-specific multi-table RESTART IDENTITY syntax that
+            # CockroachDB rejects.
+            for table in reversed(ordered_clear):
                 await conn.execute(f'TRUNCATE TABLE "{table}" CASCADE;')
 
-            for table in ordered:
-                results[table] = await _restore_rows(conn, table, tables.get(table) or [], metadata[table])
+            # Merge live identity registries first. Existing current rows win;
+            # backup-only users/groups are appended without duplication.
+            for table, key_column in PROTECTED_MERGE_KEYS.items():
+                if table in tables:
+                    results[table] = await _restore_or_merge_rows(
+                        conn,
+                        table,
+                        tables.get(table) or [],
+                        metadata[table],
+                        conflict_column=key_column,
+                    )
 
-            await _reset_sequences(conn, ordered, metadata)
+            # Restore every non-protected table from the backup exactly. A full
+            # sync can intentionally leave current-only tables empty when they did
+            # not exist in the older backup, because the backup is authoritative.
+            for table in ordered_restore:
+                results[table] = await _restore_rows(
+                    conn,
+                    table,
+                    tables.get(table) or [],
+                    metadata[table],
+                )
 
-    print(f"[backup_repo] import_tables() -> restored {results}")
+            # Reset sequence-backed IDs for every table whose live rows were
+            # replaced, plus every non-protected table restored from the backup.
+            sequence_tables = list(dict.fromkeys(ordered_clear + ordered_restore))
+            sequence_metadata = {table: metadata[table] for table in sequence_tables}
+            if sequence_tables:
+                await _reset_sequences(conn, sequence_tables, sequence_metadata)
+
+    print(f"[backup_repo] import_tables() -> restored/merged {results}")
     return results
+

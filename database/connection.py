@@ -11,6 +11,7 @@ from config import (
     COCKROACH_CA_CERT,
     COCKROACH_CA_CERT_B64,
     COCKROACH_CA_CERT_FILE,
+    COCKROACH_CA_CERT_URL,
     DATABASE_URL,
 )
 
@@ -72,13 +73,30 @@ def _remove_query_keys(dsn: str, keys: set[str]) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
-def _ca_pem_from_environment() -> str | None:
+async def _download_cockroach_ca_cert() -> str:
+    import urllib.request
+
+    request = urllib.request.Request(
+        COCKROACH_CA_CERT_URL,
+        headers={"User-Agent": "Crickium-CockroachDB-TLS/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        pem = response.read().decode("utf-8").strip()
+
+    if "BEGIN CERTIFICATE" not in pem or "END CERTIFICATE" not in pem:
+        raise RuntimeError(
+            "CockroachDB cluster CA endpoint did not return a valid PEM certificate."
+        )
+    return pem
+
+
+def _ca_pem_for_cockroach() -> str | None:
+    """Return a CA only for CockroachDB connections, never for other providers."""
     if COCKROACH_CA_CERT_FILE:
         path = Path(COCKROACH_CA_CERT_FILE).expanduser()
         if not path.is_file():
             raise RuntimeError(
-                f"COCKROACH_CA_CERT_FILE points to '{path}', but that file does not exist. "
-                "Download the CockroachDB Cloud cluster CA certificate and set the file path correctly."
+                f"COCKROACH_CA_CERT_FILE points to '{path}', but that file does not exist."
             )
         return path.read_text(encoding="utf-8")
 
@@ -94,8 +112,13 @@ def _ca_pem_from_environment() -> str | None:
     return None
 
 
-def get_asyncpg_connect_kwargs() -> dict:
-    """Build asyncpg connection arguments, including secure Cockroach TLS."""
+async def get_asyncpg_connect_kwargs() -> dict:
+    """Build provider-neutral asyncpg connection arguments.
+
+    CockroachDB Cloud gets its custom cluster CA only when the current URL is
+    actually a CockroachDB Cloud URL. Other PostgreSQL providers use their own
+    explicit sslrootcert, or the normal system CA trust store.
+    """
     dsn = DATABASE_URL
     if not dsn:
         raise RuntimeError("DATABASE_URL is not configured.")
@@ -104,10 +127,17 @@ def get_asyncpg_connect_kwargs() -> dict:
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     sslmode = (query.get("sslmode") or "verify-full").lower()
     embedded_root = query.get("sslrootcert")
-    ca_pem = _ca_pem_from_environment()
     is_cockroach = _is_cockroach_url(dsn)
 
-    if ca_pem:
+    # Only honor Cockroach-specific CA settings after the URL has been classified
+    # as CockroachDB. This makes swapping DATABASE_URL to another PostgreSQL
+    # provider safe and avoids an unnecessary certificate download.
+    if is_cockroach:
+        ca_pem = _ca_pem_for_cockroach()
+
+        if ca_pem is None:
+            ca_pem = await _download_cockroach_ca_cert()
+
         ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cadata=ca_pem)
         ctx.check_hostname = sslmode == "verify-full"
         dsn_without_cert = _remove_query_keys(dsn, {"sslrootcert"})
@@ -121,21 +151,13 @@ def get_asyncpg_connect_kwargs() -> dict:
             return {"dsn": _remove_query_keys(dsn, {"sslrootcert"}), "ssl": ctx}
 
     if sslmode in {"verify-full", "verify-ca"}:
-        if is_cockroach:
-            raise RuntimeError(
-                "CockroachDB Cloud requires its cluster CA certificate for secure verification. "
-                "Set COCKROACH_CA_CERT_FILE to the downloaded CA file, or COCKROACH_CA_CERT/COCKROACH_CA_CERT_B64 in Railway. "
-                "The old /root/.postgresql/root.crt fallback is intentionally not used because Railway does not contain that file."
-            )
-        # For providers whose server certificate chains to a public CA (for example
-        # many managed PostgreSQL services), use the platform trust store instead of
-        # asyncpg's ~/.postgresql/root.crt fallback when no custom CA file is supplied.
+        # Standard managed PostgreSQL providers generally use public CA chains.
+        # Use the runtime trust store rather than any Cockroach-specific CA.
         ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         ctx.check_hostname = sslmode == "verify-full"
         return {"dsn": _remove_query_keys(dsn, {"sslrootcert"}), "ssl": ctx}
 
     # Explicit ssl=require remains encrypted but skips server-certificate verification.
-    # It should only be used deliberately for non-production/testing scenarios.
     return {"dsn": dsn}
 
 
@@ -154,7 +176,7 @@ async def connect():
     if _pool is None:
         print("[db/connection] No existing pool, creating new asyncpg pool...")
         try:
-            connect_kwargs = get_asyncpg_connect_kwargs()
+            connect_kwargs = await get_asyncpg_connect_kwargs()
             # CockroachDB exposes this session setting to allow pgwire portal
             # execution that asyncpg can otherwise trigger when statements are
             # prepared/executed back-to-back inside one transaction. Keep it
