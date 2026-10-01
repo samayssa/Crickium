@@ -24,40 +24,21 @@ ADMIN_USER_ID = 1766243373
 # Intentionally self-contained for Railway redeploys. No Railway database
 # environment variable is required.
 DATABASE_URL = (
-    "postgresql://arpit:3M9a5QM_sowTbNhEiGGDjw@"
-    "tide-walker-21592.jxf.gcp-asia-south1.cockroachlabs.cloud:26257/"
-    "defaultdb?sslmode=verify-full"
+    "postgresql://neondb_owner:npg_2nWk1zLQtjau@ep-bitter-hall-a4ihpydn-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 ).strip()
 
-# CockroachDB Cloud publishes this cluster CA as a PEM document. The command
-# supplied for this cluster downloads the same certificate to
-# ~/.postgresql/root.crt. We load it directly into memory instead, so Railway
-# does not need a persistent certificate file or any environment variable.
+# CockroachDB Cloud cluster CA endpoint. The database connection layer checks
+# the DATABASE_URL first; this certificate is fetched only when that URL is
+# actually a CockroachDB Cloud URL. Switching DATABASE_URL to another
+# PostgreSQL provider therefore bypasses Cockroach certificate handling.
 COCKROACH_CA_CERT_URL = (
     "https://cockroachlabs.cloud/clusters/"
     "d1cd6a3a-481f-4de7-b833-b5d630463b21/cert"
 )
 
-
-def _load_cockroach_ca_cert() -> str:
-    import urllib.request
-
-    request = urllib.request.Request(
-        COCKROACH_CA_CERT_URL,
-        headers={"User-Agent": "Crickium-CockroachDB-TLS/1.0"},
-    )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        pem = response.read().decode("utf-8").strip()
-
-    if "BEGIN CERTIFICATE" not in pem or "END CERTIFICATE" not in pem:
-        raise RuntimeError(
-            "CockroachDB cluster CA endpoint did not return a valid PEM certificate."
-        )
-
-    return pem
-
-
-COCKROACH_CA_CERT = _load_cockroach_ca_cert()
+# Optional compatibility hooks. Leave these empty when using the built-in
+# Cockroach certificate URL above. They are consulted only for CockroachDB.
+COCKROACH_CA_CERT = ""
 COCKROACH_CA_CERT_B64 = ""
 COCKROACH_CA_CERT_FILE = ""
 
