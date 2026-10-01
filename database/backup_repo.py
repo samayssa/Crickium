@@ -746,6 +746,32 @@ async def _reset_sequences(
                 )
 
 
+def _typed_placeholder(index: int, pg_type: str) -> str:
+    """Return a parameter placeholder with an explicit integer width when needed.
+
+    CockroachDB's PostgreSQL wire-protocol preparation can infer an integer
+    parameter as INT4 in some INSERT/EXECUTEMANY paths. asyncpg then rejects
+    legitimate Telegram user/chat IDs above INT32 before the server executes
+    the statement. Explicit casts make BIGINT parameters unambiguously 64-bit.
+
+    Non-integer types intentionally keep plain placeholders. In particular,
+    JSON/JSONB is left uncast because the importer passes an already encoded
+    JSON string and forcing a JSONB parameter codec could double-encode it.
+    """
+    normalized = str(pg_type or "").strip().lower()
+
+    if normalized in {"bigint", "int8"}:
+        return f"${index}::BIGINT"
+
+    if normalized in {"integer", "int", "int4"}:
+        return f"${index}::INTEGER"
+
+    if normalized in {"smallint", "int2"}:
+        return f"${index}::SMALLINT"
+
+    return f"${index}"
+
+
 async def _restore_rows(
     conn,
     table: str,
@@ -818,10 +844,11 @@ async def _restore_rows(
     )
 
     placeholders = ", ".join(
-        f"${i + 1}"
-        for i in range(
-            len(first_columns)
+        _typed_placeholder(
+            i + 1,
+            current_columns[column]["data_type"],
         )
+        for i, column in enumerate(first_columns)
     )
 
     insert_sql = (
@@ -927,10 +954,11 @@ async def _restore_or_merge_rows(
     )
 
     placeholders = ", ".join(
-        f"${i + 1}"
-        for i in range(
-            len(first_columns)
+        _typed_placeholder(
+            i + 1,
+            current_columns[column]["data_type"],
         )
+        for i, column in enumerate(first_columns)
     )
 
     if conflict_column:
@@ -1082,7 +1110,7 @@ async def import_tables(
 
         # Restore order must cover everything we intend to clear and everything
         # we intend to restore. Metadata is read before writes so the transaction
-        # never has to discover schema midway through the replacement.
+        # never has to discover schema midway through the transaction.
         ordered_clear = await _foreign_key_order(
             conn,
             list(clear_set),
