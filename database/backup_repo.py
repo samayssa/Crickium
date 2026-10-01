@@ -709,6 +709,185 @@ async def _ensure_backup_only_tables(
     return created
 
 
+
+def _infer_backup_column_type(
+    values,
+) -> str:
+    """
+    Infer a safe SQL type for a backup column that does not exist in the
+    currently running database.
+
+    The backup format stores row values but not the original CREATE TABLE DDL.
+    We therefore prefer a conservative nullable type. Integer identifiers are
+    deliberately BIGINT because Telegram user/chat IDs and database foreign
+    keys can exceed INT32.
+    """
+    observed = [
+        value
+        for value in values
+        if value is not None
+    ]
+
+    if not observed:
+        return "TEXT"
+
+    kinds = set()
+
+    for value in observed:
+        if isinstance(value, dict):
+            marker = value.get("__backup_type__")
+
+            if marker == "uuid":
+                kinds.add("UUID")
+            elif marker == "bytes":
+                kinds.add("BYTEA")
+            elif marker == "decimal":
+                kinds.add("DECIMAL")
+            elif marker == "date":
+                kinds.add("DATE")
+            elif marker == "time":
+                kinds.add("TIME")
+            elif marker == "datetime":
+                kinds.add("TIMESTAMP")
+            else:
+                kinds.add("JSONB")
+            continue
+
+        if isinstance(value, bool):
+            kinds.add("BOOLEAN")
+            continue
+
+        if isinstance(value, int):
+            kinds.add("BIGINT")
+            continue
+
+        if isinstance(value, float):
+            kinds.add("DOUBLE PRECISION")
+            continue
+
+        if isinstance(value, (list, tuple)):
+            kinds.add("JSONB")
+            continue
+
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            kinds.add("BYTEA")
+            continue
+
+        kinds.add("TEXT")
+
+    if len(kinds) == 1:
+        return next(iter(kinds))
+
+    # If the same column contains mixed JSON-like values, preserve them as JSONB.
+    if "JSONB" in kinds:
+        return "JSONB"
+
+    # Mixed numeric values can safely live in DECIMAL.
+    if kinds.issubset({"BIGINT", "DOUBLE PRECISION", "DECIMAL"}):
+        return "DECIMAL"
+
+    # Mixed integer/text data is safest as TEXT rather than risking a failed
+    # schema migration. The backup can still be restored without data loss.
+    if "TEXT" in kinds:
+        return "TEXT"
+
+    return "TEXT"
+
+
+def _backup_row_values(
+    rows: list[dict],
+    column: str,
+):
+    return [
+        row.get(column)
+        for row in rows
+        if isinstance(row, dict)
+        and column in row
+    ]
+
+
+async def _ensure_backup_columns(
+    conn,
+    tables: dict[str, list[dict]],
+    current_tables: set[str],
+):
+    """
+    Reconcile columns present in the backup but absent from an existing live
+    table.
+
+    This is intentionally additive:
+      * Existing columns are never modified or deleted.
+      * Missing columns are added as nullable.
+      * Existing live user/group values remain untouched.
+      * Backup-only tables are handled separately by
+        `_ensure_backup_only_tables`.
+
+    This lets `/recover` accept backups produced by a newer schema revision,
+    such as a backup containing `users.captain_player_id` when the current
+    database predates that column.
+    """
+    for table, rows in tables.items():
+        if table not in current_tables:
+            continue
+
+        if not isinstance(rows, list) or not rows:
+            continue
+
+        column_rows = await conn.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = $1;
+            """,
+            table,
+        )
+
+        existing_columns = {
+            str(row["column_name"])
+            for row in column_rows
+        }
+
+        backup_columns = []
+        seen = set()
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            for column in row:
+                column = str(column)
+
+                if column not in seen:
+                    seen.add(column)
+                    backup_columns.append(column)
+
+        for column in backup_columns:
+            if column in existing_columns:
+                continue
+
+            pg_type = _infer_backup_column_type(
+                _backup_row_values(
+                    rows,
+                    column,
+                )
+            )
+
+            await conn.execute(
+                f'ALTER TABLE {_json_identifier(table)} '
+                f'ADD COLUMN IF NOT EXISTS '
+                f'{_json_identifier(column)} '
+                f'{pg_type};'
+            )
+
+            existing_columns.add(column)
+
+            print(
+                f"[backup_repo] Added missing backup column "
+                f"{table}.{column} as {pg_type}"
+            )
+
+
 async def _table_column_metadata(
     conn,
     table: str,
@@ -1397,6 +1576,16 @@ async def import_tables(
                     },
                     current_set,
                 )
+            )
+
+            # A backup may also come from a newer schema revision where an
+            # existing table has gained columns that do not yet exist in the
+            # live database. Add those columns before metadata validation and
+            # before any rows are restored.
+            await _ensure_backup_columns(
+                conn,
+                tables,
+                current_set,
             )
 
             # Missing tables with no rows cannot be reconstructed from the

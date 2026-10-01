@@ -68,6 +68,7 @@ TABLES = {
             first_name TEXT,
             balance BIGINT DEFAULT 0,
             total_spent BIGINT DEFAULT 0,
+            captain_player_id BIGINT,
             created_at TIMESTAMP DEFAULT NOW(),
             last_seen_at TIMESTAMP DEFAULT NOW()
         );
@@ -502,6 +503,10 @@ async def migrate():
     print("[migrate] Ensuring 'users.last_seen_at' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();")
     print("[migrate] 'users.last_seen_at' OK.")
+
+    print("[migrate] Ensuring 'users.captain_player_id' column exists...")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captain_player_id BIGINT;")
+    print("[migrate] 'users.captain_player_id' OK.")
 
     print("[migrate] Ensuring index on players.role exists...")
     await execute("CREATE INDEX IF NOT EXISTS idx_players_role ON players(role);")
