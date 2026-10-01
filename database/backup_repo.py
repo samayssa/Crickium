@@ -31,8 +31,6 @@ from database.admin_repo import CLEAR_TABLES
 BACKUP_FORMAT_VERSION = 2
 SCHEMA_BOOKKEEPING_TABLES = {"schema_version"}
 
-# Tables that are cascade-deleted by /cleardata's TRUNCATE ... CASCADE even
-# though they are not directly listed in CLEAR_TABLES.
 _CLEARDATA_CASCADE_EXTRAS = [
     "player_card_images",
     "special_player_card_images",
@@ -41,7 +39,6 @@ _CLEARDATA_CASCADE_EXTRAS = [
 
 CLEARDATA_BACKUP_TABLES = [*CLEAR_TABLES, *_CLEARDATA_CASCADE_EXTRAS]
 
-# Tables that /cleardata must never include.
 NEVER_CLEARED_TABLES = [
     "tier_card_images",
     "template_card_image",
@@ -50,17 +47,11 @@ NEVER_CLEARED_TABLES = [
     "stadium_images",
 ]
 
-# /recover treats these identity registries as merge-only data. Current rows
-# always win; rows that exist only in the backup are inserted. All other
-# application data is restored from the backup as the authoritative state.
-# Users are keyed by Telegram user_id; known groups/channels are keyed by chat_id.
 PROTECTED_MERGE_KEYS = {
     "users": "user_id",
     "broadcast_targets": "chat_id",
 }
 
-# Compatibility list for callers/tools that imported this constant from an
-# older version. /sync itself no longer depends on this fixed list.
 FULL_BACKUP_TABLES = [
     "bot_runtime_state",
     "users",
@@ -110,18 +101,10 @@ assert set(CLEARDATA_BACKUP_TABLES).isdisjoint(NEVER_CLEARED_TABLES), (
     "A table meant to survive /cleardata ended up in its backup/clear set."
 )
 
-# Parent-before-child order used as a fast-path preference. Dynamic foreign
-# key ordering is still calculated at restore time so newly-added tables are
-# handled safely.
 _RESTORE_ORDER = FULL_BACKUP_TABLES[:]
 
 
 def _json_default(value):
-    # asyncpg may expose PostgreSQL UUID values using its own UUID class
-    # (`asyncpg.pgproto.pgproto.UUID`) rather than the stdlib uuid.UUID.
-    # Normalize both forms to a stable JSON marker so /sync can always
-    # serialize the complete database without leaking a driver-specific
-    # Python object into json.dumps().
     if isinstance(value, uuid.UUID) or (
         type(value).__name__ == "UUID"
         and type(value).__module__.startswith("asyncpg.pgproto")
@@ -153,7 +136,6 @@ def _json_default(value):
 
 
 def _json_object_hook(value):
-    # Keep markers as dictionaries until we have the PostgreSQL column type.
     return value
 
 
@@ -162,7 +144,11 @@ def _decode_backup(raw_bytes: bytes) -> dict:
         raw = gzip.decompress(raw_bytes)
     except OSError:
         raw = raw_bytes
-    return json.loads(raw.decode("utf-8"), object_hook=_json_object_hook)
+
+    return json.loads(
+        raw.decode("utf-8"),
+        object_hook=_json_object_hook,
+    )
 
 
 async def _public_base_tables(
@@ -194,7 +180,6 @@ async def _public_base_tables(
 
 
 async def get_full_backup_tables() -> list[str]:
-    """Return every public application table currently present in PostgreSQL."""
     pool = get_pool()
 
     async with pool.acquire() as conn:
@@ -206,7 +191,6 @@ async def export_tables(
     *,
     backup_type: str,
 ) -> bytes:
-    """Export requested tables, or every public application table for /sync."""
     pool = get_pool()
 
     async with pool.acquire() as conn:
@@ -220,11 +204,12 @@ async def export_tables(
 
         else:
             tables_to_export = list(
-                dict.fromkeys(str(t) for t in table_names)
+                dict.fromkeys(
+                    str(t)
+                    for t in table_names
+                )
             )
 
-        # Validate names against information_schema instead of trusting a
-        # caller-provided identifier inside a SQL string.
         current_tables = set(
             await _public_base_tables(
                 conn,
@@ -250,7 +235,11 @@ async def export_tables(
                 f'SELECT * FROM "{table}";'
             )
 
-            tables[table] = [dict(row) for row in rows]
+            tables[table] = [
+                dict(row)
+                for row in rows
+            ]
+
             row_counts[table] = len(rows)
 
     payload = {
@@ -457,10 +446,267 @@ def _coerce_value(
             else Decimal(str(value))
         )
 
-    # asyncpg accepts ordinary Python lists for PostgreSQL arrays.
-    # The current Crickium schema does not use arrays, but leaving
-    # lists untouched makes the backup engine future-friendly.
     return value
+
+
+def _infer_pg_type_from_backup_value(
+    value,
+) -> str:
+    """
+    Infer a conservative PostgreSQL/CockroachDB type for
+    a backup-only value.
+    """
+    if value is None:
+        return "TEXT"
+
+    if isinstance(value, dict):
+        marker = value.get(
+            "__backup_type__"
+        )
+
+        if marker == "uuid":
+            return "UUID"
+
+        if marker == "bytes":
+            return "BYTEA"
+
+        if marker == "decimal":
+            return "DECIMAL"
+
+        if marker == "date":
+            return "DATE"
+
+        if marker == "time":
+            return "TIME"
+
+        if marker == "datetime":
+            return "TIMESTAMP"
+
+        return "JSONB"
+
+    if isinstance(value, bool):
+        return "BOOLEAN"
+
+    if isinstance(value, int):
+        return "BIGINT"
+
+    if isinstance(value, float):
+        return "DOUBLE PRECISION"
+
+    if isinstance(
+        value,
+        (bytes, bytearray, memoryview),
+    ):
+        return "BYTEA"
+
+    if isinstance(value, datetime):
+        return "TIMESTAMP"
+
+    if isinstance(value, date):
+        return "DATE"
+
+    if isinstance(value, time):
+        return "TIME"
+
+    if isinstance(value, Decimal):
+        return "DECIMAL"
+
+    if isinstance(value, (list, tuple)):
+        return "JSONB"
+
+    return "TEXT"
+
+
+def _merge_inferred_pg_types(
+    types: set[str],
+) -> str:
+    normalized = {
+        str(t).upper()
+        for t in types
+    }
+
+    if not normalized:
+        return "TEXT"
+
+    if normalized == {"NULL"}:
+        return "TEXT"
+
+    if "JSONB" in normalized:
+        return "JSONB"
+
+    if "TEXT" in normalized:
+        return "TEXT"
+
+    if "BYTEA" in normalized:
+        return "BYTEA"
+
+    if "UUID" in normalized:
+        return "UUID"
+
+    if "DOUBLE PRECISION" in normalized:
+        return "DOUBLE PRECISION"
+
+    if "DECIMAL" in normalized:
+        return "DECIMAL"
+
+    if "BIGINT" in normalized:
+        return "BIGINT"
+
+    if "BOOLEAN" in normalized:
+        return "BOOLEAN"
+
+    if "TIMESTAMP" in normalized:
+        return "TIMESTAMP"
+
+    if "DATE" in normalized:
+        return "DATE"
+
+    if "TIME" in normalized:
+        return "TIME"
+
+    return "TEXT"
+
+
+def _json_identifier(
+    value: str,
+) -> str:
+    return (
+        '"'
+        + str(value).replace(
+            '"',
+            '""',
+        )
+        + '"'
+    )
+
+
+async def _ensure_backup_only_tables(
+    conn,
+    tables: dict[str, list[dict]],
+    current_tables: set[str],
+) -> list[str]:
+    """
+    Create tables that exist in a backup but not in the live schema.
+
+    The sync backup format stores row data, not original CREATE TABLE DDL.
+    Therefore a missing table cannot be reconstructed with its exact historical
+    indexes, foreign keys, primary keys, or defaults.
+
+    For backup-only tables that contain rows, however, the backup still gives
+    us every column name and a usable value sample. Reconstruct a conservative
+    PostgreSQL/CockroachDB table from those values so the backup data itself is
+    not discarded and the whole recovery can complete.
+
+    Existing tables are never altered here.
+    """
+    created: list[str] = []
+
+    for table, rows in tables.items():
+        if table in current_tables:
+            continue
+
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"Backup table {table!r} "
+                "must contain a list of rows."
+            )
+
+        if not rows:
+            print(
+                f"[backup_repo] Backup-only empty table "
+                f"{table!r} cannot be reconstructed "
+                "without schema metadata; skipping."
+            )
+            continue
+
+        column_names: list[str] = []
+        column_types: dict[
+            str,
+            set[str],
+        ] = defaultdict(set)
+
+        for row_index, row in enumerate(
+            rows,
+            start=1,
+        ):
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"Backup row {row_index} in "
+                    f"{table!r} is not an object."
+                )
+
+            for column in row.keys():
+                column = str(column)
+
+                if column not in column_types:
+                    column_names.append(
+                        column
+                    )
+
+                value = row.get(
+                    column
+                )
+
+                if value is None:
+                    column_types[column].add(
+                        "NULL"
+                    )
+
+                else:
+                    column_types[column].add(
+                        _infer_pg_type_from_backup_value(
+                            value
+                        )
+                    )
+
+        definitions = []
+
+        for column in column_names:
+            pg_type = _merge_inferred_pg_types(
+                column_types.get(
+                    column,
+                    set(),
+                )
+            )
+
+            definitions.append(
+                f"{_json_identifier(column)} "
+                f"{pg_type}"
+            )
+
+        if not definitions:
+            print(
+                f"[backup_repo] Backup-only table "
+                f"{table!r} has no columns; skipping."
+            )
+            continue
+
+        create_sql = (
+            f"CREATE TABLE IF NOT EXISTS "
+            f"{_json_identifier(table)} ("
+            + ", ".join(definitions)
+            + ");"
+        )
+
+        await conn.execute(
+            create_sql
+        )
+
+        current_tables.add(
+            table
+        )
+
+        created.append(
+            table
+        )
+
+        print(
+            f"[backup_repo] Created backup-only table "
+            f"{table!r} with "
+            f"{len(definitions)} inferred column(s)."
+        )
+
+    return created
 
 
 async def _table_column_metadata(
@@ -518,19 +764,30 @@ async def _foreign_key_order(
         """
     )
 
-    table_set = set(tables)
+    table_set = set(
+        tables
+    )
 
-    parents: dict[str, set[str]] = {
+    parents: dict[
+        str,
+        set[str],
+    ] = {
         table: set()
         for table in tables
     }
 
-    children: dict[str, set[str]] = {
+    children: dict[
+        str,
+        set[str],
+    ] = {
         table: set()
         for table in tables
     }
 
-    indegree: dict[str, int] = {
+    indegree: dict[
+        str,
+        int,
+    ] = {
         table: 0
         for table in tables
     }
@@ -554,8 +811,14 @@ async def _foreign_key_order(
         if parent in parents[child]:
             continue
 
-        parents[child].add(parent)
-        children[parent].add(child)
+        parents[child].add(
+            parent
+        )
+
+        children[parent].add(
+            child
+        )
+
         indegree[child] += 1
 
     preferred = {
@@ -573,7 +836,10 @@ async def _foreign_key_order(
                 if indegree[t] == 0
             ),
             key=lambda x: (
-                preferred.get(x, 10_000),
+                preferred.get(
+                    x,
+                    10_000,
+                ),
                 x,
             ),
         )
@@ -583,28 +849,36 @@ async def _foreign_key_order(
 
     while queue:
         node = queue.popleft()
-        ordered.append(node)
+
+        ordered.append(
+            node
+        )
 
         for child in sorted(
             children[node],
             key=lambda x: (
-                preferred.get(x, 10_000),
+                preferred.get(
+                    x,
+                    10_000,
+                ),
                 x,
             ),
         ):
             indegree[child] -= 1
 
             if indegree[child] == 0:
-                queue.append(child)
+                queue.append(
+                    child
+                )
 
-    # The current schema has no FK cycles. If a future schema introduces one,
-    # append the remaining tables deterministically and let PostgreSQL surface
-    # the actual constraint error rather than silently dropping data.
     if len(ordered) != len(tables):
         remaining = sorted(
             set(tables) - set(ordered),
             key=lambda x: (
-                preferred.get(x, 10_000),
+                preferred.get(
+                    x,
+                    10_000,
+                ),
                 x,
             ),
         )
@@ -619,15 +893,12 @@ async def _foreign_key_order(
 async def _reset_sequences(
     conn,
     tables: list[str],
-    metadata: dict[str, dict[str, dict]],
+    metadata: dict[
+        str,
+        dict[str, dict],
+    ],
 ):
-    """Reset SERIAL/identity-backed sequences after a logical restore.
-
-    PostgreSQL exposes pg_get_serial_sequence(); CockroachDB does not require
-    the application to depend on that PostgreSQL helper. For CockroachDB we
-    resolve sequence names from the column default and use ALTER SEQUENCE.
-    """
-
+    """Reset SERIAL/identity-backed sequences after a logical restore."""
     version_text = str(
         await conn.fetchval(
             "SELECT version();"
@@ -655,7 +926,9 @@ async def _reset_sequences(
             )
 
             is_identity = (
-                info.get("is_identity")
+                info.get(
+                    "is_identity"
+                )
                 == "YES"
             )
 
@@ -666,7 +939,8 @@ async def _reset_sequences(
                 continue
 
             max_value = await conn.fetchval(
-                f'SELECT MAX("{column}") FROM "{table}";'
+                f'SELECT MAX("{column}") '
+                f'FROM "{table}";'
             )
 
             next_value = (
@@ -676,21 +950,17 @@ async def _reset_sequences(
             )
 
             if is_cockroach:
-                # Typical PostgreSQL-compatible SERIAL defaults are of the form
-                # nextval('public.table_id_seq'::REGCLASS). CockroachDB exposes
-                # the same default text for sequence-backed SERIAL columns.
                 match = re.search(
-                    r"nextval\('([^']+)'",
+                    r"nextval\\('([^']+)'",
                     default,
                 )
 
                 if not match:
-                    # Identity/managed columns do not always expose a nextval()
-                    # default. Leave those alone; their identity mechanism owns
-                    # its own counter and the restored explicit IDs remain valid.
                     continue
 
-                raw_sequence = match.group(1)
+                raw_sequence = match.group(
+                    1
+                )
 
                 sequence_parts = [
                     part.strip().strip('"')
@@ -700,11 +970,14 @@ async def _reset_sequences(
                 if len(sequence_parts) == 1:
                     sequence_schema = "public"
                     sequence_name = sequence_parts[0]
+
                 else:
                     sequence_schema = sequence_parts[-2]
                     sequence_name = sequence_parts[-1]
 
-                def _ident(value: str) -> str:
+                def _ident(
+                    value: str,
+                ) -> str:
                     return (
                         '"'
                         + value.replace(
@@ -718,7 +991,8 @@ async def _reset_sequences(
                     f'ALTER SEQUENCE '
                     f'{_ident(sequence_schema)}.'
                     f'{_ident(sequence_name)} '
-                    f'RESTART WITH {next_value};'
+                    f'RESTART WITH '
+                    f'{next_value};'
                 )
 
                 continue
@@ -746,27 +1020,37 @@ async def _reset_sequences(
                 )
 
 
-def _typed_placeholder(index: int, pg_type: str) -> str:
-    """Return a parameter placeholder with an explicit integer width when needed.
-
-    CockroachDB's PostgreSQL wire-protocol preparation can infer an integer
-    parameter as INT4 in some INSERT/EXECUTEMANY paths. asyncpg then rejects
-    legitimate Telegram user/chat IDs above INT32 before the server executes
-    the statement. Explicit casts make BIGINT parameters unambiguously 64-bit.
-
-    Non-integer types intentionally keep plain placeholders. In particular,
-    JSON/JSONB is left uncast because the importer passes an already encoded
-    JSON string and forcing a JSONB parameter codec could double-encode it.
+def _typed_placeholder(
+    index: int,
+    pg_type: str,
+) -> str:
     """
-    normalized = str(pg_type or "").strip().lower()
+    Explicitly preserve PostgreSQL integer widths.
 
-    if normalized in {"bigint", "int8"}:
+    This is particularly important for Telegram user/chat IDs because they
+    regularly exceed INT32.
+    """
+    normalized = str(
+        pg_type or ""
+    ).strip().lower()
+
+    if normalized in {
+        "bigint",
+        "int8",
+    }:
         return f"${index}::BIGINT"
 
-    if normalized in {"integer", "int", "int4"}:
+    if normalized in {
+        "integer",
+        "int",
+        "int4",
+    }:
         return f"${index}::INTEGER"
 
-    if normalized in {"smallint", "int2"}:
+    if normalized in {
+        "smallint",
+        "int2",
+    }:
         return f"${index}::SMALLINT"
 
     return f"${index}"
@@ -803,7 +1087,9 @@ async def _restore_rows(
             raise ValueError(
                 f"Backup table {table!r} "
                 f"contains unknown column(s): "
-                + ", ".join(unsupported_cols)
+                + ", ".join(
+                    unsupported_cols
+                )
             )
 
         columns = list(
@@ -835,7 +1121,7 @@ async def _restore_rows(
     ):
         raise ValueError(
             f"Backup table {table!r} "
-            f"has inconsistent row columns."
+            "has inconsistent row columns."
         )
 
     col_list = ", ".join(
@@ -846,9 +1132,13 @@ async def _restore_rows(
     placeholders = ", ".join(
         _typed_placeholder(
             i + 1,
-            current_columns[column]["data_type"],
+            current_columns[column][
+                "data_type"
+            ],
         )
-        for i, column in enumerate(first_columns)
+        for i, column in enumerate(
+            first_columns
+        )
     )
 
     insert_sql = (
@@ -865,7 +1155,9 @@ async def _restore_rows(
         ],
     )
 
-    return len(normalized_rows)
+    return len(
+        normalized_rows
+    )
 
 
 async def _restore_or_merge_rows(
@@ -877,7 +1169,6 @@ async def _restore_or_merge_rows(
     conflict_column: str | None = None,
 ) -> int:
     """Restore rows, or merge identity rows without overwriting live data."""
-
     if not rows:
         return 0
 
@@ -903,7 +1194,9 @@ async def _restore_or_merge_rows(
             raise ValueError(
                 f"Backup table {table!r} "
                 f"contains unknown column(s): "
-                + ", ".join(unsupported_cols)
+                + ", ".join(
+                    unsupported_cols
+                )
             )
 
         columns = list(
@@ -945,7 +1238,7 @@ async def _restore_or_merge_rows(
     ):
         raise ValueError(
             f"Backup table {table!r} "
-            f"has inconsistent row columns."
+            "has inconsistent row columns."
         )
 
     col_list = ", ".join(
@@ -956,9 +1249,13 @@ async def _restore_or_merge_rows(
     placeholders = ", ".join(
         _typed_placeholder(
             i + 1,
-            current_columns[column]["data_type"],
+            current_columns[column][
+                "data_type"
+            ],
         )
-        for i, column in enumerate(first_columns)
+        for i, column in enumerate(
+            first_columns
+        )
     )
 
     if conflict_column:
@@ -985,23 +1282,29 @@ async def _restore_or_merge_rows(
         ],
     )
 
-    return len(normalized_rows)
+    return len(
+        normalized_rows
+    )
 
 
 async def import_tables(
     raw_bytes: bytes,
 ) -> dict[str, int]:
-    """Restore a backup, with live users/known chats merged instead of replaced.
+    """
+    Restore a backup, with live users/known chats merged instead of replaced.
 
     Full /sync backups are authoritative for all non-identity application data:
-    the current rows are removed and the backup rows are restored. The `users`
-    and `broadcast_targets` registries are the exception: existing live rows are
-    preserved, and only backup rows missing from the live database are added.
+    current rows are removed and backup rows are restored. The `users` and
+    `broadcast_targets` registries are exceptions: existing live rows are
+    preserved, while backup-only identity rows are added without duplication.
 
-    Partial /cleardata backups retain their historical scope: only tables in the
-    partial backup are replaced/restored, with the same identity-registry merge.
+    If a backup contains a table absent from the live database, a non-empty
+    backup table is reconstructed from its row data so the recovery does not
+    fail merely because the backup came from a different schema revision.
+
+    Empty backup-only tables are skipped because this JSON backup format does
+    not contain CREATE TABLE metadata for a table with zero rows.
     """
-
     payload = _decode_backup(
         raw_bytes
     )
@@ -1038,6 +1341,32 @@ async def import_tables(
             "This backup file has no table data in it."
         )
 
+    original_backup_set = set(
+        tables
+    )
+
+    if (
+        backup_type == "sync"
+        and int(
+            payload.get(
+                "backup_format_version"
+            )
+            or 1
+        ) >= BACKUP_FORMAT_VERSION
+    ):
+        declared = set(
+            payload.get(
+                "schema_tables"
+            )
+            or []
+        )
+
+        if declared != original_backup_set:
+            raise ValueError(
+                "Full backup manifest "
+                "does not match its table payload."
+            )
+
     pool = get_pool()
     results: dict[str, int] = {}
 
@@ -1050,100 +1379,91 @@ async def import_tables(
             current_tables
         )
 
-        backup_set = set(
-            tables
+        missing_backup_tables = sorted(
+            original_backup_set - current_set
         )
-
-        unknown = sorted(
-            backup_set - current_set
-        )
-
-        if unknown:
-            raise ValueError(
-                "Backup contains table(s) "
-                "that do not exist in the current "
-                "database: "
-                + ", ".join(unknown)
-            )
-
-        if (
-            backup_type == "sync"
-            and int(
-                payload.get(
-                    "backup_format_version"
-                )
-                or 1
-            ) >= BACKUP_FORMAT_VERSION
-        ):
-            declared = set(
-                payload.get(
-                    "schema_tables"
-                )
-                or []
-            )
-
-            if declared != backup_set:
-                raise ValueError(
-                    "Full backup manifest "
-                    "does not match its table payload."
-                )
 
         protected = set(
             PROTECTED_MERGE_KEYS
         )
 
-        if backup_type == "sync":
-            # A full /sync backup is authoritative for every normal application
-            # table, including any table that was added after the backup was made.
-            # Such current-only tables therefore become empty when absent from the
-            # backup, while protected identity tables remain intact.
-            clear_set = (
-                current_set - protected
-            )
-
-        else:
-            # /cleardata backups are intentionally partial. Keep all tables that
-            # the partial backup never represented, preserving the old scope.
-            clear_set = (
-                backup_set - protected
-            )
-
-        # Restore order must cover everything we intend to clear and everything
-        # we intend to restore. Metadata is read before writes so the transaction
-        # never has to discover schema midway through the transaction.
-        ordered_clear = await _foreign_key_order(
-            conn,
-            list(clear_set),
-        )
-
-        ordered_restore = await _foreign_key_order(
-            conn,
-            list(
-                backup_set - protected
-            ),
-        )
-
-        metadata: dict[
-            str,
-            dict[str, dict],
-        ] = {}
-
-        for table in sorted(
-            set(clear_set) | backup_set
-        ):
-            metadata[table] = (
-                await _table_column_metadata(
+        async with conn.transaction():
+            created_backup_only = (
+                await _ensure_backup_only_tables(
                     conn,
-                    table,
+                    {
+                        table: tables[table]
+                        for table in missing_backup_tables
+                    },
+                    current_set,
                 )
             )
 
-        async with conn.transaction():
-            # Delete every authoritative non-protected table. We intentionally
-            # keep users and known chat targets untouched so their live identity
-            # records survive a restore. Individual TRUNCATE statements avoid the
-            # PostgreSQL-specific multi-table RESTART IDENTITY syntax that
-            # CockroachDB rejects.
+            # Missing tables with no rows cannot be reconstructed from the
+            # current JSON format. Do not abort all other restored data.
+            still_missing = sorted(
+                original_backup_set - current_set
+            )
+
+            for table in still_missing:
+                results[table] = 0
+
+            if still_missing:
+                print(
+                    "[backup_repo] Skipping schema-less "
+                    "backup-only table(s): "
+                    + ", ".join(
+                        still_missing
+                    )
+                )
+
+            restorable_backup_set = (
+                original_backup_set
+                - set(still_missing)
+            )
+
+            if backup_type == "sync":
+                clear_set = (
+                    current_set - protected
+                )
+            else:
+                clear_set = (
+                    restorable_backup_set
+                    - protected
+                )
+
+            ordered_clear = await _foreign_key_order(
+                conn,
+                list(clear_set),
+            )
+
+            ordered_restore = await _foreign_key_order(
+                conn,
+                list(
+                    restorable_backup_set
+                    - protected
+                ),
+            )
+
+            metadata: dict[
+                str,
+                dict[str, dict],
+            ] = {}
+
+            for table in sorted(
+                set(clear_set)
+                | restorable_backup_set
+            ):
+                metadata[table] = (
+                    await _table_column_metadata(
+                        conn,
+                        table,
+                    )
+                )
+
+            # Individual TRUNCATE statements keep the CockroachDB-compatible
+            # recovery behaviour. Do not use PostgreSQL's multi-table
+            # `RESTART IDENTITY` syntax here.
             for table in reversed(
                 ordered_clear
             ):
@@ -1151,13 +1471,13 @@ async def import_tables(
                     f'TRUNCATE TABLE "{table}" CASCADE;'
                 )
 
-            # Merge live identity registries first. Existing current rows win;
-            # backup-only users/groups are appended without duplication.
+            # Existing live identity records win. Backup-only users/groups
+            # are inserted without overwriting live values.
             for (
                 table,
                 key_column,
             ) in PROTECTED_MERGE_KEYS.items():
-                if table in tables:
+                if table in restorable_backup_set:
                     results[table] = (
                         await _restore_or_merge_rows(
                             conn,
@@ -1169,20 +1489,17 @@ async def import_tables(
                         )
                     )
 
-            # Restore every non-protected table from the backup exactly. A full
-            # sync can intentionally leave current-only tables empty when they did
-            # not exist in the older backup, because the backup is authoritative.
             for table in ordered_restore:
-                results[table] = await _restore_rows(
-                    conn,
-                    table,
-                    tables.get(table)
-                    or [],
-                    metadata[table],
+                results[table] = (
+                    await _restore_rows(
+                        conn,
+                        table,
+                        tables.get(table)
+                        or [],
+                        metadata[table],
+                    )
                 )
 
-            # Reset sequence-backed IDs for every table whose live rows were
-            # replaced, plus every non-protected table restored from the backup.
             sequence_tables = list(
                 dict.fromkeys(
                     ordered_clear
@@ -1200,6 +1517,15 @@ async def import_tables(
                     conn,
                     sequence_tables,
                     sequence_metadata,
+                )
+
+            if created_backup_only:
+                print(
+                    "[backup_repo] Reconstructed "
+                    "backup-only table(s): "
+                    + ", ".join(
+                        created_backup_only
+                    )
                 )
 
     print(
