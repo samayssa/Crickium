@@ -170,7 +170,14 @@ def _slot_from_player(player: dict[str, Any]) -> BatterSlot:
     )
 
 
-def apply_impact_replacement(session: Any, team_id: int, out_id: int, in_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def apply_impact_replacement(
+    session: Any,
+    team_id: int,
+    out_id: int,
+    in_id: int,
+    *,
+    enforce_live_bowler_role: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     team_id = int(team_id)
     out_id = int(out_id)
     in_id = int(in_id)
@@ -182,7 +189,7 @@ def apply_impact_replacement(session: Any, team_id: int, out_id: int, in_id: int
         raise ValueError("Impact Player replacement could not be resolved.")
     if any(int(p.get("player_id") or 0) == in_id for p in xi):
         raise ValueError("Selected Impact Player is already in the Playing XI.")
-    if team_id == int(session.bowling_team_id) and session.current_bowler is not None:
+    if enforce_live_bowler_role and team_id == int(session.bowling_team_id) and session.current_bowler is not None:
         if int(session.current_bowler.get("player_id") or 0) == out_id:
             eligible_bowler_ids = {int(p.get("player_id") or 0) for p in bowling_candidates(xi)} | {in_id}
             if in_id not in eligible_bowler_ids:
