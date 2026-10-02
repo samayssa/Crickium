@@ -570,12 +570,14 @@ async def _start_impact_flow(session, innings_1_snapshot: dict[str, Any]) -> Non
         await _continue_after_impact_break(session)
         return
 
-    # From the innings break onward, each participant gets a separate Impact
-    # message. Only the team batting in innings two receives a batting-position
-    # step after confirming its replacement.
-    for uid in all_users:
-        markup = None if ensure_impact_state(session, uid).get('used') else _impact_markup(
-            session, team_id=uid, context='innings_break'
+    # From the innings break onward, each participant who still has an
+    # unused Impact Player gets a separate Impact message. Teams that already
+    # used their Impact Player in innings one are skipped completely.
+    for uid in unused:
+        markup = _impact_markup(
+            session,
+            team_id=uid,
+            context='innings_break',
         )
         sent = await _safe_send(
             session.chat_id,
@@ -839,8 +841,21 @@ async def on_playipl_impact_confirm_in(callback_query):
         )
         return
 
+    context = st.get('context') or 'runtime'
+
     try:
-        out_player, in_player = apply_impact_replacement(session, owner, int(st['out_id']), int(st['in_id']))
+        # At the first-innings break there is no active bowling contest anymore.
+        # The previous innings' last bowler must not restrict the incoming
+        # player's role because this replacement is also preparing the batting
+        # XI for innings two. During live runtime, preserve the existing
+        # current-bowler safety rule.
+        out_player, in_player = apply_impact_replacement(
+            session,
+            owner,
+            int(st['out_id']),
+            int(st['in_id']),
+            enforce_live_bowler_role=(context != 'innings_break'),
+        )
     except Exception as exc:
         await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True)
         return
@@ -855,10 +870,11 @@ async def on_playipl_impact_confirm_in(callback_query):
     # batting-order selector. Runtime uses the same rule: batting-side now, or
     # bowling-side only during innings one because it bats next.
     if context == 'innings_break':
-        # Batting-position eligibility is based on the incoming player's role.
-        # This works for both participants regardless of which side bats/bowls
-        # in the next innings. Bowlers confirm directly.
-        if impact_batting_position_allowed(session, owner):
+        # At the innings break, only the team that will BAT in innings two may
+        # receive the batting-position selector. The other team is the bowling
+        # side for innings two and confirms its Impact Player directly.
+        will_bat_second = owner == int(session.bowling_team_id)
+        if will_bat_second and impact_batting_position_allowed(session, owner):
             st['stage'] = 'batpos'
             st['context'] = 'innings_break'
             positions = future_batting_candidates(session, owner)
