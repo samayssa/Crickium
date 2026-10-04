@@ -27,6 +27,8 @@ class BatterSlot:
     dismissal_text: str | None = None
     confidence: float = 0.0
     boundary_streak: int = 0
+    fours: int = 0
+    sixes: int = 0
 
 @dataclass(slots=True)
 class InningsState:
@@ -159,6 +161,10 @@ def register_ball(
             striker_before.balls += 1
         if normalized in {"single", "double", "triple", "four", "six"}:
             striker_before.runs += int(runs or 0)
+            if normalized == "four":
+                striker_before.fours += 1
+            elif normalized == "six":
+                striker_before.sixes += 1
         elif normalized == "bye" or normalized == "leg_bye":
             striker_before.runs += 0
         if wicket:

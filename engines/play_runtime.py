@@ -61,6 +61,8 @@ class PlaySession:
     partnership_runs: int = 0
     partnership_balls: int = 0
     innings_history: list[dict[str, Any]] = field(default_factory=list)
+    quest_over_history: list[dict[str, Any]] = field(default_factory=list)
+    quest_current_over: dict[str, Any] = field(default_factory=dict)
     high_run_overs: int = 0
     very_high_run_overs: int = 0
     free_hit_next_ball: bool = False
@@ -559,6 +561,11 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
         session.partnership_balls += 1
     session.partnership_runs += int(outcome.runs or 0)
     _update_bowler_stats(session, outcome)
+    try:
+        from services.quest_engine import record_live_ball
+        record_live_ball(session, outcome)
+    except Exception as exc:
+        print(f"[quest] live-ball hook unavailable: {exc!r}")
 
     # Milestones are informational and asynchronous. A Telegram failure must
     # never interrupt scoring or the active game simulation.
@@ -636,7 +643,7 @@ def snapshot_innings(session: PlaySession) -> dict[str, Any]:
     before the session gets reset/flipped for the next innings."""
     score = session.innings.score
     batters = [
-        {"player_id": b.player_id, "name": b.name, "runs": int(b.runs or 0), "balls": int(b.balls or 0), "dismissed": bool(b.dismissed)}
+        {"player_id": b.player_id, "name": b.name, "runs": int(b.runs or 0), "balls": int(b.balls or 0), "fours": int(getattr(b, "fours", 0) or 0), "sixes": int(getattr(b, "sixes", 0) or 0), "dismissed": bool(b.dismissed)}
         for b in session.innings.batting_order
     ]
     bowlers = [
@@ -653,6 +660,7 @@ def snapshot_innings(session: PlaySession) -> dict[str, Any]:
         "runs": int(score.runs or 0),
         "wickets": int(score.wickets or 0),
         "legal_balls": int(score.legal_balls or 0),
+        "target": int(session.innings.target) if session.innings.target is not None else None,
         "over_text": score.over_text,
         "batters": batters,
         "bowlers": bowlers,
@@ -711,6 +719,7 @@ def start_second_innings(session: PlaySession, target: int) -> None:
     session.this_over = []
     session.over_commentary = []
     session.last_over = []
+    session.quest_current_over = {}
     session.last_over_commentary = []
     session.bowler_stats = {}
     session.partnership_runs = 0
