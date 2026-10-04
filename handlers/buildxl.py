@@ -9,7 +9,9 @@ from engines.lineup_engine import load_squad
 from database.lineups_repo import get_lineup_ids, save_lineup_ids
 from database.squads_repo import save_team_squad
 from services.player_card import overall_rating
+from services.quest_engine import record_quest_event
 from utils.country_flags import flag_for
+from utils.overseas import count_overseas
 
 XI_SIZE = 11
 ROLE_ORDER = ("Batsman", "Wicketkeeper", "AllRounder", "Bowler")
@@ -138,6 +140,12 @@ async def buildxl_command(message):
     new_squad = _reorder_squad(squad, xi)
     await save_lineup_ids(user_id, lineup_ids)
     await save_team_squad(user_id, new_squad)
+    try:
+        await record_quest_event(user_id, "PLAYING_XI_CONFIRMED", metadata={"source": "buildxl"})
+        if count_overseas(xi) <= 4:
+            await record_quest_event(user_id, "OVERSEAS_XI_CONFIRMED", metadata={"source": "buildxl", "overseas_count": count_overseas(xi)})
+    except Exception as exc:
+        print(f"[buildxl] Quest event failed: {exc!r}")
 
     # Render after persistence so the message represents the saved state.
     bench = new_squad[XI_SIZE:]

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from handlers.registry import register
 from app import app
 from database.query import transaction
+from services.quest_engine import record_quest_event
 from database.squads_repo import get_team_squad
 from services.player_card import overall_rating
 from utils.mentions import mention_html
@@ -245,6 +246,12 @@ async def daily_command(message):
             return {"status": "success", "day": day, "player": player}
 
         result = await transaction(_tx)
+
+        if result.get("status") == "success":
+            try:
+                await record_quest_event(user_id, "DAILY_REWARD_CLAIM", metadata={"day": int(result.get("day") or 0)})
+            except Exception as exc:
+                print(f"[daily] Quest event failed: {exc!r}")
 
         if result["status"] == "cooldown":
             remaining = _remaining_text(result["next_claim_at"], now)

@@ -15,6 +15,7 @@ from utils.country_flags import flag_for
 from utils.rarity import get_rarity
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
+from services.quest_engine import record_quest_event
 
 
 def _escape(value: object | None) -> str:
@@ -143,6 +144,12 @@ async def plstats_command(message):
             await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML")
         except Exception:
             await app.send_message(chat_id, text, parse_mode="HTML")
+        try:
+            player_key = f"{int(player['player_id'])}:{int(bool(player.get('is_special')))}"
+            await record_quest_event(user_id, "STAT_VIEW", metadata={"player_id": int(player["player_id"])})
+            await record_quest_event(user_id, "CARD_VIEW", metadata={"player_key": player_key})
+        except Exception as exc:
+            print(f"[plstats] Quest event failed: {exc!r}")
         return
 
     token = uuid.uuid4().hex[:10]
@@ -209,4 +216,11 @@ async def plstats_page_callback(callback_query):
     state["page"] = current
     # Keep the same message and edit its media/caption in place.
     await _send_plstats_page(callback_query["message"]["chat"]["id"], user_id, token)
+    try:
+        viewed = players[current]
+        player_key = f"{int(viewed['player_id'])}:{int(bool(viewed.get('is_special')))}"
+        await record_quest_event(user_id, "STAT_VIEW", metadata={"player_id": int(viewed["player_id"])})
+        await record_quest_event(user_id, "CARD_VIEW", metadata={"player_key": player_key})
+    except Exception as exc:
+        print(f"[plstats] Quest page event failed: {exc!r}")
     await app.answer_callback_query(callback_query["id"], f"Page {current + 1}/{len(players)}")

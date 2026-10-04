@@ -2,9 +2,11 @@ print("changexl.py loaded")
 
 from handlers.registry import register
 from app import app
+from services.quest_engine import record_quest_event
 from engines.lineup_engine import load_squad, find_player_by_id, default_lineup_ids
 from database.lineups_repo import get_lineup_ids, save_lineup_ids
 from database.squads_repo import save_team_squad
+from utils.overseas import count_overseas
 
 XI_SIZE = 11
 
@@ -82,6 +84,14 @@ async def changexl_command(message):
             squad[outgoing_squad_idx], squad[other_squad_idx] = squad[other_squad_idx], squad[outgoing_squad_idx]
             await save_team_squad(user_id, squad)
 
+        try:
+            await record_quest_event(user_id, "PLAYING_XI_CONFIRMED", metadata={"source": "changexl"})
+            current_xi = [p for p in squad if int(p.get("player_id") or 0) in set(lineup_ids)]
+            if count_overseas(current_xi) <= 4:
+                await record_quest_event(user_id, "OVERSEAS_XI_CONFIRMED", metadata={"source": "changexl", "overseas_count": count_overseas(current_xi)})
+        except Exception as exc:
+            print(f"[changexl] Quest event failed: {exc!r}")
+
         await app.send_message(
             chat_id,
             f"*🔁 XI POSITIONS SWAPPED*\n\n"
@@ -111,6 +121,14 @@ async def changexl_command(message):
     if outgoing_squad_idx is not None and outgoing_squad_idx != target - 1:
         squad[outgoing_squad_idx], squad[target - 1] = squad[target - 1], squad[outgoing_squad_idx]
         await save_team_squad(user_id, squad)
+
+    try:
+        await record_quest_event(user_id, "PLAYING_XI_CONFIRMED", metadata={"source": "changexl"})
+        current_xi = [p for p in squad if int(p.get("player_id") or 0) in set(lineup_ids)]
+        if count_overseas(current_xi) <= 4:
+            await record_quest_event(user_id, "OVERSEAS_XI_CONFIRMED", metadata={"source": "changexl", "overseas_count": count_overseas(current_xi)})
+    except Exception as exc:
+        print(f"[changexl] Quest event failed: {exc!r}")
 
     incoming_name = incoming_player.get("name") or "Unknown"
     outgoing_ovr = max(int((outgoing_player or {}).get("bat_level") or 0), int((outgoing_player or {}).get("bowl_level") or 0))

@@ -19,6 +19,7 @@ from buttons.buy_buttons import buy_confirm_keyboard
 from buttons.catalog_buttons import buy_catalog_keyboard
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
+from services.quest_engine import record_quest_event
 from database.player_user_stats_repo import reset_player_user_stats
 from utils.debut_gate import has_completed_debut
 
@@ -261,6 +262,11 @@ async def on_buy_confirm(callback_query):
     else:
         await app.answer_callback_query(callback_query["id"], "Signed!")
         await _update_prompt(callback_query, _player_shop_text(player, SUCCESS_FOOTER), NO_KEYBOARD)
+        try:
+            await record_quest_event(int(buyer_id_str), "PLAYER_PURCHASE", metadata={"player_id": int(player["player_id"]), "is_special": bool(player.get("is_special")), "ovr": int(ovr)})
+            await record_quest_event(int(buyer_id_str), "COIN_SPENT", value=int(buy_price), metadata={"source": "player_shop", "player_id": int(player["player_id"])})
+        except Exception as exc:
+            print(f"[buy] Quest event failed: {exc!r}")
 
 
 @register_callback("buy_decline")

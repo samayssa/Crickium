@@ -12,6 +12,7 @@ from pyrogram.errors import ChatWriteForbidden
 
 from handlers.registry import register, register_callback
 from app import app
+from services.quest_engine import record_quest_event
 from database.query import execute, fetch, fetchrow, transaction
 from database.claims_repo import get_claim
 from database.squads_repo import get_team_squad
@@ -783,6 +784,18 @@ async def claim_command(message):
         int(claim["claim_id"]),
         delay,
     )
+
+    try:
+        await record_quest_event(
+            int(user_id),
+            "CLAIM_SUCCESS",
+            metadata={
+                "claim_id": int(claim["claim_id"]),
+                "player_id": int(player["player_id"]),
+            },
+        )
+    except Exception as exc:
+        print(f"[claim] Quest claim event failed: {exc!r}")
 
     print(
         f"[claim] user_id={user_id} "

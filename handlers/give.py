@@ -5,6 +5,7 @@ print("give.py loaded")
 from database.query import execute, fetchrow, transaction
 from handlers.registry import register
 from app import app
+from services.quest_engine import record_quest_event
 from utils.mentions import mention
 
 

@@ -16,6 +16,7 @@ from utils.rarity import get_rarity
 from utils.price_chart import get_price, format_price
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
+from services.quest_engine import record_quest_event
 from buttons.catalog_buttons import catalog_page_keyboard
 
 _PLAYER_PAGE_STATE: dict[str, dict] = {}
@@ -126,6 +127,11 @@ async def player_command(message):
 
     if len(players) == 1:
         await _send_player_card(chat_id, int(user_id), players[0])
+        try:
+            player_key = f"{int(players[0]['player_id'])}:{int(bool(players[0].get('is_special')))}"
+            await record_quest_event(int(user_id), "CARD_VIEW", metadata={"player_key": player_key})
+        except Exception as exc:
+            print(f"[player] Quest card-view event failed: {exc!r}")
         return
 
     token = uuid.uuid4().hex[:10]
@@ -189,4 +195,9 @@ async def player_page_callback(callback_query):
                 await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=keyboard)
         except Exception:
             await _send_player_card(chat_id, user_id, player, keyboard)
+    try:
+        player_key = f"{int(player['player_id'])}:{int(bool(player.get('is_special')))}"
+        await record_quest_event(user_id, "CARD_VIEW", metadata={"player_key": player_key})
+    except Exception as exc:
+        print(f"[player] Quest page card-view event failed: {exc!r}")
     await app.answer_callback_query(callback_query["id"], f"Page {current + 1}/{len(players)}")

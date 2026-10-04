@@ -10,6 +10,7 @@ from database.query import execute, fetchrow, transaction
 from handlers.registry import register, register_callback
 from buttons.cshop_buttons import exchange_confirm_keyboard
 from utils.coin_exchange import COIN_EXCHANGE_CHART, coins_for_rubies, format_exchange_chart
+from services.quest_engine import record_quest_event
 
 REQUEST_TTL_SECONDS = 300
 NO_KEYBOARD = {"inline_keyboard": []}
@@ -215,7 +216,8 @@ async def cshop_confirm_callback(callback_query):
             """
             UPDATE users
             SET rubies = rubies - $1,
-                balance = balance + $2
+                balance = balance + $2,
+                total_rubies_spent = COALESCE(total_rubies_spent,0) + $1
             WHERE user_id = $3
               AND COALESCE(rubies, 0) >= $1
             RETURNING rubies, balance;
@@ -277,6 +279,10 @@ async def cshop_confirm_callback(callback_query):
     rubies = int(request["rubies"])
     coins = int(request["coins"])
     await app.answer_callback_query(callback_query["id"], "✅ Exchange complete!")
+    try:
+        await record_quest_event(user_id, "RUBY_SPENT", value=int(rubies), metadata={"source": "coin_exchange"})
+    except Exception as exc:
+        print(f"[cshop] Quest event failed: {exc!r}")
     await _edit_prompt(
         callback_query,
         _status_message(

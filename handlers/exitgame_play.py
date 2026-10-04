@@ -4,6 +4,7 @@ print("exitgame_play.py loaded")
 
 from handlers.registry import register, register_callback
 from app import app
+from services.quest_engine import record_quest_event
 from database.query import execute
 from database.play_repo import get_active_match_in_chat, get_match, update_status
 from database.playint_repo import get_active_match_in_chat as get_playint_match_in_chat, get_match as get_playint_match, update_status as update_playint_status
@@ -124,9 +125,13 @@ async def on_play_exit_yes(callback_query):
 
     try:
         await execute(
-            "UPDATE users SET balance = balance - $1 WHERE user_id = $2;",
+            "UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;",
             EXIT_PENALTY, presser["id"],
         )
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
     except Exception as exc:
         print(f"[exitgame_play] Failed to apply coin penalty to user_id={presser['id']}: {exc!r}")
 
@@ -192,7 +197,11 @@ async def on_playint_exit_yes(callback_query):
         return
     await app.answer_callback_query(callback_query["id"], "Exiting the game...")
     try:
-        await execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
     except Exception as exc:
         print(f"[exitgame_play] PlayInt penalty failed: {exc!r}")
     playint_session = get_playint_session(match_id)
@@ -280,7 +289,11 @@ async def on_playipl_exit_yes(callback_query):
 
     await app.answer_callback_query(callback_query["id"], "Exiting the game...")
     try:
-        await execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
     except Exception as exc:
         print(f"[exitgame_play] PlayIPL penalty failed: {exc!r}")
 
@@ -355,7 +368,11 @@ async def on_playso_exit_yes(callback_query):
 
     await app.answer_callback_query(callback_query["id"], "Exiting the Super Over...")
     try:
-        await execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
     except Exception as exc:
         print(f"[exitgame_play] PlaySO penalty failed: {exc!r}")
 

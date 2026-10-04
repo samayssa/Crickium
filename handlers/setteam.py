@@ -6,6 +6,7 @@ from app import app
 from database.team_identity_repo import set_team_name
 from database.user_stats_repo import ensure_franchise_name
 from handlers.registry import register
+from services.quest_engine import record_quest_event
 
 MAX_TEAM_NAME_LENGTH = 64
 
@@ -40,3 +41,7 @@ async def setteam_command(message):
         f"🎽 <b>Team ➤</b> {html.escape(team_name)}",
         parse_mode="HTML",
     )
+    try:
+        await record_quest_event(user_id, "TEAM_UPDATE", metadata={"source": "setteam"})
+    except Exception as exc:
+        print(f"[setteam] Quest event failed: {exc!r}")

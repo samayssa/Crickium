@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 from app import app
+from services.quest_engine import record_quest_event
 from handlers.registry import register, register_callback
 from database.query import fetchrow
 from database.squads_repo import get_team_squad
@@ -373,6 +374,10 @@ async def on_ubuy_confirm(callback_query):
         text = f"<b>✅ UPGRADE PURCHASED</b>\n\n<blockquote expandable><b>{_esc(row['name'])} • Tier {tier}\n💎 -{upgrade_price(tier):,} Rubies</b></blockquote>"
         await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
         await app.answer_callback_query(callback_query["id"], "Upgrade purchased successfully.")
+        try:
+            await record_quest_event(uid, "RUBY_SPENT", value=int(upgrade_price(tier)), metadata={"source": "upgrade_purchase", "upgrade_key": row["upgrade_key"]})
+        except Exception as exc:
+            print(f"[upgrades] Quest ruby event failed: {exc!r}")
     elif result == "insufficient":
         await app.answer_callback_query(callback_query["id"], f"You need {upgrade_price(tier):,} Rubies.", show_alert=True)
     elif result == "already_owned":
@@ -504,6 +509,10 @@ async def on_ulevel_confirm(callback_query):
         text = "<b>✅ UPGRADE LEVEL UP SUCCESSFUL</b>\n\n<blockquote expandable><b>" + "\n".join(details) + f"\n💎 -{int(state['price']):,} Rubies</b></blockquote>"
         await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
         await app.answer_callback_query(callback_query["id"], "Upgrade level increased.")
+        try:
+            await record_quest_event(uid, "RUBY_SPENT", value=int(state["price"]), metadata={"source": "upgrade_levelup", "upgrade_key": state["upgrade_key"]})
+        except Exception as exc:
+            print(f"[upgrades] Quest ruby level-up event failed: {exc!r}")
     elif result == "insufficient":
         await app.answer_callback_query(callback_query["id"], f"You need {int(state['price']):,} Rubies.", show_alert=True)
     elif result == "max_tier":
@@ -649,6 +658,11 @@ async def on_equip_confirm(callback_query):
         text = f"<b>✅ UPGRADE EQUIPPED</b>\n\n<blockquote expandable><b>🏏 {_esc(player.get('name'))}\n⚡ {_esc(u.name)} • Tier {int(actual_tier)}\n📈 {_esc(u.description)}\n\n{_esc(u.detail)}</b></blockquote>\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
         await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
         await app.answer_callback_query(callback_query["id"], "Upgrade equipped.")
+        try:
+            await record_quest_event(uid, "UPGRADE_APPLIED", metadata={"upgrade_key": state["upgrade_key"], "player_id": int(player.get("player_id") or 0)})
+            await record_quest_event(uid, "LOADOUT_CHANGED", metadata={"player_id": int(player.get("player_id") or 0), "slot": state["slot"]})
+        except Exception as exc:
+            print(f"[upgrades] Quest equip event failed: {exc!r}")
     elif result == "slot_occupied":
         await app.answer_callback_query(callback_query["id"], "That upgrade slot is already occupied. Unequip it first.", show_alert=True)
     else:
@@ -763,6 +777,10 @@ async def on_unequip_confirm(callback_query):
         text = f"<b>✅ UPGRADE UNEQUIPPED</b>\n\n<blockquote expandable><b>🏏 {_esc(player.get('name'))}\n⚡ {state['upgrade_name']}\n\nThe upgrade is no longer active. Your ownership is unchanged.</b></blockquote>\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
         await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], text, parse_mode="HTML", reply_markup=NO_KEYBOARD)
         await app.answer_callback_query(callback_query["id"], "Upgrade unequipped.")
+        try:
+            await record_quest_event(uid, "LOADOUT_CHANGED", metadata={"player_id": int(player.get("player_id") or 0), "slot": state.get("slot")})
+        except Exception as exc:
+            print(f"[upgrades] Quest unequip event failed: {exc!r}")
     else:
         await app.answer_callback_query(callback_query["id"], "This upgrade is already unequipped.", show_alert=True)
 
