@@ -137,3 +137,92 @@ def milestone_emoji_html(category: str, fallback: str) -> str:
     if custom_id:
         return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
     return fallback
+
+# ---------------------------------------------------------------------------
+# Crickium Quest + Pack currency/UX slots
+# ---------------------------------------------------------------------------
+# Keep every value None until a real Telegram custom-emoji ID is supplied.
+# Helpers below always return the Unicode fallback while a slot is None.
+DAILY_QUEST_EMOJI_ID: str | None = None
+WEEKLY_QUEST_EMOJI_ID: str | None = None
+MONTHLY_QUEST_EMOJI_ID: str | None = None
+DONE_QUEST_EMOJI_ID: str | None = None
+SIGIL_EMOJI_ID: str | None = None
+COINS_EMOJI_ID: str | None = None
+RUBIES_EMOJI_ID: str | None = None
+
+QUEST_PERIOD_FALLBACKS: dict[str, str] = {
+    "daily": "📅",
+    "weekly": "🗓️",
+    "monthly": "🌙",
+}
+
+CURRENCY_FALLBACKS: dict[str, str] = {
+    "sigils": "✨",
+    "coins": "🪙",
+    "rubies": "💎",
+}
+
+
+def custom_emoji_html(custom_id: str | None, fallback: str) -> str:
+    if custom_id:
+        return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
+    return fallback
+
+
+def quest_period_emoji_html(period_type: str) -> str:
+    period = str(period_type or "").lower()
+    custom_id = {
+        "daily": DAILY_QUEST_EMOJI_ID,
+        "weekly": WEEKLY_QUEST_EMOJI_ID,
+        "monthly": MONTHLY_QUEST_EMOJI_ID,
+    }.get(period)
+    return custom_emoji_html(custom_id, QUEST_PERIOD_FALLBACKS.get(period, "🏏"))
+
+
+def done_quest_emoji_html() -> str:
+    return custom_emoji_html(DONE_QUEST_EMOJI_ID, "✅")
+
+
+def sigil_emoji_html() -> str:
+    return custom_emoji_html(SIGIL_EMOJI_ID, CURRENCY_FALLBACKS["sigils"])
+
+
+def coins_emoji_html() -> str:
+    return custom_emoji_html(COINS_EMOJI_ID, CURRENCY_FALLBACKS["coins"])
+
+
+def rubies_emoji_html() -> str:
+    return custom_emoji_html(RUBIES_EMOJI_ID, CURRENCY_FALLBACKS["rubies"])
+
+
+# Pack-specific custom emoji slots. Replace None with actual custom emoji IDs.
+PACK_EMOJI_IDS: dict[str, str | None] = {
+    "bronze": None,
+    "silver": None,
+    "gold": None,
+    "diamond": None,
+    "platinum": None,
+}
+PACK_EMOJI_FALLBACKS: dict[str, str] = {
+    "bronze": "🥉",
+    "silver": "🥈",
+    "gold": "🥇",
+    "diamond": "💠",
+    "platinum": "🏆",
+}
+
+# Telegram Pack media file_id slots. Fill these later with real Telegram
+# file_ids. None means the handler safely falls back to text-only UI.
+PACK_IMAGE_FILE_IDS: dict[str, str | None] = {
+    "bronze": None,
+    "silver": None,
+    "gold": None,
+    "diamond": None,
+    "platinum": None,
+}
+
+
+def pack_emoji_html(pack_key: str) -> str:
+    key = str(pack_key or "").strip().lower()
+    return custom_emoji_html(PACK_EMOJI_IDS.get(key), PACK_EMOJI_FALLBACKS.get(key, "📦"))
