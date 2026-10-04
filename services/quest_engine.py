@@ -1,6 +1,6 @@
 """Crickium Quest runtime: periods, per-user assignment, verification and rewards.
 
-The supplied 300-task PDF is the task-definition source of truth. This module
+The packaged quest_catalog.csv is the task-definition source of truth. This module
 keeps the runtime state in PostgreSQL so restart/redeploy never rerolls a
 user's active tasks and never depends on an in-process timer for boundaries.
 """
@@ -296,75 +296,30 @@ def _first_int(text: str) -> int | None:
 
 
 def _events_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
-    counts = defaultdict(int)
-    sums = defaultdict(int)
-    unique: dict[str, set[str]] = defaultdict(set)
-    purchase_level_counts = defaultdict(int)
-    loadout_keys: set[str] = set()
-    dates_by_type: dict[str, set[str]] = defaultdict(set)
+    """Build lightweight event aggregates used by event-backed Quest metrics."""
+    counts: defaultdict[str, int] = defaultdict(int)
+    sums: defaultdict[str, int] = defaultdict(int)
+    dates_by_type: defaultdict[str, set[str]] = defaultdict(set)
+    return_meta: list[dict[str, Any]] = []
     for ev in events:
-        et = str(ev.get("event_type") or "")
+        et = str(ev.get("event_type") or "").upper()
         val = int(ev.get("value_int") or 0)
         counts[et] += 1
         sums[et] += val
         meta = _json(ev.get("metadata"), {})
         if not isinstance(meta, dict):
             meta = {}
-        for key in ("player_key", "match_key", "loadout_key", "week_key"):
-            if meta.get(key) is not None:
-                unique[f"{et}:{key}"].add(str(meta[key]))
-        if meta.get("loadout_key"):
-            loadout_keys.add(str(meta["loadout_key"]))
         if meta.get("event_date"):
             dates_by_type[et].add(str(meta["event_date"]))
-        if et == "PLAYER_PURCHASE":
-            ovr = int(meta.get("ovr") or 0)
-            for level in (70, 75, 80, 85):
-                if ovr >= level:
-                    purchase_level_counts[level] += 1
+        return_meta.append({"type": et, "value": val, "metadata": meta})
     return {
-        "counts": counts, "sums": sums, "unique": unique,
-        "purchase_level_counts": purchase_level_counts,
-        "loadout_keys": loadout_keys, "dates_by_type": dates_by_type,
+        "counts": counts,
+        "sums": sums,
+        "dates_by_type": dates_by_type,
+        "rows": return_meta,
     }
 
 
-
-def record_live_ball(session: Any, outcome: Any) -> None:
-    """Update the in-memory over ledger used by Quest phase/dot/boundary tasks."""
-    try:
-        score_balls = int(session.innings.score.legal_balls or 0)
-        over_number = ((score_balls - 1) // 6) + 1 if score_balls > 0 else 1
-        current = dict(getattr(session, "quest_current_over", {}) or {})
-        if not current:
-            current = {
-                "innings_number": int(session.innings.innings_number or 1),
-                "over_number": over_number,
-                "phase": _phase_for_over(over_number),
-                "batting_team_id": int(session.batting_team_id or 0),
-                "bowling_team_id": int(session.bowling_team_id or 0),
-                "runs": 0, "wickets": 0, "dots": 0, "fours": 0, "sixes": 0, "balls": 0,
-                "completed": False,
-            }
-        current["runs"] = int(current.get("runs") or 0) + int(getattr(outcome, "runs", 0) or 0)
-        current["wickets"] = int(current.get("wickets") or 0) + (1 if bool(getattr(outcome, "wicket", False)) else 0)
-        name = str(getattr(outcome, "outcome", "") or "").lower()
-        if name == "dot": current["dots"] = int(current.get("dots") or 0) + 1
-        if name == "four": current["fours"] = int(current.get("fours") or 0) + 1
-        if name == "six": current["sixes"] = int(current.get("sixes") or 0) + 1
-        if bool(getattr(outcome, "legal", False)):
-            current["balls"] = int(current.get("balls") or 0) + 1
-        current["legal_balls_after"] = score_balls
-        if bool(getattr(outcome, "legal", False)) and score_balls > 0 and score_balls % 6 == 0:
-            current["completed"] = True
-            history = list(getattr(session, "quest_over_history", []) or [])
-            history.append(dict(current))
-            session.quest_over_history = history
-            session.quest_current_over = {}
-        else:
-            session.quest_current_over = current
-    except Exception as exc:
-        print(f"[quest] live-ball ledger update failed: {exc!r}")
 
 def _phase_for_over(over_number: int) -> str:
     if over_number <= 6:
@@ -375,113 +330,453 @@ def _phase_for_over(over_number: int) -> str:
 
 
 def _match_metrics(summaries: list[dict[str, Any]]) -> dict[str, Any]:
-    m = {
-        "runs_total": 0, "runs_chase": 0, "runs_defense": 0,
-        "fours_total": 0, "sixes_total": 0, "chase_sixes": 0, "defense_sixes": 0,
-        "wickets_total": 0, "wickets_chase": 0, "wickets_defense": 0,
-        "dots_total": 0, "matches_total": len(summaries),
-        "wins_total": 0, "chase_wins": 0, "defense_wins": 0,
-        "chase_fifty_wins": 0, "chase_century_wins": 0,
-        "late_chase_wins": 0, "comeback_chase_wins": 0, "comeback_defense_wins": 0,
-        "phase_runs": defaultdict(int), "phase_wickets": defaultdict(int),
-        "phase_dots": defaultdict(int), "phase_boundaries": defaultdict(int),
-        "phase_over_runs": defaultdict(list),
-        "player_runs": defaultdict(int), "chase_player_runs": defaultdict(int),
-        "defense_player_runs": defaultdict(int),
-        "single_match_player_runs_max": 0, "single_match_player_sixes_max": 0,
-        "single_match_player_wickets_max": 0,
-        "centuries": 0, "fifties": 0, "defense_fifties": 0, "defense_centuries": 0,
-        "mode_matches": defaultdict(int), "mode_wins": defaultdict(int),
+    """Build reusable match aggregates without encoding Quest IDs."""
+    m: dict[str, Any] = {
         "summary_rows": summaries,
+        "runs_total": 0,
+        "wins_total": 0,
+        "matches_total": len(summaries),
+        "mode_matches": defaultdict(int),
+        "mode_wins": defaultdict(int),
     }
-    for s in summaries:
-        batting = _json(s.get("batting"), []) or []
-        bowling = _json(s.get("bowling"), []) or []
-        overs = _json(s.get("over_history"), []) or []
-        runs = int(s.get("batting_runs") or 0)
-        wickets = int(s.get("bowling_wickets") or 0)
-        m["runs_total"] += runs
-        m["wickets_total"] += wickets
-        chasing = bool(s.get("chasing"))
-        defending = bool(s.get("defending"))
-        if chasing:
-            m["runs_chase"] += runs
-        if defending:
-            m["runs_defense"] += runs
-        if chasing:
-            m["wickets_chase"] += wickets
-        if defending:
-            m["wickets_defense"] += wickets
-        if bool(s.get("won")):
+    for summary in summaries:
+        m["runs_total"] += int(summary.get("batting_runs") or 0)
+        if bool(summary.get("won")):
             m["wins_total"] += 1
-            if chasing: m["chase_wins"] += 1
-            if defending: m["defense_wins"] += 1
-            if bool(s.get("late_chase")): m["late_chase_wins"] += 1
-            if bool(s.get("comeback_chase")): m["comeback_chase_wins"] += 1
-            if bool(s.get("comeback_defense")): m["comeback_defense_wins"] += 1
-        if bool(s.get("chasing")) and bool(s.get("won")):
-            if any(int(b.get("runs") or 0) >= 100 for b in batting):
-                m["chase_century_wins"] += 1
-            if any(int(b.get("runs") or 0) >= 50 for b in batting):
-                m["chase_fifty_wins"] += 1
-        mode = str(s.get("match_type") or s.get("engine") or "play").lower()
-        m["mode_matches"][mode] += 1
-        if bool(s.get("won")): m["mode_wins"][mode] += 1
-        for b in batting:
-            pid = str(b.get("player_id") or "")
-            if not pid: continue
-            br = int(b.get("runs") or 0)
-            m["player_runs"][pid] += br
-            if chasing: m["chase_player_runs"][pid] += br
-            if defending: m["defense_player_runs"][pid] += br
-            m["single_match_player_runs_max"] = max(m["single_match_player_runs_max"], br)
-            m["single_match_player_sixes_max"] = max(m["single_match_player_sixes_max"], int(b.get("sixes") or 0))
-            m["fours_total"] += int(b.get("fours") or 0)
-            m["sixes_total"] += int(b.get("sixes") or 0)
-            if chasing:
-                m["chase_sixes"] += int(b.get("sixes") or 0)
-            if defending:
-                m["defense_sixes"] += int(b.get("sixes") or 0)
-            if br >= 100: m["centuries"] += 1
-            if 50 <= br < 100: m["fifties"] += 1
-            if defending and 50 <= br < 100: m["defense_fifties"] += 1
-            if defending and br >= 100: m["defense_centuries"] += 1
-        for b in bowling:
-            m["single_match_player_wickets_max"] = max(m["single_match_player_wickets_max"], int(b.get("wickets") or 0))
-        for ov in overs:
-            ovno = int(ov.get("over_number") or 0)
-            phase = str(ov.get("phase") or _phase_for_over(ovno))
-            relevant_bat = int(ov.get("batting_team_id") or 0) == int(s.get("user_id") or 0)
-            relevant_bowl = int(ov.get("bowling_team_id") or 0) == int(s.get("user_id") or 0)
-            if relevant_bat:
-                m["phase_runs"][phase] += int(ov.get("runs") or 0)
-                m["phase_dots"][phase] += int(ov.get("dots") or 0)
-                m["phase_boundaries"][phase] += int(ov.get("fours") or 0) + int(ov.get("sixes") or 0)
-            if relevant_bowl:
-                m["phase_wickets"][phase] += int(ov.get("wickets") or 0)
-                m["phase_dots"][f"bowl_{phase}"] += int(ov.get("dots") or 0)
-                m["phase_over_runs"][phase].append(int(ov.get("runs") or 0))
-            # Dots are bowling actions for the dot-ball quests. Boundaries are
-            # already calculated from the batting snapshots above.
-            if relevant_bowl:
-                m["dots_total"] += int(ov.get("dots") or 0)
+        mode = str(summary.get("match_type") or summary.get("engine") or "").upper()
+        if mode:
+            m["mode_matches"][mode] += 1
+            if bool(summary.get("won")):
+                m["mode_wins"][mode] += 1
     return m
 
 
-def _consecutive_days(dates: set[str], minimum: int) -> bool:
+def _task_qualifiers(task: dict[str, Any]) -> dict[str, Any]:
+    obj = task.get("qualifiers_obj")
+    if isinstance(obj, dict):
+        return obj
+    raw = str(task.get("qualifiers") or "none").strip()
+    if not raw or raw.lower() == "none":
+        return {}
+    out: dict[str, Any] = {}
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if not key:
+            continue
+        try:
+            out[key] = float(value) if "." in value else int(value)
+        except ValueError:
+            out[key] = value
+    return out
+
+
+def _filter_summaries(summaries: list[dict[str, Any]], qualifiers: dict[str, Any]) -> list[dict[str, Any]]:
+    mode = str(qualifiers.get("mode") or "").upper().strip()
+    pitch = str(qualifiers.get("pitch") or "").lower().strip()
+    side = str(qualifiers.get("side") or "").lower().strip()
+    result = str(qualifiers.get("result") or "").lower().strip()
+    out: list[dict[str, Any]] = []
+    for summary in summaries:
+        if mode and str(summary.get("match_type") or summary.get("engine") or "").upper() != mode:
+            continue
+        if pitch and str(summary.get("pitch") or "").lower() != pitch:
+            continue
+        if side == "chasing" and not bool(summary.get("chasing")):
+            continue
+        if side == "defending" and not bool(summary.get("defending")):
+            continue
+        if result == "won" and not bool(summary.get("won")):
+            continue
+        out.append(summary)
+    return out
+
+
+def _batters(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = _json(summary.get("batting"), []) or []
+    return [dict(x) for x in rows if isinstance(x, dict)]
+
+
+def _bowlers(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = _json(summary.get("bowling"), []) or []
+    return [dict(x) for x in rows if isinstance(x, dict)]
+
+
+def _overs(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = _json(summary.get("over_history"), []) or []
+    return [dict(x) for x in rows if isinstance(x, dict)]
+
+
+def _event_rows(events: list[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:
+    wanted = str(event_type).upper()
+    rows: list[dict[str, Any]] = []
+    for ev in events:
+        et = str(ev.get("event_type") or "").upper()
+        if et != wanted:
+            continue
+        meta = _json(ev.get("metadata"), {})
+        if not isinstance(meta, dict):
+            meta = {}
+        rows.append({"value": int(ev.get("value_int") or 0), "metadata": meta, "occurred_at": ev.get("occurred_at")})
+    return rows
+
+
+def _completion_rows_for_period(completions: list[dict[str, Any]], start: datetime, end: datetime) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in completions:
+        when = row.get("completed_at")
+        if when is None:
+            continue
+        if getattr(when, "tzinfo", None) is None:
+            when = when.replace(tzinfo=start.tzinfo)
+        if start <= when < end:
+            out.append(row)
+    return out
+
+
+def _task_days_from_completions(completions: list[dict[str, Any]], start: datetime, end: datetime, period_type: str | None = None) -> dict[str, set[str]]:
+    by_date: dict[str, set[str]] = defaultdict(set)
+    for row in _completion_rows_for_period(completions, start, end):
+        if period_type and str(row.get("period_type")) != period_type:
+            continue
+        when = row.get("completed_at")
+        local = when.astimezone() if getattr(when, "tzinfo", None) else when
+        by_date[local.strftime("%Y-%m-%d")].add(str(row.get("task_id")))
+    return by_date
+
+
+def _longest_streak(dates: set[str]) -> int:
     if not dates:
-        return False
+        return 0
     parsed = sorted({datetime.fromisoformat(d).date() for d in dates if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)})
     if not parsed:
-        return False
-    run = 1
+        return 0
+    best = run = 1
     for prev, cur in zip(parsed, parsed[1:]):
         if (cur - prev).days == 1:
             run += 1
-            if run >= minimum: return True
+            best = max(best, run)
         else:
             run = 1
-    return run >= minimum
+    return best
+
+
+def _event_sum(events: list[dict[str, Any]], event_type: str, source: str | None = None) -> int:
+    total = 0
+    for row in _event_rows(events, event_type):
+        if source is not None and str(row["metadata"].get("source") or "") != source:
+            continue
+        total += int(row["value"])
+    return total
+
+
+def _count_event(events: list[dict[str, Any]], event_type: str, predicate=None) -> int:
+    count = 0
+    for row in _event_rows(events, event_type):
+        if predicate is None or predicate(row):
+            count += 1
+    return count
+
+
+def _distinct_event_metadata(events: list[dict[str, Any]], event_type: str, key: str, predicate=None) -> set[str]:
+    values: set[str] = set()
+    for row in _event_rows(events, event_type):
+        if predicate is not None and not predicate(row):
+            continue
+        value = row["metadata"].get(key)
+        if value is not None and str(value) != "":
+            values.add(str(value))
+    return values
+
+
+def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, Any], completions: list[dict[str, Any]]) -> bool:
+    """Evaluate a task from catalog metadata rather than numeric task IDs."""
+    metric = str(task.get("metric") or "").strip()
+    target = int(task.get("target") or 0)
+    q = _task_qualifiers(task)
+    events = metrics["raw_events"]
+    summaries_all = metrics["raw_summaries"]
+    summaries = _filter_summaries(summaries_all, q)
+    user_id = int(metrics["user_id"])
+    period_start = metrics["period_start"]
+    period_end = metrics["period_end"]
+
+    # Match/team volume metrics.
+    if metric == "team_runs":
+        if q.get("min_matches") is not None and len(summaries) < int(q["min_matches"]): return False
+        return sum(int(s.get("batting_runs") or 0) for s in summaries) >= target
+    if metric == "team_runs_max":
+        return max([int(s.get("batting_runs") or 0) for s in summaries] or [0]) >= target
+    if metric == "team_score_count":
+        score_min = int(q.get("score_min") or 0)
+        return sum(1 for s in summaries if int(s.get("batting_runs") or 0) >= score_min) >= target
+    if metric == "avg_team_runs":
+        min_matches = int(q.get("min_matches") or 0)
+        if len(summaries) < min_matches or not summaries: return False
+        return (sum(int(s.get("batting_runs") or 0) for s in summaries) / len(summaries)) >= float(target)
+    if metric == "matches_played":
+        return len(summaries) >= target
+    if metric == "wins":
+        return sum(1 for s in summaries if bool(s.get("won"))) >= target
+    if metric == "win_streak":
+        return _longest_win_streak(summaries) >= target
+    if metric == "win_rate":
+        min_matches = int(q.get("min_matches") or 0)
+        if len(summaries) < min_matches or not summaries: return False
+        wins = sum(1 for s in summaries if bool(s.get("won")))
+        return (wins * 100.0 / len(summaries)) >= float(target)
+    if metric == "balanced_wins":
+        chase = int(q.get("chase") or 0)
+        defend = int(q.get("defend") or 0)
+        return (
+            sum(1 for s in summaries_all if bool(s.get("won")) and bool(s.get("chasing"))) >= chase
+            and sum(1 for s in summaries_all if bool(s.get("won")) and bool(s.get("defending"))) >= defend
+        )
+    if metric == "mode_wins_min":
+        per_mode = int(q.get("per_mode") or target or 1)
+        wanted = ("PLAY", "PLAYIPL", "PLAYINT")
+        return all(sum(1 for s in summaries_all if str(s.get("match_type") or "").upper() == mode and bool(s.get("won"))) >= per_mode for mode in wanted)
+    if metric == "distinct_modes_played":
+        return len({str(s.get("match_type") or "").upper() for s in summaries if str(s.get("match_type") or "")}) >= target
+    if metric == "distinct_modes_won":
+        return len({str(s.get("match_type") or "").upper() for s in summaries if bool(s.get("won"))}) >= target
+    if metric == "distinct_pitch_played":
+        return len({str(s.get("pitch") or "").lower() for s in summaries if str(s.get("pitch") or "")}) >= target
+    if metric == "distinct_pitch_wins":
+        return len({str(s.get("pitch") or "").lower() for s in summaries if bool(s.get("won")) and str(s.get("pitch") or "")}) >= target
+
+    # Batting metrics.
+    all_batting = [(s, b) for s in summaries for b in _batters(s)]
+    if metric == "player_runs_match":
+        return max([int(b.get("runs") or 0) for _, b in all_batting] or [0]) >= target
+    if metric == "player_runs_total":
+        totals: defaultdict[str, int] = defaultdict(int)
+        for _, b in all_batting:
+            pid = str(b.get("player_id") or "")
+            if pid: totals[pid] += int(b.get("runs") or 0)
+        return max(list(totals.values()) or [0]) >= target
+    if metric == "player_sixes_match":
+        return max([int(b.get("sixes") or 0) for _, b in all_batting] or [0]) >= target
+    if metric == "player_sixes_total":
+        totals: defaultdict[str, int] = defaultdict(int)
+        for _, b in all_batting:
+            pid = str(b.get("player_id") or "")
+            if pid: totals[pid] += int(b.get("sixes") or 0)
+        return max(list(totals.values()) or [0]) >= target
+    if metric == "player_boundaries_match":
+        return max([int(b.get("fours") or 0) + int(b.get("sixes") or 0) for _, b in all_batting] or [0]) >= target
+    if metric == "team_fours":
+        return sum(int(b.get("fours") or 0) for _, b in all_batting) >= target
+    if metric == "team_sixes":
+        return sum(int(b.get("sixes") or 0) for _, b in all_batting) >= target
+    if metric == "team_boundaries":
+        return sum(int(b.get("fours") or 0) + int(b.get("sixes") or 0) for _, b in all_batting) >= target
+    if metric == "fifty_plus_count":
+        return sum(1 for _, b in all_batting if int(b.get("runs") or 0) >= 50) >= target
+    if metric == "hundred_count":
+        return sum(1 for _, b in all_batting if int(b.get("runs") or 0) >= 100) >= target
+    if metric == "notout_innings_count":
+        min_runs = int(q.get("min_runs") or 0)
+        return sum(1 for _, b in all_batting if int(b.get("runs") or 0) >= min_runs and not bool(b.get("dismissed"))) >= target
+    if metric == "fast_innings_count":
+        min_runs = int(q.get("min_runs") or 0)
+        max_balls = int(q.get("balls") or 0)
+        return sum(1 for _, b in all_batting if int(b.get("runs") or 0) >= min_runs and 0 < int(b.get("balls") or 0) <= max_balls) >= target
+    if metric == "sr_innings_count":
+        min_runs = int(q.get("min_runs") or 0)
+        sr = float(q.get("sr") or 0)
+        return sum(1 for _, b in all_batting if int(b.get("runs") or 0) >= min_runs and int(b.get("balls") or 0) > 0 and (int(b.get("runs") or 0) * 100.0 / int(b.get("balls"))) >= sr) >= target
+    if metric == "multi_fifty_match":
+        n = int(q.get("n") or 2)
+        return sum(1 for s in summaries if sum(1 for b in _batters(s) if int(b.get("runs") or 0) >= 50) >= n) >= target
+    if metric == "depth_match":
+        min_runs = int(q.get("min_runs") or 0)
+        batters = int(q.get("batters") or 0)
+        return sum(1 for s in summaries if sum(1 for b in _batters(s) if int(b.get("runs") or 0) >= min_runs) >= batters) >= target
+    if metric == "distinct_fifty_players":
+        ids = {str(b.get("player_id")) for _, b in all_batting if b.get("player_id") is not None and int(b.get("runs") or 0) >= 50}
+        return len(ids) >= target
+
+    # Bowling metrics.
+    all_bowling = [(s, b) for s in summaries for b in _bowlers(s)]
+    if metric == "team_wickets":
+        return sum(int(s.get("bowling_wickets") or 0) for s in summaries) >= target
+    if metric == "bowler_wickets_match":
+        return max([int(b.get("wickets") or 0) for _, b in all_bowling] or [0]) >= target
+    if metric == "bowler_wickets_total":
+        totals: defaultdict[str, int] = defaultdict(int)
+        for _, b in all_bowling:
+            pid = str(b.get("player_id") or "")
+            if pid: totals[pid] += int(b.get("wickets") or 0)
+        return max(list(totals.values()) or [0]) >= target
+    if metric == "haul_count":
+        min_w = int(q.get("w") or 0)
+        return sum(1 for _, b in all_bowling if int(b.get("wickets") or 0) >= min_w) >= target
+    if metric == "econ_spell_count":
+        min_balls = int(q.get("min_balls") or 0)
+        econ_limit = float(q.get("econ") or 99)
+        min_wickets = int(q.get("w") or 0)
+        count = 0
+        for _, b in all_bowling:
+            balls = int(b.get("balls") or 0)
+            runs = int(b.get("runs") or 0)
+            wickets = int(b.get("wickets") or 0)
+            if balls >= min_balls and balls > 0 and runs * 6.0 / balls <= econ_limit and wickets >= min_wickets:
+                count += 1
+        return count >= target
+    if metric == "bowled_out_count":
+        return sum(1 for s in summaries if int(s.get("bowling_wickets") or 0) >= 10) >= target
+
+    # Over/phase metrics use the user-owned side in each summary.
+    relevant_overs: list[dict[str, Any]] = []
+    for summary in summaries:
+        for ov in _overs(summary):
+            if int(ov.get("batting_team_id") or 0) == user_id or int(ov.get("bowling_team_id") or 0) == user_id:
+                relevant_overs.append(ov)
+    if metric == "dots_bowled":
+        phase = str(q.get("phase") or "").lower()
+        return sum(int(ov.get("dots") or 0) for ov in relevant_overs if int(ov.get("bowling_team_id") or 0) == user_id and (not phase or str(ov.get("phase") or _phase_for_over(int(ov.get("over_number") or 0))).lower() == phase)) >= target
+    if metric == "maiden_overs":
+        return sum(1 for ov in relevant_overs if int(ov.get("bowling_team_id") or 0) == user_id and int(ov.get("balls") or 0) == 6 and int(ov.get("runs") or 0) == 0) >= target
+    if metric == "wicket_overs":
+        w = int(q.get("w") or 0)
+        return sum(1 for ov in relevant_overs if int(ov.get("bowling_team_id") or 0) == user_id and int(ov.get("wickets") or 0) >= w) >= target
+    if metric == "big_overs":
+        minimum = int(q.get("min_over_runs") or 0)
+        return sum(1 for ov in relevant_overs if int(ov.get("batting_team_id") or 0) == user_id and int(ov.get("balls") or 0) == 6 and int(ov.get("runs") or 0) >= minimum) >= target
+    if metric == "phase_runs":
+        phase = str(q.get("phase") or "").lower()
+        return sum(int(ov.get("runs") or 0) for ov in relevant_overs if int(ov.get("batting_team_id") or 0) == user_id and str(ov.get("phase") or _phase_for_over(int(ov.get("over_number") or 0))).lower() == phase) >= target
+    if metric == "phase_wickets":
+        phase = str(q.get("phase") or "").lower()
+        return sum(int(ov.get("wickets") or 0) for ov in relevant_overs if int(ov.get("bowling_team_id") or 0) == user_id and str(ov.get("phase") or _phase_for_over(int(ov.get("over_number") or 0))).lower() == phase) >= target
+    if metric == "phase_boundaries":
+        phase = str(q.get("phase") or "").lower()
+        return sum(int(ov.get("fours") or 0) + int(ov.get("sixes") or 0) for ov in relevant_overs if int(ov.get("batting_team_id") or 0) == user_id and str(ov.get("phase") or _phase_for_over(int(ov.get("over_number") or 0))).lower() == phase) >= target
+    if metric == "phase_tight_overs":
+        phase = str(q.get("phase") or "").lower()
+        limit = int(q.get("max_over_runs") or 0)
+        return sum(1 for ov in relevant_overs if int(ov.get("bowling_team_id") or 0) == user_id and int(ov.get("balls") or 0) == 6 and int(ov.get("runs") or 0) <= limit and str(ov.get("phase") or _phase_for_over(int(ov.get("over_number") or 0))).lower() == phase) >= target
+    if metric == "phase_innings_count":
+        phase = str(q.get("phase") or "").lower()
+        phase_min = int(q.get("phase_min") or 0)
+        count = 0
+        for summary in summaries:
+            total = sum(int(ov.get("runs") or 0) for ov in _overs(summary) if int(ov.get("batting_team_id") or 0) == user_id and str(ov.get("phase") or _phase_for_over(int(ov.get("over_number") or 0))).lower() == phase)
+            if total >= phase_min: count += 1
+        return count >= target
+
+    # Chasing/defending and result-context metrics.
+    if metric == "late_chase_wins":
+        return sum(1 for s in summaries if bool(s.get("chasing")) and bool(s.get("won")) and bool(s.get("late_chase"))) >= target
+    if metric == "chase_target_wins":
+        target_min = int(q.get("target_min") or 0)
+        return sum(1 for s in summaries if bool(s.get("chasing")) and bool(s.get("won")) and int(s.get("target") or 0) >= target_min) >= target
+    if metric == "chase_wins_low_wkts":
+        max_wkts = int(q.get("max_wkts_lost") or 0)
+        return sum(1 for s in summaries if bool(s.get("chasing")) and bool(s.get("won")) and sum(1 for b in _batters(s) if bool(b.get("dismissed"))) <= max_wkts) >= target
+    if metric == "defend_total_wins":
+        score_min = int(q.get("score_min") or 0)
+        return sum(1 for s in summaries if bool(s.get("defending")) and bool(s.get("won")) and int(s.get("batting_runs") or 0) >= score_min) >= target
+    if metric == "wins_low_conceded":
+        max_conceded = int(q.get("max_conceded") or 0)
+        return sum(1 for s in summaries if bool(s.get("won")) and sum(int(b.get("runs") or 0) for b in _bowlers(s)) <= max_conceded) >= target
+    if metric == "complete_win":
+        return sum(1 for s in summaries if bool(s.get("won")) and any(int(b.get("runs") or 0) >= 50 for b in _batters(s)) and any(int(b.get("wickets") or 0) >= 3 for b in _bowlers(s))) >= target
+    if metric == "allround_match":
+        min_runs = int(q.get("runs") or 0)
+        min_w = int(q.get("w") or 0)
+        qualifying = 0
+        for s in summaries:
+            bats = {str(b.get("player_id")): int(b.get("runs") or 0) for b in _batters(s) if b.get("player_id") is not None}
+            bowls = {str(b.get("player_id")): int(b.get("wickets") or 0) for b in _bowlers(s) if b.get("player_id") is not None}
+            if any(bats.get(pid, 0) >= min_runs and bowls.get(pid, 0) >= min_w for pid in set(bats) & set(bowls)):
+                qualifying += 1
+        return qualifying >= target
+    if metric == "wins" and q.get("side"):
+        # Kept for clarity; side filtering already reduced the summary set.
+        return sum(1 for s in summaries if bool(s.get("won"))) >= target
+
+    # Event-backed progression/economy metrics.
+    if metric == "purchase_ovr_count":
+        minimum = int(q.get("ovr_min") or 0)
+        return _count_event(events, "PLAYER_PURCHASE", lambda r: int(r["metadata"].get("ovr") or 0) >= minimum) >= target
+    if metric == "purchase_special_count":
+        return _count_event(events, "PLAYER_PURCHASE", lambda r: bool(r["metadata"].get("is_special"))) >= target
+    if metric == "shop_coins_spent":
+        return _event_sum(events, "COIN_SPENT", "player_shop") >= target
+    if metric == "upgrade_rubies_spent":
+        return sum(r["value"] for r in _event_rows(events, "RUBY_SPENT") if str(r["metadata"].get("source") or "") in {"upgrade_purchase", "upgrade_levelup"}) >= target
+    if metric == "upgrade_levelups":
+        return _count_event(events, "RUBY_SPENT", lambda r: str(r["metadata"].get("source") or "") == "upgrade_levelup") >= target
+    if metric == "upgrades_equipped":
+        return _count_event(events, "UPGRADE_APPLIED") >= target
+    if metric == "distinct_players_upgraded":
+        return len(_distinct_event_metadata(events, "UPGRADE_APPLIED", "player_id")) >= target
+    if metric == "distinct_upgrades_equipped":
+        return len(_distinct_event_metadata(events, "UPGRADE_APPLIED", "upgrade_key")) >= target
+    if metric == "claim_count":
+        return _count_event(events, "CLAIM_SUCCESS") >= target
+    if metric == "claim_days":
+        return len({str(r["metadata"].get("event_date")) for r in _event_rows(events, "CLAIM_SUCCESS") if r["metadata"].get("event_date")}) >= target
+    if metric == "daily_reward_streak":
+        dates = {str(r["metadata"].get("event_date")) for r in _event_rows(events, "DAILY_REWARD_CLAIM") if r["metadata"].get("event_date")}
+        return _longest_streak(dates) >= target
+    if metric == "packs_opened":
+        pack_key = q.get("pack_key")
+        return _count_event(events, "PACK_OPENED", lambda r: pack_key is None or str(r["metadata"].get("pack_key") or "") == str(pack_key)) >= target
+    if metric == "packs_purchased":
+        pack_key = q.get("pack_key")
+        return _count_event(events, "PACK_PURCHASED", lambda r: pack_key is None or str(r["metadata"].get("pack_key") or "") == str(pack_key)) >= target
+    if metric == "distinct_packs_opened":
+        return len(_distinct_event_metadata(events, "PACK_OPENED", "pack_key")) >= target
+    if metric == "xi_confirmed":
+        return _count_event(events, "PLAYING_XI_CONFIRMED") >= target
+    if metric == "overseas_xi":
+        required = int(q.get("overseas_count") or 0)
+        return _count_event(events, "OVERSEAS_XI_CONFIRMED", lambda r: int(r["metadata"].get("overseas_count") or 0) == required) >= target
+
+    # Quest-on-quest metrics are constrained to this task's current period window.
+    current_completions = _completion_rows_for_period(completions, period_start, period_end)
+    if metric == "daily_quests_done":
+        return sum(1 for r in current_completions if str(r.get("period_type")) == "daily") >= target
+    if metric == "weekly_quests_done":
+        return sum(1 for r in current_completions if str(r.get("period_type")) == "weekly") >= target
+    if metric == "daily_quest_streak":
+        by_date = _task_days_from_completions(current_completions, period_start, period_end, "daily")
+        return _longest_streak(set(by_date.keys())) >= target
+    if metric == "daily_full_clear_days":
+        by_date = _task_days_from_completions(current_completions, period_start, period_end, "daily")
+        return sum(1 for ids in by_date.values() if len(ids) >= 5) >= target
+
+    # The catalog is validated against known metrics before deployment. Returning
+    # False is safer than accidentally granting a task whose evaluator is unknown.
+    return False
+
+
+def _longest_win_streak(summaries: list[dict[str, Any]]) -> int:
+    best = run = 0
+    ordered = sorted(
+        summaries,
+        key=lambda row: (
+            row.get("played_at").timestamp()
+            if getattr(row.get("played_at"), "timestamp", None)
+            else 0.0
+        ),
+    )
+    for summary in ordered:
+        if bool(summary.get("won")):
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return best
+
+
+def _consecutive_days(dates: set[str], minimum: int) -> bool:
+    return _longest_streak(dates) >= minimum
 
 
 def _daily_quest_day_set(completions: list[dict[str, Any]], *, daily_only: bool = True) -> dict[str, set[str]]:
@@ -490,324 +785,43 @@ def _daily_quest_day_set(completions: list[dict[str, Any]], *, daily_only: bool 
         if daily_only and str(row.get("period_type")) != "daily":
             continue
         when = row.get("completed_at")
-        date = when.astimezone().strftime("%Y-%m-%d") if getattr(when, "tzinfo", None) else when.strftime("%Y-%m-%d")
-        by_date[date].add(str(row.get("task_id")))
+        if when is None:
+            continue
+        local = when.astimezone() if getattr(when, "tzinfo", None) else when
+        by_date[local.strftime("%Y-%m-%d")].add(str(row.get("task_id")))
     return by_date
 
 
 async def _load_current_metrics(user_id: int, period_type: str) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     period = await ensure_current_period(period_type)
     start = period["start_at"]
+    end = period["end_at"]
     pkey = str(period["period_key"])
     events = [dict(r) for r in await fetch(
-        "SELECT * FROM quest_events WHERE user_id=$1 AND occurred_at >= $2 ORDER BY occurred_at;",
-        int(user_id), start,
+        "SELECT * FROM quest_events WHERE user_id=$1 AND occurred_at >= $2 AND occurred_at < $3 ORDER BY occurred_at;",
+        int(user_id), start, end,
     )]
     summaries = [dict(r) for r in await fetch(
-        "SELECT * FROM quest_match_summaries WHERE user_id=$1 AND played_at >= $2 ORDER BY played_at;",
-        int(user_id), start,
+        "SELECT * FROM quest_match_summaries WHERE user_id=$1 AND played_at >= $2 AND played_at < $3 ORDER BY played_at;",
+        int(user_id), start, end,
     )]
     completions = [dict(r) for r in await fetch(
-        "SELECT * FROM quest_completions WHERE user_id=$1 ORDER BY completed_at DESC LIMIT 5000;",
+        "SELECT * FROM quest_completions WHERE user_id=$1 ORDER BY completed_at DESC LIMIT 10000;",
         int(user_id),
     )]
     event_metrics = _events_metrics(events)
     match_metrics = _match_metrics(summaries)
     match_metrics["user_id"] = int(user_id)
-    return period, events, summaries, completions, {"events": event_metrics, "matches": match_metrics, "period_key": pkey}
-
-
-def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, Any], completions: list[dict[str, Any]]) -> bool:
-    tid = str(task["id"])
-    n = int(tid[1:])
-    em = metrics["events"]
-    mm = metrics["matches"]
-    c = em["counts"]
-    s = em["sums"]
-    ul = em["unique"]
-    levels = em["purchase_level_counts"]
-
-    # Finish/completion tasks are evaluated from completion records.
-    period_rows = [r for r in completions if r.get("period_type") == period_type and str(r.get("period_key")) == str(metrics["period_key"])]
-    completed_ids = {str(r.get("task_id")) for r in period_rows}
-
-    if period_type == "daily":
-        if n <= 10:
-            threshold = _first_int(task["description"]) or 0
-            if n == 8: return mm["runs_total"] >= threshold and mm["matches_total"] >= 3
-            return mm["runs_total"] >= threshold
-        if 11 <= n <= 20:
-            threshold = _first_int(task["description"]) or 0
-            if n in (16,17,18): return max(mm["chase_player_runs"].values() or [0]) >= threshold
-            if n == 19: return max([int(x) for x in mm["defense_player_runs"].values()] or [0]) >= threshold
-            if n == 20: return max([int(x) for x in mm["defense_player_runs"].values()] or [0]) >= threshold
-            if n in (11,12,13,14,15): return mm["single_match_player_runs_max"] >= threshold
-        if 21 <= n <= 30:
-            threshold = _first_int(task["description"]) or 0
-            if n in (27,28): return max(mm["chase_player_runs"].values() or [0]) >= threshold
-            if n in (29,30): return max(mm["defense_player_runs"].values() or [0]) >= threshold
-            return max(mm["player_runs"].values() or [0]) >= threshold
-        if 31 <= n <= 40:
-            threshold = _first_int(task["description"]) or 0
-            if 31 <= n <= 33: return mm["fours_total"] >= threshold
-            if n in (37,38): return mm["single_match_player_sixes_max"] >= threshold
-            if n == 39: return mm["chase_sixes"] >= threshold
-            if n == 40: return mm["defense_sixes"] >= threshold
-            return mm["sixes_total"] >= threshold
-        if 41 <= n <= 50:
-            threshold = _first_int(task["description"]) or 0
-            if n in (46,47): return mm["single_match_player_wickets_max"] >= threshold
-            if n == 48: return mm["phase_wickets"]["powerplay"] >= threshold
-            if n == 49: return mm["phase_wickets"]["middle"] >= threshold
-            if n == 50: return mm["phase_wickets"]["death"] >= threshold
-            return mm["wickets_total"] >= threshold
-        if 51 <= n <= 60:
-            threshold = _first_int(task["description"]) or 0
-            if n <= 53: return mm["dots_total"] >= threshold
-            if n in (54,55,56):
-                phase = {54:"powerplay",55:"middle",56:"death"}[n]
-                limit = {54:6,55:6,56:8}[n]
-                return any(v <= limit for v in mm["phase_over_runs"][phase])
-            phase = {57:"powerplay",58:"middle",59:"death",60:"death"}[n]
-            return mm["phase_runs"][phase] >= threshold
-        if 61 <= n <= 74:
-            if n in (61,62,63): return mm["chase_wins"] >= (1 if n==61 else 2 if n==62 else 3)
-            if n == 64: return mm["late_chase_wins"] >= 1
-            if n == 65: return mm["runs_chase"] >= 100
-            if n == 66: return mm["chase_fifty_wins"] >= 1
-            if n == 67: return mm["chase_century_wins"] >= 1
-            if n in (68,69,70): return mm["defense_wins"] >= (1 if n==68 else 2 if n==69 else 3)
-            if n == 71: return mm["wickets_defense"] >= 3 and mm["defense_wins"] >= 1
-            if n == 72: return mm["wickets_defense"] >= 5
-            if n == 73: return mm["comeback_chase_wins"] >= 1
-            if n == 74: return mm["comeback_defense_wins"] >= 1
-        if 75 <= n <= 80:
-            if n == 75: return mm["mode_matches"]["play"] >= 2
-            if n == 76: return mm["mode_matches"]["playipl"] >= 1
-            if n == 77: return mm["mode_wins"]["playipl"] >= 1
-            if n == 78: return mm["mode_matches"]["playint"] >= 1
-            if n == 79: return mm["mode_wins"]["playint"] >= 1
-            if n == 80: return mm["matches_total"] >= 5
-        if 81 <= n <= 90:
-            if n == 81: return levels[70] >= 1
-            if n == 82: return levels[75] >= 1
-            if n == 83: return levels[80] >= 1
-            if n == 84: return levels[85] >= 1
-            if n == 85: return s["COIN_SPENT"] >= 25000
-            if n == 86: return s["COIN_SPENT"] >= 50000
-            if n == 87: return s["RUBY_SPENT"] >= 5
-            if n == 88: return c["PLAYER_PURCHASE"] >= 2
-            if n == 89: return c["UPGRADE_APPLIED"] >= 2
-            if n == 90: return c["LOADOUT_CHANGED"] >= 2
-        if 91 <= n <= 100:
-            if n == 91: return c["CLAIM_SUCCESS"] >= 5
-            if n == 92: return _consecutive_days(em["dates_by_type"]["CLAIM_SUCCESS"], 5)
-            if n == 93: return _consecutive_days(em["dates_by_type"]["DAILY_REWARD_CLAIM"], 3)
-            if n == 94: return _daily_quest_streak(completions, 3)
-            if n == 95: return len(ul["CARD_VIEW:player_key"]) >= 5
-            if n == 96: return c["STAT_VIEW"] >= 5
-            if n == 97: return c["AUCTION_JOINED"] >= 2
-            if n == 98: return c["TOURNAMENT_MATCH_COMPLETED"] >= 2
-            if n == 99: return c["PLAYING_XI_CONFIRMED"] >= 2
-            if n == 100: return len(completed_ids) >= 5
-
-    elif period_type == "weekly":
-        if n <= 20:
-            if n <= 10:
-                threshold = _first_int(task["description"]) or 0
-                if n == 9: return mm["runs_total"] >= threshold and mm["matches_total"] >= 5
-                return mm["runs_total"] >= threshold
-            threshold = _first_int(task["description"]) or 0
-            if n in (16,17): return max(mm["chase_player_runs"].values() or [0]) >= threshold
-            if n == 18: return mm["centuries"] >= 1
-            if n == 19: return max(mm["defense_player_runs"].values() or [0]) >= threshold
-            if n == 20: return max(mm["defense_player_runs"].values() or [0]) >= threshold
-            return max(mm["player_runs"].values() or [0]) >= threshold
-        if 21 <= n <= 30:
-            threshold = _first_int(task["description"]) or 0
-            if n in (21,22,23): return mm["fours_total"] >= threshold
-            if n in (28,29): return mm["single_match_player_sixes_max"] >= threshold
-            if n == 30: return mm["chase_sixes"] >= threshold
-            return mm["sixes_total"] >= threshold
-        if 31 <= n <= 40:
-            threshold = _first_int(task["description"]) or 0
-            if n in (36,37): return mm["single_match_player_wickets_max"] >= threshold
-            if n in (38,39,40): return mm["phase_wickets"][{38:"powerplay",39:"middle",40:"death"}[n]] >= threshold
-            return mm["wickets_total"] >= threshold
-        if 41 <= n <= 50:
-            threshold = _first_int(task["description"]) or 0
-            if n <= 43: return mm["dots_total"] >= threshold
-            if n in (44,45,46):
-                phase={44:"powerplay",45:"middle",46:"death"}[n]
-                limit={44:7,45:7,46:9}[n]
-                runs=mm["phase_over_runs"][phase]
-                # Require three separate qualifying overs.
-                return sum(1 for v in runs if v <= limit) >= 3
-            phase={47:"powerplay",48:"middle",49:"death",50:"death"}[n]
-            return mm["phase_runs"][phase] >= threshold
-        if 51 <= n <= 64:
-            if n in (51,52,53): return mm["chase_wins"] >= {51:3,52:5,53:7}[n]
-            if n == 54: return mm["late_chase_wins"] >= 2
-            if n == 55: return mm["runs_chase"] >= 500
-            if n == 56: return mm["chase_century_wins"] >= 1
-            if n == 57: return mm["chase_fifty_wins"] >= 2
-            if n in (58,59,60): return mm["defense_wins"] >= {58:3,59:5,60:7}[n]
-            if n == 61: return mm["wickets_defense"] >= 10
-            if n == 62: return mm["single_match_player_wickets_max"] >= 5 and any(x.get("defending") for x in mm["summary_rows"])
-            if n == 63: return mm["comeback_chase_wins"] >= 2
-            if n == 64: return mm["comeback_defense_wins"] >= 2
-        if 65 <= n <= 70:
-            return {
-                65: mm["mode_matches"]["play"] >= 7,
-                66: mm["mode_matches"]["playipl"] >= 3,
-                67: mm["mode_wins"]["playipl"] >= 3,
-                68: mm["mode_matches"]["playint"] >= 3,
-                69: mm["mode_wins"]["playint"] >= 3,
-                70: mm["matches_total"] >= 12,
-            }[n]
-        if 71 <= n <= 80:
-            if n == 71: return levels[70] >= 5
-            if n == 72: return levels[75] >= 3
-            if n == 73: return levels[80] >= 2
-            if n == 74: return levels[85] >= 1
-            if n == 75: return c["PLAYER_PURCHASE"] >= 10
-            if n == 76: return s["COIN_SPENT"] >= 100000
-            if n == 77: return s["COIN_SPENT"] >= 250000
-            if n == 78: return s["RUBY_SPENT"] >= 10
-            if n == 79: return c["UPGRADE_APPLIED"] >= 8
-            if n == 80: return c["LOADOUT_CHANGED"] >= 6
-        if 81 <= n <= 84:
-            if n == 81: return c["CLAIM_SUCCESS"] >= 15
-            if n == 82: return _consecutive_days(em["dates_by_type"]["DAILY_REWARD_CLAIM"], 7)
-            if n == 83: return _consecutive_days(em["dates_by_type"]["DAILY_REWARD_CLAIM"], 7)
-            return _daily_quest_week_streak(completions, 7)
-        if 85 <= n <= 100:
-            if n == 85: return _daily_full_week_clear(completions)
-            if n == 86: return c["TOURNAMENT_MATCH_COMPLETED"] >= 5
-            if n == 87: return c["AUCTION_JOINED"] >= 5
-            if n == 88: return c["AUCTION_BID_WON"] >= 3
-            if n == 89: return len(ul["CARD_VIEW:player_key"]) >= 15
-            if n == 90: return c["STAT_VIEW"] >= 15
-            if n == 91: return c["PLAYING_XI_CONFIRMED"] >= 5
-            if n == 92: return c["OVERSEAS_XI_CONFIRMED"] >= 3
-            if n == 93: return c["TEAM_UPDATE"] >= 6
-            if n == 94: return len(em["loadout_keys"]) >= 3
-            if n == 95: return c["PACK_OPENED"] >= 5
-            if n == 96: return c["PACK_PURCHASED"] >= 5
-            if n == 97: return c["QUEST_EVENT"] >= 15
-            if n == 98: return mm["wins_total"] >= 10
-            if n == 99: return len(completed_ids) >= 5
-            if n == 100: return len(completed_ids) >= 6
-
-    else:  # monthly
-        if n <= 20:
-            if n <= 10:
-                threshold = _first_int(task["description"]) or 0
-                if n == 10: return mm["runs_total"] >= threshold and mm["matches_total"] >= 15
-                return mm["runs_total"] >= threshold
-            threshold = _first_int(task["description"]) or 0
-            if n in (16,17): return max(mm["chase_player_runs"].values() or [0]) >= threshold
-            if n == 18: return mm["centuries"] >= 3
-            if n == 19: return mm["defense_fifties"] >= 3
-            if n == 20: return mm["defense_centuries"] >= 2
-            return max(mm["player_runs"].values() or [0]) >= threshold
-        if 21 <= n <= 30:
-            threshold = _first_int(task["description"]) or 0
-            if n in (21,22,23): return mm["fours_total"] >= threshold
-            if n in (29,30): return mm["single_match_player_sixes_max"] >= threshold
-            return mm["sixes_total"] >= threshold
-        if 31 <= n <= 40:
-            threshold = _first_int(task["description"]) or 0
-            if n in (36,37): return mm["single_match_player_wickets_max"] >= threshold
-            if n in (38,39,40): return mm["phase_wickets"][{38:"powerplay",39:"middle",40:"death"}[n]] >= threshold
-            return mm["wickets_total"] >= threshold
-        if 41 <= n <= 50:
-            threshold = _first_int(task["description"]) or 0
-            if n <= 43: return mm["dots_total"] >= threshold
-            if n in (44,45,46):
-                phase={44:"powerplay",45:"middle",46:"death"}[n]
-                limit={44:7,45:7,46:9}[n]
-                return sum(1 for v in mm["phase_over_runs"][phase] if v <= limit) >= 8
-            phase={47:"powerplay",48:"middle",49:"death",50:"death"}[n]
-            return mm["phase_runs"][phase] >= threshold
-        if 51 <= n <= 64:
-            if n in (51,52,53): return mm["chase_wins"] >= {51:5,52:10,53:15}[n]
-            if n == 54: return mm["late_chase_wins"] >= 5
-            if n == 55: return mm["runs_chase"] >= 1000
-            if n == 56: return mm["chase_century_wins"] >= 3
-            if n == 57: return mm["chase_fifty_wins"] >= 5
-            if n in (58,59,60): return mm["defense_wins"] >= {58:5,59:10,60:15}[n]
-            if n == 61: return mm["wickets_defense"] >= 25
-            if n == 62: return mm["single_match_player_wickets_max"] >= 5 and any(x.get("defending") for x in mm["summary_rows"])
-            if n == 63: return mm["comeback_chase_wins"] >= 5
-            if n == 64: return mm["comeback_defense_wins"] >= 5
-        if 65 <= n <= 70:
-            return {
-                65: mm["mode_matches"]["play"] >= 15,
-                66: mm["mode_matches"]["playipl"] >= 10,
-                67: mm["mode_wins"]["playipl"] >= 7,
-                68: mm["mode_matches"]["playint"] >= 10,
-                69: mm["mode_wins"]["playint"] >= 7,
-                70: mm["matches_total"] >= 30,
-            }[n]
-        if 71 <= n <= 80:
-            if n == 71: return levels[70] >= 10
-            if n == 72: return levels[75] >= 5
-            if n == 73: return levels[80] >= 3
-            if n == 74: return levels[85] >= 2
-            if n == 75: return c["PLAYER_PURCHASE"] >= 20
-            if n == 76: return s["COIN_SPENT"] >= 250000
-            if n == 77: return s["COIN_SPENT"] >= 500000
-            if n == 78: return s["RUBY_SPENT"] >= 25
-            if n == 79: return c["UPGRADE_APPLIED"] >= 20
-            if n == 80: return c["LOADOUT_CHANGED"] >= 15
-        if 81 <= n <= 86:
-            if n == 81: return c["CLAIM_SUCCESS"] >= 40
-            if n == 82: return c["CLAIM_SUCCESS"] >= 60
-            if n == 83: return _consecutive_days(em["dates_by_type"]["DAILY_REWARD_CLAIM"], 14)
-            if n == 84: return _consecutive_days(em["dates_by_type"]["DAILY_REWARD_CLAIM"], 30)
-            if n == 85: return _daily_quest_streak(completions, 30)
-            if n == 86: return _weekly_quest_four_weeks(completions)
-        if 87 <= n <= 100:
-            if n == 87: return c["AUCTION_JOINED"] >= 12
-            if n == 88: return c["AUCTION_BID_WON"] >= 8
-            if n == 89: return len(ul["CARD_VIEW:player_key"]) >= 30
-            if n == 90: return c["STAT_VIEW"] >= 30
-            if n == 91: return c["PLAYING_XI_CONFIRMED"] >= 12
-            if n == 92: return c["OVERSEAS_XI_CONFIRMED"] >= 6
-            if n == 93: return c["TEAM_UPDATE"] >= 15
-            if n == 94: return len(em["loadout_keys"]) >= 5
-            if n == 95: return c["PACK_OPENED"] >= 15
-            if n == 96: return c["PACK_PURCHASED"] >= 10
-            if n == 97: return c["QUEST_EVENT"] >= 30
-            if n == 98: return mm["wins_total"] >= 20
-            if n == 99: return len(completed_ids) >= 10
-            if n == 100: return len(completed_ids) >= 10
-    return False
-
-
-def _daily_quest_streak(completions: list[dict[str, Any]], days: int) -> bool:
-    by_date = _daily_quest_day_set(completions)
-    dates = set(by_date.keys())
-    good = {d for d, ids in by_date.items() if ids}
-    return _consecutive_days(good, days)
-
-
-def _daily_quest_week_streak(completions: list[dict[str, Any]], days: int) -> bool:
-    by_date = _daily_quest_day_set(completions)
-    # The latest run of completed daily dates must span at least 7 days.
-    return _consecutive_days(set(by_date.keys()), days)
-
-
-def _daily_full_week_clear(completions: list[dict[str, Any]]) -> bool:
-    by_date = _daily_quest_day_set(completions)
-    return sum(1 for ids in by_date.values() if len(ids) >= 5) >= 7
-
-
-def _weekly_quest_four_weeks(completions: list[dict[str, Any]]) -> bool:
-    weeks = {str(r.get("period_key")) for r in completions if str(r.get("period_type")) == "weekly"}
-    return len(weeks) >= 4
-
+    return period, events, summaries, completions, {
+        "events": event_metrics,
+        "matches": match_metrics,
+        "period_key": pkey,
+        "user_id": int(user_id),
+        "period_start": start,
+        "period_end": end,
+        "raw_events": events,
+        "raw_summaries": summaries,
+    }
 
 async def evaluate_and_complete_user(user_id: int) -> None:
     for period_type in PERIODS:
