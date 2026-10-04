@@ -206,8 +206,8 @@ async def get_or_create_assignment(user_id: int, period_type: str) -> tuple[dict
                 """
                 INSERT INTO quest_user_assignments(
                     period_type, period_key, user_id, task_ids, fingerprint,
-                    completed_task_ids, assigned_at, updated_at
-                ) VALUES($1,$2,$3,$4::jsonb,$5,'[]'::jsonb,NOW(),NOW())
+                    assigned_at, updated_at
+                ) VALUES($1,$2,$3,$4::jsonb,$5,NOW(),NOW())
                 ON CONFLICT(period_type, period_key, user_id) DO NOTHING;
                 """,
                 period_type, pkey, int(user_id), json.dumps(task_ids), fingerprint,
