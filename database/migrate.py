@@ -557,6 +557,142 @@ async def migrate():
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS rubies BIGINT DEFAULT 0;")
     print("[migrate] 'users.rubies' OK.")
 
+    print("[migrate] Ensuring Quest and Pack economy columns...")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sigils BIGINT DEFAULT 0;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_sigils_spent BIGINT DEFAULT 0;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_sigils_earned BIGINT DEFAULT 0;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_rubies_spent BIGINT DEFAULT 0;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_rubies_earned BIGINT DEFAULT 0;")
+    print("[migrate] Quest and Pack economy columns OK.")
+
+    print("[migrate] Ensuring Crickium Quest tables exist...")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS quest_periods(
+            period_type TEXT NOT NULL CHECK (period_type IN ('daily','weekly','monthly')),
+            period_key TEXT NOT NULL,
+            start_at TIMESTAMPTZ NOT NULL,
+            end_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(period_type, period_key)
+        );
+    """)
+    await execute("""
+        CREATE TABLE IF NOT EXISTS quest_user_assignments(
+            period_type TEXT NOT NULL CHECK (period_type IN ('daily','weekly','monthly')),
+            period_key TEXT NOT NULL,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            task_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            fingerprint TEXT NOT NULL,
+            assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(period_type, period_key, user_id),
+            UNIQUE(period_type, period_key, fingerprint)
+        );
+    """)
+    await execute("""
+        CREATE TABLE IF NOT EXISTS quest_completions(
+            completion_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            period_type TEXT NOT NULL,
+            period_key TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            sigils BIGINT NOT NULL DEFAULT 0,
+            coins BIGINT NOT NULL DEFAULT 0,
+            rubies BIGINT NOT NULL DEFAULT 0,
+            completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(user_id, period_type, period_key, task_id)
+        );
+    """)
+    await execute("""
+        CREATE TABLE IF NOT EXISTS quest_events(
+            event_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL,
+            value_int BIGINT NOT NULL DEFAULT 0,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+    await execute("""
+        CREATE TABLE IF NOT EXISTS quest_match_summaries(
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            engine TEXT NOT NULL,
+            match_id BIGINT NOT NULL,
+            match_type TEXT NOT NULL DEFAULT '',
+            pitch TEXT,
+            won BOOLEAN NOT NULL DEFAULT FALSE,
+            chasing BOOLEAN NOT NULL DEFAULT FALSE,
+            defending BOOLEAN NOT NULL DEFAULT FALSE,
+            late_chase BOOLEAN NOT NULL DEFAULT FALSE,
+            comeback_chase BOOLEAN NOT NULL DEFAULT FALSE,
+            comeback_defense BOOLEAN NOT NULL DEFAULT FALSE,
+            target INTEGER NOT NULL DEFAULT 0,
+            batting_runs BIGINT NOT NULL DEFAULT 0,
+            bowling_wickets BIGINT NOT NULL DEFAULT 0,
+            conceded_boundary BOOLEAN NOT NULL DEFAULT FALSE,
+            batting JSONB NOT NULL DEFAULT '{}'::jsonb,
+            bowling JSONB NOT NULL DEFAULT '{}'::jsonb,
+            over_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+            played_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(user_id, engine, match_id)
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_quest_events_user_time ON quest_events(user_id, occurred_at DESC);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_quest_events_user_type_time ON quest_events(user_id, event_type, occurred_at DESC);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_quest_completions_user_period ON quest_completions(user_id, period_type, period_key);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_quest_summaries_user_time ON quest_match_summaries(user_id, played_at DESC);")
+    print("[migrate] Crickium Quest tables OK.")
+
+    print("[migrate] Ensuring Crickium Pack tables exist...")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_inventory(
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            pack_key TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(user_id, pack_key)
+        );
+    """)
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_purchase_requests(
+            request_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            pack_key TEXT NOT NULL,
+            price_sigils BIGINT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','cancelled','failed')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processed_at TIMESTAMPTZ
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_pack_purchase_requests_user_status ON pack_purchase_requests(user_id, status, created_at DESC);")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_openings(
+            opening_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            pack_key TEXT NOT NULL,
+            cards JSONB NOT NULL DEFAULT '[]'::jsonb,
+            coins BIGINT NOT NULL DEFAULT 0,
+            rubies BIGINT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'opened',
+            opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_pack_openings_user_time ON pack_openings(user_id, opened_at DESC);")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_card_inventory(
+            card_id BIGSERIAL PRIMARY KEY,
+            opening_id UUID NOT NULL REFERENCES pack_openings(opening_id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            player_id BIGINT NOT NULL,
+            card_kind TEXT NOT NULL CHECK (card_kind IN ('core','bonus')),
+            position INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(opening_id, position)
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_pack_card_inventory_user ON pack_card_inventory(user_id, created_at DESC);")
+    print("[migrate] Crickium Pack tables OK.")
+
     print("[migrate] Ensuring table 'daily_rewards' exists...")
     await execute(
         """

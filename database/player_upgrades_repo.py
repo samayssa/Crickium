@@ -108,7 +108,7 @@ async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int)
         if exists:
             return "already_owned"
         await conn.execute(
-            "UPDATE users SET rubies = rubies - $1 WHERE user_id = $2;",
+            "UPDATE users SET rubies = rubies - $1, total_rubies_spent = COALESCE(total_rubies_spent,0) + $1 WHERE user_id = $2;",
             int(price), int(user_id),
         )
         await conn.execute(
@@ -150,7 +150,7 @@ async def level_up_upgrade(user_id: int, upgrade_id: int, price: int) -> str:
         if exists:
             return "already_owned"
         await conn.execute(
-            "UPDATE users SET rubies = rubies - $1 WHERE user_id = $2;",
+            "UPDATE users SET rubies = rubies - $1, total_rubies_spent = COALESCE(total_rubies_spent,0) + $1 WHERE user_id = $2;",
             expected_price, int(user_id),
         )
         await conn.execute(
