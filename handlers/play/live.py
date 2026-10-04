@@ -40,6 +40,7 @@ from engines.play_runtime import (
 )
 from services.search import find_stadium_image_url
 from services.match_summary import send_match_summary, player_details
+from services.quest_engine import record_match_summary_for_session
 from utils.mentions import display_name, mention_html
 from utils.stadium import random_stadium
 from utils.temperature import random_weather
@@ -864,6 +865,10 @@ async def _finish_over_and_prompt_next(session) -> None:
         await _safe_send(session.chat_id, match_result_text, parse_mode="HTML")
         await _record_player_squad_stats(session, innings_1_snapshot, innings_2_snapshot)
         await _award_match_xp_and_stats(session, innings_1_snapshot, innings_2_snapshot)
+        try:
+            await record_match_summary_for_session(session, innings_1_snapshot, innings_2_snapshot, engine="PLAY", match_type="PLAY")
+        except Exception as exc:
+            print(f"[quest] PLAY match summary failed: {exc!r}")
         match = session.match
         challenger_id = int(match.get("challenger_id") or 0)
         opponent_id = int(match.get("opponent_id") or 0)
