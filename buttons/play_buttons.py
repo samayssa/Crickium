@@ -3,6 +3,7 @@ from utils.PremiumEmoji import IMPACT_IN_EMOJI_ID, IMPACT_OUT_EMOJI_ID
 import inspect
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from services.card_identity import display_card_name
 
 # Same colored-button mechanism as buttons/claim_buttons.py,
 # buttons/buy_buttons.py and buttons/sell_buttons.py - see
@@ -102,7 +103,7 @@ def bowler_selection_keyboard(match_id, bowlers, selected_id=None, auto_enabled=
         pid = int(player.get("player_id") or 0)
         overs_left = player.get("_overs_left")
         bowling_level = int(player.get("bowl_level") or 0)
-        label = f"🥎 {player.get('name', 'Bowler')} • {bowling_level}"
+        label = f"🥎 {display_card_name(player)} • {bowling_level}"
         if overs_left is not None:
             label = f"{label} • Left {overs_left} Ov"
         if selected_id is not None and int(selected_id) == pid:
@@ -170,7 +171,7 @@ def schedule_bowler_keyboard(match_id, bowlers, selected_id=None, auto_enabled=F
         style = "success" if selected_id is not None and pid == int(selected_id) else "danger"
         rows.append([
             _styled_button(
-                f"🥎 {player.get('name','Bowler')} • {lvl} • Left {left} Ov",
+                f"🥎 {display_card_name(player)} • {lvl} • Left {left} Ov",
                 f"play_schedule_bowler:{match_id}:{pid}",
                 style,
             )
@@ -188,7 +189,7 @@ def schedule_batsman_keyboard(match_id, players, selected_ids=None, impact_enabl
     pair = []
     for player in players:
         pid = int(player.get("player_id") or 0)
-        label = f"#{int(player.get('position') or 0)} • {player.get('name','Batter')}"
+        label = f"#{int(player.get('position') or 0)} • {display_card_name(player)}"
         pair.append(_styled_button(
             label,
             f"play_schedule_batsman:{match_id}:{pid}",
@@ -212,7 +213,7 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
     icon_id = IMPACT_OUT_EMOJI_ID if stage == "out" else IMPACT_IN_EMOJI_ID
     for index, player in enumerate(players, start=1):
         pid = int(player.get("player_id") or 0)
-        name = str(player.get('name', 'Player'))
+        name = display_card_name(player)
         selected = selected_id is not None and pid == int(selected_id)
         label = f"{index}. {name}"
         # Telegram inline keyboard labels are not parsed as message HTML.
@@ -252,7 +253,7 @@ def impact_batting_position_keyboard(prefix, match_id, players, selected_positio
     pair = []
     for player in players:
         pos = int(player.get("position") or 0)
-        name = player.get('name','Batter')
+        name = display_card_name(player)
         if pos == 1:
             label = f"🏏 STRIKER • {name}"
         elif pos == 2:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from services.card_identity import display_card_name
 
 _BUTTON_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
 SUPPORTS_BUTTON_STYLE = "style" in _BUTTON_PARAMS
@@ -53,7 +54,7 @@ def _role_emoji(role: str) -> str:
 
 def _player_label(player: dict, selected: bool = False, slot: int | None = None) -> str:
     marker = f"{slot}. " if slot else ("✅ " if selected else "")
-    return f"{marker}{_role_emoji(str(player.get('role') or ''))} {player.get('name', 'Player')} • OVR {int(player.get('bat_level') or 0)} / {int(player.get('bowl_level') or 0)}"
+    return f"{marker}{_role_emoji(str(player.get('role') or ''))} {display_card_name(player)} • OVR {int(player.get('bat_level') or 0)} / {int(player.get('bowl_level') or 0)}"
 
 
 def bowler_selection_keyboard(match_id: int, players: list[dict], selected_id: int | None, locked_id: int | None) -> InlineKeyboardMarkup:
@@ -65,9 +66,9 @@ def bowler_selection_keyboard(match_id: int, players: list[dict], selected_id: i
         locked = locked_id is not None and pid == int(locked_id)
         style = "success" if (selected_id is not None and pid == int(selected_id)) else "danger"
         if locked:
-            label = f"🚫 {p.get('name', 'Player')} • OVR {int(p.get('bowl_level') or 0)}"
+            label = f"🚫 {display_card_name(p)} • OVR {int(p.get('bowl_level') or 0)}"
         else:
-            label = f"{_role_emoji(role)} {p.get('name', 'Player')} • OVR {int(p.get('bowl_level') or 0)}"
+            label = f"{_role_emoji(role)} {display_card_name(p)} • OVR {int(p.get('bowl_level') or 0)}"
             if selected_id is not None and pid == int(selected_id):
                 label = f"✅ {label}"
         rows.append([_styled(label, f"playso_bowler:{match_id}:{pid}", style)])

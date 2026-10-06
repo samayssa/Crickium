@@ -26,6 +26,13 @@ def _player_label(player: dict) -> str:
         ovr = max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
     except (TypeError, ValueError):
         ovr = 0
+    kind = str(player.get("player_kind") or "").lower()
+    if kind == "showcase" or player.get("is_showcase"):
+        version = str(player.get("showcase_name") or "Showcase")
+        return f"🏆 {name} • {version} • OVR {ovr}"
+    if kind == "special" or player.get("is_special"):
+        edition = str(player.get("edition") or "Special Edition")
+        return f"✨ {name} • {edition} • OVR {ovr}"
     return f"🏏 {name} • OVR {ovr}"
 
 

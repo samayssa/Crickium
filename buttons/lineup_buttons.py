@@ -10,6 +10,11 @@ def _chunk(items: list[dict[str, str]], size: int = 2) -> list[list[dict[str, st
 
 def _player_label(player: dict[str, Any], selected: bool = False) -> str:
     name = str(player.get("name", "Player"))
+    kind = str(player.get("player_kind") or "").lower()
+    if kind == "special" and player.get("edition"):
+        name = f"{name} ({player.get('edition')})"
+    elif kind == "showcase" and player.get("showcase_name"):
+        name = f"{name} [{player.get('showcase_name')}]"
     role = str(player.get("role", ""))
     bat = player.get("bat_level")
     bowl = player.get("bowl_level")
