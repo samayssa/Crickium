@@ -11,7 +11,7 @@ does not register any Telegram command itself.
 from __future__ import annotations
 
 from app import app
-from database.card_images_repo import get_player_card_image, get_special_player_card_image, get_card_template_image
+from database.card_images_repo import get_player_card_image, get_special_player_card_image, get_showcase_player_card_image, get_card_template_image
 from services.player_card import render_player_card
 
 
@@ -47,13 +47,15 @@ async def get_player_card_bytes(player: dict) -> tuple[bytes, bool]:
       admin-uploaded one via `/upload_img bat-card` / `/upload_img ball-card`,
       or the matching bundled default), picked by the player's role.
     """
-    player_id = player.get("player_id")
-    special_id = player.get("special_edition_id")
+    from services.card_identity import player_kind, card_entity_id
 
-    if player.get("is_special") and special_id:
-        custom = await get_special_player_card_image(int(special_id))
+    kind = player_kind(player)
+    if kind == "showcase":
+        custom = await get_showcase_player_card_image(card_entity_id(player))
+    elif kind == "special":
+        custom = await get_special_player_card_image(card_entity_id(player))
     else:
-        custom = await get_player_card_image(player_id) if player_id else None
+        custom = await get_player_card_image(card_entity_id(player)) if card_entity_id(player) else None
     if custom and custom.get("file_id"):
         image_bytes = await app.download_media(custom["file_id"])
         return image_bytes, True
