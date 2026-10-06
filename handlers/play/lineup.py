@@ -10,6 +10,7 @@ from database.play_repo import get_match, set_message_id
 from engines.lineup_engine import load_current_xi
 from utils.mentions import mention_html
 from buttons.play_buttons import start_match_keyboard
+from services.card_identity import display_card_name
 from .live import begin_match_flow
 
 NO_KEYBOARD = {"inline_keyboard": []}
@@ -25,7 +26,7 @@ _STARTING: set[int] = set()
 def _xi_block(xi: list[dict]) -> str:
     if not xi:
         return "No players in squad yet."
-    return "\n".join(f"{i + 1}. {p.get('name', 'Unknown')}" for i, p in enumerate(xi))
+    return "\n".join(f"{i + 1}. {display_card_name(p)}" for i, p in enumerate(xi))
 
 
 def _playing_xi_text(match: dict, challenger_xi: list[dict], opponent_xi: list[dict]) -> str:
