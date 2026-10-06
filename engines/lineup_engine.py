@@ -100,6 +100,11 @@ def format_player_block(player: dict[str, Any], marker: str = "") -> str:
     from utils.country_flags import flag_for
 
     name = str(player.get("name", "Player"))
+    kind = str(player.get("player_kind") or "").lower()
+    if kind == "special" and player.get("edition"):
+        name = f"{name} ({player.get('edition')})"
+    elif kind == "showcase" and player.get("showcase_name"):
+        name = f"{name} [{player.get('showcase_name')}]"
     role = str(player.get("role", ""))
     bat = int(player.get("bat_level") or 0)
     bowl = int(player.get("bowl_level") or 0)

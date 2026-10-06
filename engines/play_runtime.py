@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from services.card_identity import player_kind
 
 from engines.approaches import BallContext, BallOutcome
 from engines.innings_engine import BatterSlot, InningsState, create_innings, register_ball
@@ -151,8 +152,11 @@ def _player_kind_for_session(session: PlaySession, user_id: int, player_id: int)
         candidates = session.batting_squad + session.bowling_squad
     for player in candidates:
         if int(player.get("player_id") or 0) == int(player_id):
-            return "special" if bool(player.get("is_special")) else "global"
-    return "special" if int(player_id) < 0 else "global"
+            return player_kind(player)
+    if int(player_id) < 0:
+        from services.card_identity import is_showcase_player_id
+        return "showcase" if is_showcase_player_id(int(player_id)) else "special"
+    return "global"
 
 
 def upgrade_context_for(session: PlaySession, user_id: int, player_id: int, slot: str) -> dict[str, Any] | None:
