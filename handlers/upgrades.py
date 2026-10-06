@@ -11,7 +11,8 @@ from services.quest_engine import record_quest_event
 from handlers.registry import register, register_callback
 from database.query import fetchrow
 from database.squads_repo import get_team_squad
-from database.special_players_repo import get_special_player_by_id
+from database.special_players_repo import get_special_player_by_id, split_player_edition
+from database.showcase_players_repo import parse_showcase_image_target
 from database.players_repo import get_player
 from database.player_upgrades_repo import (
     get_upgrade, get_upgrade_by_name, get_upgrade_tiers, next_owned_tier, owned_upgrade_tier,
@@ -24,6 +25,7 @@ from buttons.upgrade_buttons import (
 )
 from utils.upgrade_prices import upgrade_price
 from services.player_upgrades import UPGRADES, UPGRADE_BY_KEY, eligible_for_player, role_key
+from services.card_identity import player_kind
 
 STATE_TTL = 300
 STATE: dict[str, dict[str, Any]] = {}
@@ -130,9 +132,32 @@ def tier_strength_text(tier: int) -> float:
 
 async def _player_from_owned_squad(user_id: int, query: str) -> tuple[dict | None, list[dict]]:
     squad = await get_team_squad(user_id) or []
-    q = " ".join((query or "").strip().lower().split())
-    if not q:
+    raw = str(query or "").strip()
+    if not raw:
         return None, squad
+
+    showcase_target = parse_showcase_image_target(raw)
+    if showcase_target:
+        base_name, showcase_name = showcase_target
+        exact_showcase = [
+            p for p in squad
+            if player_kind(dict(p)) == "showcase"
+            and str(p.get("name") or "").casefold() == base_name.casefold()
+            and str(p.get("showcase_name") or "").casefold() == showcase_name.casefold()
+        ]
+        return (dict(exact_showcase[0]), squad) if len(exact_showcase) == 1 else (None, exact_showcase)
+
+    base_name, edition = split_player_edition(raw)
+    q = " ".join(base_name.strip().lower().split())
+    if edition:
+        exact_special = [
+            p for p in squad
+            if player_kind(dict(p)) == "special"
+            and " ".join(str(p.get("name") or "").lower().split()) == q
+            and str(p.get("edition") or "").casefold() == edition.casefold()
+        ]
+        return (dict(exact_special[0]), squad) if len(exact_special) == 1 else (None, exact_special)
+
     exact = [p for p in squad if " ".join(str(p.get("name") or "").lower().split()) == q]
     if len(exact) == 1:
         return dict(exact[0]), squad
@@ -147,13 +172,16 @@ async def _player_from_owned_squad(user_id: int, query: str) -> tuple[dict | Non
 
 
 def _kind(player: dict) -> str:
-    return "special" if bool(player.get("is_special")) or int(player.get("player_id") or 0) < 0 else "global"
+    return player_kind(player)
 
 
 def _player_identity_text(player: dict) -> str:
     name = str(player.get("name") or "Player")
-    if player.get("is_special") and player.get("edition"):
+    kind = player_kind(player)
+    if kind == "special" and player.get("edition"):
         return f"{name} ✨ {_esc(player.get('edition'))}"
+    if kind == "showcase" and player.get("showcase_name"):
+        return f"{name} 🏆 {_esc(player.get('showcase_name'))}"
     return name
 
 
@@ -589,7 +617,7 @@ async def equip_command(message):
     player, matches = await _player_from_owned_squad(uid, query)
     if player is None:
         if len(matches) > 1:
-            names = "\n".join(f"<b>• {_esc(p.get('name'))}{' ✨ ' + _esc(p.get('edition')) if p.get('is_special') and p.get('edition') else ''}</b>" for p in matches[:10])
+            names = "\n".join(f"<b>• {_player_identity_text(p)}</b>" for p in matches[:10])
             await app.send_message(chat_id, f"<b>⚠️ Multiple players match:</b>\n\n{names}\n\n<b>Please use the full player name.</b>", parse_mode="HTML")
         else:
             await app.send_message(chat_id, "<b>⚠️ That player is not in your squad.</b>", parse_mode="HTML")

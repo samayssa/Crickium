@@ -19,6 +19,7 @@ from database.special_players_repo import (
     update_global_player,
     update_special_player,
 )
+from database.showcase_players_repo import get_showcase_player_by_identity, update_showcase_player, parse_showcase_image_target
 
 _KEY_MAP = {
     "n": "name",
@@ -94,7 +95,19 @@ def _normalize_value(field: str, value: str):
     return value
 
 
-async def _resolve_target(identity: str, changes: dict):
+async def _resolve_target(identity: str, changes: dict, showcase_name: str | None = None):
+    if showcase_name:
+        player = await get_showcase_player_by_identity(identity.strip(), showcase_name)
+        if not player:
+            raise ValueError(f"Showcase player {identity} [{showcase_name}] was not found in the Showcase database.")
+        return "showcase", player, changes
+    showcase_target = parse_showcase_image_target(identity)
+    if showcase_target:
+        base_name, target_showcase = showcase_target
+        player = await get_showcase_player_by_identity(base_name, target_showcase)
+        if not player:
+            raise ValueError(f"Showcase player {base_name} [{target_showcase}] was not found in the Showcase database.")
+        return "showcase", player, changes
     base_name, embedded_edition = split_player_edition(identity)
     requested_target_edition = embedded_edition
     # If no edition is embedded, `sp=` can select an existing special edition to edit.
@@ -121,6 +134,14 @@ async def _resolve_target(identity: str, changes: dict):
     if "edition" in changes:
         raise ValueError("Use [Player Name (Current Edition)] when changing a special player's edition.")
     return "global", global_player, changes
+
+
+def _showcase_scope_arg(text: str) -> str | None:
+    parts = str(text or "").strip().split(maxsplit=1)
+    if len(parts) < 2 or parts[0].lower() != "showcase":
+        return None
+    value = parts[1].strip()
+    return value or None
 
 
 def _engine_team_arg(text: str):
@@ -184,6 +205,7 @@ async def editp_command(message):
     engine_team = _engine_team_arg(text)
     if engine_team:
         return await _edit_engine_team(message, *engine_team)
+    showcase_scope = _showcase_scope_arg(text)
     reply_to = message.get("reply_to_message")
     if not reply_to or not reply_to.get("text"):
         await app.send_message(chat_id, "⚠️ Please use /editp as a reply to the player edit line(s).")
@@ -197,10 +219,15 @@ async def editp_command(message):
             errors.append(parse_error)
             continue
         try:
-            kind, player, changes = await _resolve_target(parsed["identity"], parsed["changes"])
+            kind, player, changes = await _resolve_target(parsed["identity"], parsed["changes"], showcase_scope)
             normalized = {field: _normalize_value(field, value) for field, value in changes.items()}
             old = {field: player.get(field) for field in normalized}
-            updated = await (update_special_player(player["special_edition_id"], normalized) if kind == "special" else update_global_player(player["player_id"], normalized))
+            if kind == "special":
+                updated = await update_special_player(player["special_edition_id"], normalized)
+            elif kind == "showcase":
+                updated = await update_showcase_player(player["showcase_card_id"], normalized)
+            else:
+                updated = await update_global_player(player["player_id"], normalized)
             if not updated:
                 errors.append(f"{parsed['identity']}: player disappeared before update.")
                 continue
@@ -208,8 +235,8 @@ async def editp_command(message):
             # owned copy in sync with the authoritative player record.
             snapshot = {
                 key: updated.get(key)
-                for key in ("name", "edition", "country", "role", "bat_level", "bowl_level", "batting_hand", "bowling_hand", "is_special", "special_edition_id", "player_id")
-                if key in updated
+                for key in ("name", "edition", "country", "role", "bat_level", "bowl_level", "batting_hand", "bowling_hand", "is_special", "is_showcase", "player_kind", "special_edition_id", "showcase_card_id", "showcase_set_id", "showcase_name", "set_name", "showcase_set_name", "player_id")
+                if key in updated and updated.get(key) is not None
             }
             await sync_player_snapshot(int(updated.get("player_id") or player.get("player_id") or 0), snapshot)
             success.append((parsed["identity"], kind, old, normalized))
@@ -219,7 +246,7 @@ async def editp_command(message):
     lines = [f"✅ <b>Player Edit Complete</b>", ""]
     if success:
         for identity, kind, old, new in success:
-            label = "✨ Special" if kind == "special" else "🌍 Global"
+            label = "✨ Special" if kind == "special" else ("🏆 Showcase" if kind == "showcase" else "🌍 Global")
             lines.append(f"{label} • <b>{identity}</b>")
             for field, value in new.items():
                 lines.append(f"• {field}: <code>{old.get(field)}</code> ➜ <code>{value}</code>")

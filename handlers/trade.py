@@ -13,6 +13,7 @@ from database.play_repo import get_active_match_for_user as get_play_active
 from database.playint_repo import get_active_match_for_user as get_playint_active
 from database.playipl_repo import get_active_match_for_user as get_playipl_active
 from utils.mentions import mention_html
+from services.card_identity import player_kind, card_identity_key
 from buttons.social_trade_buttons import (
     squad_player_keyboard,
     confirm_selected_player_keyboard,
@@ -29,8 +30,7 @@ DAILY_TRADE_LIMIT_ENABLED = True
 
 
 def _kind(player: dict[str, Any]) -> str:
-    special = player.get("is_special") is True or str(player.get("is_special") or "").lower() in {"1", "true", "yes"}
-    return "special" if special or int(player.get("player_id") or 0) < 0 else "global"
+    return player_kind(player)
 
 
 def _ovr(player: dict[str, Any]) -> int:
@@ -42,7 +42,13 @@ def _mention(user: dict) -> str:
 
 
 def _pname(player: dict) -> str:
-    return html.escape(str(player.get("name") or "Player"))
+    name = str(player.get("name") or "Player")
+    kind = _kind(player)
+    if kind == "special" and player.get("edition"):
+        name = f"{name} ({player.get('edition')})"
+    elif kind == "showcase" and player.get("showcase_name"):
+        name = f"{name} [{player.get('showcase_name')}]"
+    return html.escape(name)
 
 
 def _decode_callback_data(callback_query: dict) -> str:
@@ -161,10 +167,10 @@ def _complete_text(sender: dict, recipient: dict, sent: dict, received: dict) ->
         f"👤 <b>{_mention(sender)}</b>\n        ⇄\n👤 <b>{_mention(recipient)}</b></blockquote>\n\n"
         f"<b>📤 {_mention(sender)} GAVE</b>\n\n"
         f"<blockquote>🏏 <b>{_pname(sent)}</b>\n⭐ OVR : <b>{_ovr(sent)}</b>\n"
-        f"{'✨ Special Edition' if _kind(sent) == 'special' else '🏏 Standard Card'}</blockquote>\n\n"
+        f"{'✨ Special Edition' if _kind(sent) == 'special' else ('🏆 Showcase • ' + str(sent.get('showcase_name') or 'Showcase') if _kind(sent) == 'showcase' else '🏏 Standard Card')}</blockquote>\n\n"
         f"<b>📥 {_mention(sender)} RECEIVED</b>\n\n"
         f"<blockquote>🏏 <b>{_pname(received)}</b>\n⭐ OVR : <b>{_ovr(received)}</b>\n"
-        f"{'✨ Special Edition' if _kind(received) == 'special' else '🏏 Standard Card'}</blockquote>\n\n"
+        f"{'✨ Special Edition' if _kind(received) == 'special' else ('🏆 Showcase • ' + str(received.get('showcase_name') or 'Showcase') if _kind(received) == 'showcase' else '🏏 Standard Card')}</blockquote>\n\n"
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         "<blockquote>✅ <b>Status</b> ➤ Completed\n"
         "🔄 <b>Exchange</b> ➤ 1 Player ↔ 1 Player\n"

@@ -6,10 +6,11 @@ from config import ADMIN_USER_ID, PLAYER_IMAGE_CHANNEL_ID
 from database.access_repo import has_upload_access
 from database.players_repo import get_player
 from database.special_players_repo import split_player_edition, get_special_player, display_edition
-from database.card_images_repo import save_player_card_image, save_special_player_card_image, save_card_template_image
+from database.card_images_repo import save_player_card_image, save_special_player_card_image, save_showcase_player_card_image, save_card_template_image
 from database.tier_card_images_repo import save_tier_card_image
 from engines.level_engine import TIER_KEYS
 from utils.style import describe_player_styles
+from database.showcase_players_repo import get_showcase_player_by_identity, parse_showcase_image_target
 
 
 def _parse_arg(text: str) -> str | None:
@@ -22,8 +23,11 @@ def _parse_arg(text: str) -> str | None:
 
 def _player_caption(player: dict, file_id: str | None = None) -> str:
     styles = describe_player_styles(player)
+    title = "🖼 *Player Card Image*"
+    if player.get("player_kind") == "showcase" or player.get("is_showcase"):
+        title = "🏆 *Showcase Player Card Image*"
     lines = [
-        "🖼 *Player Card Image*",
+        title,
         "",
         f"*🏏 Name:* {player['name']}",
         f"*🌍 Country:* {player.get('country') or 'Unknown'}",
@@ -31,6 +35,8 @@ def _player_caption(player: dict, file_id: str | None = None) -> str:
         f"*💪 Batting Level:* {player['bat_level']}/100 ({styles['batting']})",
         f"*🎯 Bowling Level:* {player['bowl_level']}/100 ({styles['bowling']})",
     ]
+    if player.get("player_kind") == "showcase" or player.get("is_showcase"):
+        lines.insert(3, f"*🏆 Showcase:* {player.get('showcase_name') or player.get('set_name') or 'Showcase'}")
     if file_id:
         lines.append("")
         lines.append(f"*File ID:*\n`{file_id}`")
@@ -95,6 +101,7 @@ async def upload_img_command(message):
             chat_id,
             "*⚠️ Please use /upload_img as a reply to a photo.*\n\n"
             "• `/upload_img <Player Name>` - sets a custom card image for that player\n"
+            "• `/upload_img <Player Name> [Showcase Name]` - sets a custom image for a Showcase card\n"
             "• `/upload_img bat-card` - sets the default template for batsman/WK cards\n"
             "• `/upload_img ball-card` - sets the default template for bowler cards\n"
             "• `/upload_img <tier>` - sets the /profile card image for a level tier "
@@ -109,6 +116,7 @@ async def upload_img_command(message):
             chat_id,
             "*⚠️ Please tell me who this image is for.*\n\n"
             "• `/upload_img <Player Name>` - sets a custom card image for that player\n"
+            "• `/upload_img <Player Name> [Showcase Name]` - sets a custom image for a Showcase card\n"
             "• `/upload_img bat-card` - sets the default template for batsman/WK cards\n"
             "• `/upload_img ball-card` - sets the default template for bowler cards\n"
             "• `/upload_img <tier>` - sets the /profile card image for a level tier "
@@ -123,28 +131,43 @@ async def upload_img_command(message):
     is_tier = tier_key is not None
     player = None
     is_special = False
+    is_showcase = False
     special_edition = None
+    showcase_name = None
     if not is_template and not is_tier:
-        base_name, special_edition = split_player_edition(arg)
-        if special_edition:
-            player = await get_special_player(base_name, special_edition)
-            is_special = True
+        showcase_target = parse_showcase_image_target(arg)
+        if showcase_target:
+            base_name, showcase_name = showcase_target
+            player = await get_showcase_player_by_identity(base_name, showcase_name)
+            is_showcase = bool(player)
             if not player:
                 await app.send_message(
                     chat_id,
-                    f"⚠️ No special edition player named *{base_name} ({special_edition})* found in the special database.",
+                    f"⚠️ No Showcase card named *{base_name} [{showcase_name}]* was found. Use the exact Showcase name from <code>/player {base_name}</code>.",
                     parse_mode="Markdown",
                 )
                 return
         else:
-            player = await get_player(arg)
-            if not player:
-                await app.send_message(
-                    chat_id,
-                    f"⚠️ No player named *{arg}* found. Check the spelling, or upload them first with /upload_pl.",
-                    parse_mode="Markdown",
-                )
-                return
+            base_name, special_edition = split_player_edition(arg)
+            if special_edition:
+                player = await get_special_player(base_name, special_edition)
+                is_special = True
+                if not player:
+                    await app.send_message(
+                        chat_id,
+                        f"⚠️ No special edition player named *{base_name} ({special_edition})* found in the special database.",
+                        parse_mode="Markdown",
+                    )
+                    return
+            else:
+                player = await get_player(arg)
+                if not player:
+                    await app.send_message(
+                        chat_id,
+                        f"⚠️ No player named *{arg}* found. Check the spelling, or upload them first with /upload_pl.",
+                        parse_mode="Markdown",
+                    )
+                    return
 
     original_file_id = photo["file_id"]
 
@@ -213,11 +236,20 @@ async def upload_img_command(message):
         )
         print(f"[upload_img] {tier_key} tier card updated. file_id={stored_file_id} channel_message_id={channel_message_id}")
     else:
-        if is_special:
+        if is_showcase:
+            await save_showcase_player_card_image(player["showcase_card_id"], stored_file_id, channel_message_id, uploaded_by=user_id)
+        elif is_special:
             await save_special_player_card_image(player["special_edition_id"], stored_file_id, channel_message_id, uploaded_by=user_id)
         else:
             await save_player_card_image(player["player_id"], stored_file_id, channel_message_id, uploaded_by=user_id)
-        if is_special:
+        if is_showcase:
+            await app.send_message(
+                chat_id,
+                f"*✅ Showcase card image saved for {player['name']} [{player.get('showcase_name') or showcase_name}].*",
+                parse_mode="Markdown",
+            )
+            print(f"[upload_img] Showcase player image saved. showcase_card_id={player['showcase_card_id']} file_id={stored_file_id} channel_message_id={channel_message_id}")
+        elif is_special:
             edition_text = display_edition(player.get("edition")) or str(player.get("edition") or "Special Edition")
             await app.send_message(
                 chat_id,

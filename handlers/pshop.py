@@ -13,6 +13,7 @@ from utils.country_flags import flag_for
 from utils.rarity import get_rarity
 from utils.price_chart import get_price
 from database.special_players_repo import display_edition
+from services.card_identity import player_kind
 
 PAGE_SIZE = 5
 ROLE_ALIASES = {
@@ -138,10 +139,13 @@ def _render(players: list[dict], page: int, total: int, filter_text: str) -> str
         return "\n".join(lines)
     for index, player in enumerate(players):
         raw_name = str(player.get("name") or "Unknown")
-        edition = player.get("edition") if player.get("is_special") else None
+        kind = player_kind(player)
+        edition = player.get("edition") if kind == "special" else None
         if edition:
             edition_label = display_edition(str(edition)) or str(edition)
             raw_name = f"{raw_name} ({edition_label})"
+        elif kind == "showcase" and player.get("showcase_name"):
+            raw_name = f"{raw_name} [{player.get('showcase_name')}]"
         name = _escape(raw_name)
         flag = flag_for(player.get("country"))
         ovr = overall_rating(player.get("bat_level"), player.get("bowl_level"))
@@ -162,32 +166,37 @@ def _render(players: list[dict], page: int, total: int, filter_text: str) -> str
 
 
 async def _fetch_page(kind: str, value, level: int | None, page: int):
-    """Fetch a single P-Shop page across global and special-edition players.
-
-    The OVR filter deliberately mirrors the existing overall_rating() formula
-    (max of bat_level and bowl_level). Special editions are unioned into the
-    same result set so a level/rarity/role filter never drops them simply
-    because they live in a separate table.
-    """
+    """Fetch a single P-Shop page across all three collectible card families."""
     where, params = _where_clause(kind, value, level)
     base = """
-        SELECT
-            player_id, name, country, role, bat_level, bowl_level,
-            batting_hand, bowling_hand, NULL::TEXT AS edition,
-            FALSE AS is_special, player_id::BIGINT AS sort_id
+        SELECT player_id, name, country, role, bat_level, bowl_level,
+               batting_hand, bowling_hand, NULL::TEXT AS edition,
+               FALSE AS is_special, FALSE AS is_showcase,
+               'global'::TEXT AS player_kind,
+               NULL::TEXT AS showcase_name, player_id::BIGINT AS sort_id
         FROM players
         UNION ALL
-        SELECT
-            (-special_player_id)::BIGINT AS player_id, name, country, role,
-            bat_level, bowl_level, batting_hand, bowling_hand, edition,
-            TRUE AS is_special, special_player_id::BIGINT AS sort_id
+        SELECT (-special_player_id)::BIGINT AS player_id, name, country, role,
+               bat_level, bowl_level, batting_hand, bowling_hand, edition,
+               TRUE AS is_special, FALSE AS is_showcase,
+               'special'::TEXT AS player_kind,
+               NULL::TEXT AS showcase_name, special_player_id::BIGINT AS sort_id
         FROM special_edition_players
+        UNION ALL
+        SELECT -(1000000000000::BIGINT + sc.showcase_card_id)::BIGINT AS player_id,
+               sc.name, sc.country, sc.role, sc.bat_level, sc.bowl_level,
+               sc.batting_hand, sc.bowling_hand, NULL::TEXT AS edition,
+               FALSE AS is_special, TRUE AS is_showcase,
+               'showcase'::TEXT AS player_kind,
+               ss.set_name AS showcase_name, sc.showcase_card_id::BIGINT AS sort_id
+        FROM showcase_cards sc
+        JOIN showcase_sets ss ON ss.showcase_set_id=sc.showcase_set_id
     """
     filtered = f"SELECT * FROM ({base}) AS all_shop_players WHERE {where}"
     total = int(await fetchval(f"SELECT COUNT(*) FROM ({filtered}) AS count_q;", *params) or 0)
     offset = max(0, page) * PAGE_SIZE
     rows = await fetch(
-        f"{filtered} ORDER BY name ASC, is_special ASC, sort_id ASC OFFSET ${len(params)+1} LIMIT ${len(params)+2};",
+        f"{filtered} ORDER BY name ASC, CASE player_kind WHEN 'global' THEN 0 WHEN 'special' THEN 1 ELSE 2 END, sort_id ASC OFFSET ${len(params)+1} LIMIT ${len(params)+2};",
         *params, offset, PAGE_SIZE,
     )
     return [dict(r) for r in rows], total

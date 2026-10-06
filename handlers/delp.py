@@ -19,6 +19,8 @@ from database.special_players_repo import (
     search_delete_candidates,
     get_delete_target_by_player_id,
 )
+from database.showcase_players_repo import parse_showcase_image_target, get_showcase_player_by_identity, delete_showcase_player
+from services.card_identity import player_kind
 from buttons.delp_buttons import delete_confirm_keyboard
 from config import ADMIN_USER_ID
 
@@ -39,8 +41,11 @@ def _parse_rows(raw_text: str) -> list[dict]:
 
 def _candidate_label(player: dict) -> str:
     name = str(player.get("name") or "Unknown").strip()
-    if player.get("is_special") and player.get("edition"):
+    kind = player_kind(player)
+    if kind == "special" and player.get("edition"):
         return f"{name} ({player['edition']})"
+    if kind == "showcase" and player.get("showcase_name"):
+        return f"{name} [{player['showcase_name']}]"
     return name
 
 
@@ -51,12 +56,22 @@ def _candidate_id(player: dict) -> str:
 
 
 def _candidate_target(player: dict) -> dict:
-    if player.get("is_special"):
+    kind = player_kind(player)
+    if kind == "special":
         return {
             "kind": "special",
             "player": player,
             "name": str(player.get("name") or "").strip(),
             "edition": str(player.get("edition") or "").strip(),
+        }
+    if kind == "showcase":
+        return {
+            "kind": "showcase",
+            "player": player,
+            "name": str(player.get("name") or "").strip(),
+            "edition": None,
+            "showcase_name": str(player.get("showcase_name") or "").strip(),
+            "showcase_card_id": int(player.get("showcase_card_id") or 0),
         }
     return {
         "kind": "global",
@@ -70,10 +85,13 @@ async def _delete_candidates_from_name(query: str) -> list[dict]:
     query = str(query or "").strip()
     if not query:
         return []
+    showcase_target = parse_showcase_image_target(query)
+    if showcase_target:
+        base_name, showcase_name = showcase_target
+        player = await get_showcase_player_by_identity(base_name, showcase_name)
+        return [_candidate_target(player)] if player else []
     base_name, edition = split_player_edition(query)
     if edition:
-        # Resolve special syntax first, but allow legacy global records whose
-        # actual stored name contains the same parenthesized text.
         target = await get_delete_targets({"name": query})
         return [target] if target.get("player") else []
     rows = await search_delete_candidates(base_name)
@@ -85,6 +103,8 @@ async def _show_single_confirmation(chat_id: int, user_id: int, target: dict):
     label = _candidate_label(player)
     if target["kind"] == "special":
         scope = "special edition"
+    elif target["kind"] == "showcase":
+        scope = f"Showcase • {target.get('showcase_name') or 'unknown set'}"
     elif target["kind"] == "engine_team":
         scope = f"{target.get('engine')} • {target.get('team_code')} squad"
     else:
@@ -218,12 +238,24 @@ async def delp_command(message):
         missing = []
         invalid = []
         for line in _parse_rows(reply_to["text"]):
-            player, parse_error = parse_player_line(line["line"])
+            raw_line = line["line"]
+            showcase_target = parse_showcase_image_target(raw_line)
+            if showcase_target:
+                base_name, showcase_name = showcase_target
+                showcase = await get_showcase_player_by_identity(base_name, showcase_name)
+                target = _candidate_target(showcase) if showcase else {"kind": "showcase", "player": None, "name": base_name, "edition": None, "showcase_name": showcase_name}
+                target["line"] = raw_line
+                if target["player"]:
+                    found.append(target)
+                else:
+                    missing.append(target)
+                continue
+            player, parse_error = parse_player_line(raw_line)
             if parse_error:
                 invalid.append(parse_error)
                 continue
             target = await get_delete_targets(player)
-            target["line"] = line["line"]
+            target["line"] = raw_line
             if target["player"]:
                 found.append(target)
             else:
@@ -240,6 +272,7 @@ async def delp_command(message):
 
         global_count = sum(1 for x in found if x["kind"] == "global")
         special_count = sum(1 for x in found if x["kind"] == "special")
+        showcase_count = sum(1 for x in found if x["kind"] == "showcase")
         token = uuid.uuid4().hex[:12]
         _PENDING[token] = {"owner_id": user_id, "targets": found}
 
@@ -247,7 +280,8 @@ async def delp_command(message):
             f"⚠️ <b>DELETE PLAYERS</b>\n\n"
             f"Are you sure you want to delete <b>{len(found)} player(s)</b> from the database?\n\n"
             f"🌍 Global Pool ➤ <b>{global_count}</b>\n"
-            f"✨ Special Edition ➤ <b>{special_count}</b>"
+            f"✨ Special Edition ➤ <b>{special_count}</b>\n"
+            f"🏆 Showcase ➤ <b>{showcase_count}</b>"
         )
         if missing:
             text += f"\n⚠️ Not in Database ➤ <b>{len(missing)}</b>"
@@ -313,6 +347,7 @@ async def delp_confirm(callback_query):
 
     deleted_global = 0
     deleted_special = 0
+    deleted_showcase = 0
     deleted_engine = 0
     missing_now = 0
     for target in state["targets"]:
@@ -330,6 +365,13 @@ async def delp_confirm(callback_query):
                     continue
                 if await delete_global_player(int(current["player_id"])):
                     deleted_global += 1
+            elif target["kind"] == "showcase":
+                current = await get_showcase_player_by_identity(target["name"], target.get("showcase_name") or "")
+                if not current:
+                    missing_now += 1
+                    continue
+                if await delete_showcase_player(int(current["showcase_card_id"])):
+                    deleted_showcase += 1
             else:
                 current = await get_delete_targets({"name": f"{target['name']} ({target['edition']})"})
                 player = current.get("player")
@@ -349,6 +391,7 @@ async def delp_confirm(callback_query):
         f"✅ <b>Players Deleted</b>\n\n"
         f"🌍 Global Pool ➤ <b>{deleted_global}</b>\n"
         f"✨ Special Edition ➤ <b>{deleted_special}</b>\n"
+        f"🏆 Showcase ➤ <b>{deleted_showcase}</b>\n"
         f"🎮 Engine Squad ➤ <b>{deleted_engine}</b>"
     )
     if missing_now:

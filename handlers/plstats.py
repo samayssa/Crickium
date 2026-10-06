@@ -9,6 +9,7 @@ from handlers.registry import register, register_callback
 from app import app
 from database.players_repo import get_player
 from database.special_players_repo import search_player_variants, split_player_edition, get_special_player
+from database.showcase_players_repo import get_showcase_player_by_identity
 from database.squads_repo import get_team_squad
 from database.player_user_stats_repo import get_player_user_stats
 from utils.country_flags import flag_for
@@ -16,6 +17,7 @@ from utils.rarity import get_rarity
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
+from services.card_identity import owned_same_card, player_kind, card_identity_key
 
 
 def _escape(value: object | None) -> str:
@@ -41,8 +43,11 @@ def _num(value) -> str:
 
 def _plstats_text(player: dict, stats: dict) -> str:
     name = _escape(player.get("name") or "Unknown")
-    if player.get("is_special") and player.get("edition"):
+    kind = player_kind(player)
+    if kind == "special" and player.get("edition"):
         name = f"{name} ({_escape(player.get('edition'))})"
+    elif kind == "showcase" and player.get("showcase_name"):
+        name = f"{name} [{_escape(player.get('showcase_name'))}]"
     flag = flag_for(player.get("country"))
     bat_level = int(player.get("bat_level") or 0)
     bowl_level = int(player.get("bowl_level") or 0)
@@ -110,21 +115,23 @@ async def plstats_command(message):
         )
         return
 
-    base_name, edition = split_player_edition(name)
-    if edition:
-        p = await get_special_player(base_name, edition)
+    from database.showcase_players_repo import parse_showcase_image_target
+    showcase_target = parse_showcase_image_target(name)
+    if showcase_target:
+        base_name, showcase_name = showcase_target
+        p = await get_showcase_player_by_identity(base_name, showcase_name)
         players = [p] if p else []
     else:
-        players = await search_player_variants(name, limit=100)
+        base_name, edition = split_player_edition(name)
+        if edition:
+            p = await get_special_player(base_name, edition)
+            players = [p] if p else []
+        else:
+            players = await search_player_variants(name, limit=100)
 
-    # PLStats is ownership-aware: only cards currently held by this user are eligible.
+    # PLStats is ownership-aware: only the exact card identities currently held by this user are eligible.
     squad = await get_team_squad(user_id) or []
-    owned_ids = {
-        (int(p.get("player_id") or 0), bool(p.get("is_special")))
-        for p in squad
-        if p.get("player_id") is not None
-    }
-    players = [p for p in players if (int(p.get("player_id") or 0), bool(p.get("is_special"))) in owned_ids]
+    players = [p for p in players if any(owned_same_card(dict(owned), p) for owned in squad)]
 
     if not players:
         await app.send_message(
@@ -145,8 +152,8 @@ async def plstats_command(message):
         except Exception:
             await app.send_message(chat_id, text, parse_mode="HTML")
         try:
-            player_key = f"{int(player['player_id'])}:{int(bool(player.get('is_special')))}"
-            await record_quest_event(user_id, "STAT_VIEW", metadata={"player_id": int(player["player_id"])})
+            player_key = card_identity_key(player)
+            await record_quest_event(user_id, "STAT_VIEW", metadata={"player_id": int(player["player_id"]), "player_kind": player_kind(player)})
             await record_quest_event(user_id, "CARD_VIEW", metadata={"player_key": player_key})
         except Exception as exc:
             print(f"[plstats] Quest event failed: {exc!r}")
@@ -218,8 +225,8 @@ async def plstats_page_callback(callback_query):
     await _send_plstats_page(callback_query["message"]["chat"]["id"], user_id, token)
     try:
         viewed = players[current]
-        player_key = f"{int(viewed['player_id'])}:{int(bool(viewed.get('is_special')))}"
-        await record_quest_event(user_id, "STAT_VIEW", metadata={"player_id": int(viewed["player_id"])})
+        player_key = card_identity_key(viewed)
+        await record_quest_event(user_id, "STAT_VIEW", metadata={"player_id": int(viewed["player_id"]), "player_kind": player_kind(viewed)})
         await record_quest_event(user_id, "CARD_VIEW", metadata={"player_key": player_key})
     except Exception as exc:
         print(f"[plstats] Quest page event failed: {exc!r}")

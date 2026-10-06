@@ -11,6 +11,7 @@ from app import app
 from database.query import execute, fetchrow
 from database.players_repo import get_player
 from database.special_players_repo import get_special_player_by_id, display_edition
+from database.showcase_players_repo import get_showcase_player
 import uuid
 from database.squads_repo import get_team_squad, save_team_squad
 from utils.style import batting_style_text, bowling_style_text
@@ -20,6 +21,7 @@ from utils.price_chart import get_price
 from buttons.sell_buttons import sell_confirm_keyboard, sell_range_confirm_keyboard
 from services.player_card import overall_rating
 from database.player_user_stats_repo import reset_player_user_stats
+from services.card_identity import owned_same_card, player_kind, showcase_card_id_from_player_id
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -52,8 +54,11 @@ def _player_role_text(player: dict) -> str:
 
 def _sell_display_name(player: dict) -> str:
     name = str(player.get("name") or "Unknown").strip()
-    if player.get("is_special") and player.get("edition"):
+    kind = player_kind(player)
+    if kind == "special" and player.get("edition"):
         return f"{name} ({display_edition(player.get('edition'))})"
+    if kind == "showcase" and player.get("showcase_name"):
+        return f"{name} [{player.get('showcase_name')}]"
     return name
 
 
@@ -116,7 +121,7 @@ def _batch_sale_text(players: list[dict], start: int, end: int, total_sell: int)
         "<blockquote><b>",
     ]
     for idx, player in enumerate(players, start=start):
-        name = _escape(player.get("name") or "Unknown")
+        name = _escape(_sell_display_name(player))
         role = _escape(_player_role_text(player))
         bat_level = int(player.get("bat_level") or 0)
         bowl_level = int(player.get("bowl_level") or 0)
@@ -188,8 +193,11 @@ def _player_sale_text(player: dict, notice: str = DEFAULT_WARNING) -> str:
 
     rarity_block = f"<blockquote><b>💎 {rarity}</b></blockquote>"
     special_block = None
-    if player.get("is_special") and player.get("edition"):
+    kind = player_kind(player)
+    if kind == "special" and player.get("edition"):
         special_block = f"<blockquote><b>✨ Special ➤ {_escape(display_edition(player.get('edition')))}</b></blockquote>"
+    elif kind == "showcase" and player.get("showcase_name"):
+        special_block = f"<blockquote><b>🏆 Showcase ➤ {_escape(player.get('showcase_name'))}</b></blockquote>"
 
     details_block = (
         "<blockquote><b><i>"
@@ -261,7 +269,7 @@ async def sell_command(message):
             return
 
         selected = [dict(p) for p in squad[start - 1:end]]
-        valid_selected = [p for p in selected if int(p.get("player_id") or 0) > 0]
+        valid_selected = [p for p in selected if player_kind(p) in {"global", "showcase"}]
         if not valid_selected:
             await app.send_message(chat_id, "⚠️ No valid players were found in that range.", parse_mode="HTML")
             return
@@ -409,9 +417,17 @@ async def on_sell_confirm(callback_query):
         await app.answer_callback_query(callback_query["id"], "This player is no longer in your squad.", show_alert=True)
         await _update_prompt(callback_query, "<b>⚠️ This player is no longer available.</b>", NO_KEYBOARD)
         return
-    player["is_special"] = bool(player.get("is_special"))
-    if player.get("is_special"):
-        special_id = abs(pid)
+    kind = player_kind(player)
+    if kind == "showcase":
+        showcase_id = int(player.get("showcase_card_id") or showcase_card_id_from_player_id(pid) or 0)
+        db_player = await get_showcase_player(showcase_id) if showcase_id else None
+        if not db_player:
+            await app.answer_callback_query(callback_query["id"], "This Showcase card no longer exists.", show_alert=True)
+            await _update_prompt(callback_query, "<b>⚠️ This player is no longer available.</b>", NO_KEYBOARD)
+            return
+        player = db_player
+    elif kind == "special":
+        special_id = int(player.get("special_edition_id") or abs(pid))
         db_player = await get_special_player_by_id(special_id)
         if not db_player:
             await app.answer_callback_query(callback_query["id"], "This player no longer exists.", show_alert=True)
@@ -424,13 +440,11 @@ async def on_sell_confirm(callback_query):
             await app.answer_callback_query(callback_query["id"], "This player no longer exists.", show_alert=True)
             await _update_prompt(callback_query, "<b>⚠️ This player is no longer available.</b>", NO_KEYBOARD)
             return
-        player = db_player
+        player["player_kind"] = "global"
+        player["is_special"] = False
+        player["is_showcase"] = False
 
-    still_owned = any(
-        int(p.get("player_id") or 0) == pid
-        and bool(p.get("is_special")) == bool(player.get("is_special"))
-        for p in squad
-    )
+    still_owned = any(owned_same_card(dict(p), player) for p in squad)
     if not still_owned:
         await app.answer_callback_query(callback_query["id"], "You no longer own this player.", show_alert=True)
         await _update_prompt(callback_query, _player_sale_text(player, "ℹ️ You no longer own this player."), NO_KEYBOARD)
@@ -441,8 +455,7 @@ async def on_sell_confirm(callback_query):
 
     new_squad = [p for p in squad if int(p.get("player_id") or 0) != pid]
     await save_team_squad(seller_id, new_squad)
-    if not player.get("is_special"):
-        await reset_player_user_stats(seller_id, pid)
+    await reset_player_user_stats(seller_id, pid)
     await execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2;", sell_price, seller_id)
 
     await app.answer_callback_query(callback_query["id"], "Sold!")
@@ -524,9 +537,16 @@ async def on_sell_cancel(callback_query):
         await app.answer_callback_query(callback_query["id"], "This isn't your sale prompt!", show_alert=True)
         return
 
-    player = await fetchrow("SELECT * FROM players WHERE player_id = $1;", int(player_id_str))
+    pid = int(player_id_str)
+    if showcase_card_id_from_player_id(pid) is not None:
+        player = await get_showcase_player(showcase_card_id_from_player_id(pid))
+    elif pid < 0:
+        player = await get_special_player_by_id(abs(pid))
+    else:
+        row = await fetchrow("SELECT * FROM players WHERE player_id = $1;", pid)
+        player = dict(row) if row else None
     await app.answer_callback_query(callback_query["id"], "Cancelled.")
     if player:
-        await _update_prompt(callback_query, _player_sale_text(dict(player), CANCEL_NOTICE), NO_KEYBOARD)
+        await _update_prompt(callback_query, _player_sale_text(player, CANCEL_NOTICE), NO_KEYBOARD)
     else:
         await _update_prompt(callback_query, f"<b>{CANCEL_NOTICE}</b>", NO_KEYBOARD)

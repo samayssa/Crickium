@@ -10,6 +10,7 @@ from app import app
 from database.query import fetchrow, transaction
 from database.players_repo import get_player
 from database.special_players_repo import get_player_variants, search_player_variants, get_special_player, split_player_edition, display_edition
+from database.showcase_players_repo import get_showcase_player_by_identity, get_showcase_player
 from database.squads_repo import get_team_squad, save_team_squad
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
@@ -22,6 +23,7 @@ from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
 from database.player_user_stats_repo import reset_player_user_stats
 from utils.debut_gate import has_completed_debut
+from services.card_identity import owned_same_card, player_kind, card_entity_id, card_identity_key
 
 NO_KEYBOARD = {"inline_keyboard": []}
 DEFAULT_FOOTER = "🛒 Ready to sign this player?"
@@ -59,8 +61,11 @@ def _player_shop_text(player: dict, footer: str = DEFAULT_FOOTER) -> str:
     name_block = f"<blockquote><b>👤 {name} {flag}</b></blockquote>"
     rarity_block = f"<blockquote><b>💎 {rarity}</b></blockquote>"
     special_block = None
-    if player.get("is_special") and player.get("edition"):
+    kind = player_kind(player)
+    if kind == "special" and player.get("edition"):
         special_block = f"<blockquote><b>✨ Special     ➤ {_escape(display_edition(player.get('edition')))}</b></blockquote>"
+    elif kind == "showcase":
+        special_block = f"<blockquote><b>🏆 Showcase   ➤ {_escape(player.get('showcase_name') or 'Showcase')}</b></blockquote>"
     details_block = (
         "<blockquote><b><i>"
         f"├ ⚡ Bat Lv.     : {bat_level}\n"
@@ -90,11 +95,7 @@ async def _update_prompt(callback_query: dict, text: str, reply_markup=None) -> 
 
 async def _attempt_purchase(user_id: int, player: dict, buy_price: int) -> str:
     squad = await get_team_squad(user_id) or []
-    already_owned = any(
-        int(p.get("player_id") or 0) == int(player["player_id"])
-        and bool(p.get("is_special")) == bool(player.get("is_special"))
-        for p in squad
-    )
+    already_owned = any(owned_same_card(dict(p), player) for p in squad)
     if already_owned:
         return "already_owned"
 
@@ -109,30 +110,39 @@ async def _attempt_purchase(user_id: int, player: dict, buy_price: int) -> str:
     if result == "success":
         squad.append(dict(player))
         await save_team_squad(user_id, squad)
-        if not player.get("is_special"):
-            await reset_player_user_stats(user_id, int(player["player_id"]))
+        await reset_player_user_stats(user_id, int(player["player_id"]))
     return result
 
 
 async def _resolve_buy_player(source: str, player_id: int) -> dict | None:
     if source == "special":
         return await get_special_player_by_id(player_id)
+    if source == "showcase":
+        return await get_showcase_player(player_id)
     row = await fetchrow("SELECT * FROM players WHERE player_id = $1;", int(player_id))
-    return dict(row) if row else None
+    if not row:
+        return None
+    player = dict(row)
+    player["player_kind"] = "global"
+    player["is_special"] = False
+    player["is_showcase"] = False
+    return player
 
 
 from database.special_players_repo import get_special_player_by_id
 
 
 def _player_buy_callback(player: dict, buyer_id: int) -> str:
-    source = "special" if player.get("is_special") else "global"
-    entity_id = int(player.get("special_edition_id") if player.get("is_special") else player["player_id"])
+    kind = player_kind(player)
+    source = kind
+    entity_id = card_entity_id(player)
     return f"buy_confirm:{source}:{entity_id}:{int(buyer_id)}"
 
 
 def _player_decline_callback(player: dict, buyer_id: int) -> str:
-    source = "special" if player.get("is_special") else "global"
-    entity_id = int(player.get("special_edition_id") if player.get("is_special") else player["player_id"])
+    kind = player_kind(player)
+    source = kind
+    entity_id = card_entity_id(player)
     return f"buy_decline:{source}:{entity_id}:{int(buyer_id)}"
 
 
@@ -172,12 +182,20 @@ async def buy_command(message):
         await app.send_message(chat_id, "<b>⚠️ Please tell me which player to buy.</b>\nUsage: <code>/buy Virat Kohli</code>", parse_mode="HTML")
         return
 
-    base_name, edition = split_player_edition(name)
-    if edition:
-        special = await get_special_player(base_name, edition)
-        players = [special] if special else []
+    showcase_target = None
+    from database.showcase_players_repo import parse_showcase_image_target
+    showcase_target = parse_showcase_image_target(name)
+    if showcase_target:
+        base_name, showcase_name = showcase_target
+        showcase = await get_showcase_player_by_identity(base_name, showcase_name)
+        players = [showcase] if showcase else []
     else:
-        players = await search_player_variants(name)
+        base_name, edition = split_player_edition(name)
+        if edition:
+            special = await get_special_player(base_name, edition)
+            players = [special] if special else []
+        else:
+            players = await search_player_variants(name)
 
     if not players:
         await app.send_message(chat_id, f"⚠️ No player named <b>{_escape(name)}</b> found. Check the spelling, or upload them first with /upload_pl.", parse_mode="HTML")
@@ -263,7 +281,7 @@ async def on_buy_confirm(callback_query):
         await app.answer_callback_query(callback_query["id"], "Signed!")
         await _update_prompt(callback_query, _player_shop_text(player, SUCCESS_FOOTER), NO_KEYBOARD)
         try:
-            await record_quest_event(int(buyer_id_str), "PLAYER_PURCHASE", metadata={"player_id": int(player["player_id"]), "is_special": bool(player.get("is_special")), "ovr": int(ovr)})
+            await record_quest_event(int(buyer_id_str), "PLAYER_PURCHASE", metadata={"player_id": int(player["player_id"]), "player_kind": player_kind(player), "card_key": card_identity_key(player), "is_special": bool(player.get("is_special")), "ovr": int(ovr)})
             await record_quest_event(int(buyer_id_str), "COIN_SPENT", value=int(buy_price), metadata={"source": "player_shop", "player_id": int(player["player_id"])})
         except Exception as exc:
             print(f"[buy] Quest event failed: {exc!r}")

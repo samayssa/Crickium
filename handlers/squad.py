@@ -11,6 +11,7 @@ from database.captain_repo import get_captain_id
 from utils.country_flags import flag_for
 from utils.PremiumEmoji import ovr_emoji_html
 from utils.user_identity import get_user_identity, inline_identity
+from services.card_identity import player_kind
 
 
 async def _captain_id(user_id: int) -> int | None:
@@ -67,7 +68,13 @@ async def squad_command(message):
 
     total = len(ordered_squad)
     for i, player in enumerate(ordered_squad, start=1):
-        name = html.escape(str(player.get("name") or "Player"))
+        raw_name = str(player.get("name") or "Player")
+        kind = player_kind(player)
+        if kind == "special" and player.get("edition"):
+            raw_name = f"{raw_name} ({player.get('edition')})"
+        elif kind == "showcase" and player.get("showcase_name"):
+            raw_name = f"{raw_name} [{player.get('showcase_name')}]"
+        name = html.escape(raw_name)
         level = _overall(player)
         flag = flag_for(player.get("country"))
         icon = _icon(player)

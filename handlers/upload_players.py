@@ -14,6 +14,7 @@ from database.playint_teams_repo import normalize_team_keyword, team_name
 from database.playipl_repo import parse_playipl_player_line, upsert_playipl_player
 from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_team_keyword, team_name as ipl_team_name
 from database.access_repo import has_upload_access
+from database.showcase_players_repo import parse_showcase_header, upload_showcase_sections
 
 
 TEAM_HEADER_RE = re.compile(r"^(T20I|IPL)\s*-\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE)
@@ -82,6 +83,55 @@ def _team_scope(header: str):
 
 def _has_team_sections(raw_text: str) -> bool:
     return any(TEAM_HEADER_RE.match(line.strip()) for line in raw_text.splitlines() if line.strip())
+
+
+def _has_showcase_sections(raw_text: str) -> bool:
+    return any(parse_showcase_header(line) for line in (raw_text or "").splitlines() if line.strip())
+
+
+def _parse_showcase_sections(raw_text: str) -> tuple[dict[str, list[str]], list[str]]:
+    sections: dict[str, list[str]] = {}
+    errors: list[str] = []
+    current: str | None = None
+    for line_no, raw_line in enumerate((raw_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        header = parse_showcase_header(line)
+        if header:
+            current = header
+            sections.setdefault(header, [])
+            continue
+        if current is None:
+            errors.append(f"Line {line_no}: expected a SHOWCASE: <name> header before player data.")
+            continue
+        sections[current].append(line)
+    if not sections:
+        errors.append("No SHOWCASE: <name> sections were found in the source.")
+    return sections, errors
+
+
+def _render_showcase_upload_report(summary: dict, parse_errors: list[str] | None = None) -> str:
+    lines = ["🏆 <b>SHOWCASE UPLOAD REPORT</b>", ""]
+    for bucket in summary.get("sets", []):
+        lines.extend([
+            f"🏆 <b>{bucket['name']}</b>",
+            f"✅ Saved: <b>{bucket['uploaded']}</b>",
+            f"♻️ Existing: <b>{bucket['already_exists']}</b>",
+            f"❌ Failed: <b>{bucket['failed']}</b>",
+            "",
+        ])
+    lines.extend([
+        "━━━━━━━━━━━━━━━━━━",
+        f"📥 Total processed: <b>{summary.get('total', 0)}</b>",
+        f"✅ Total saved: <b>{summary.get('uploaded', 0)}</b>",
+        f"♻️ Total existing: <b>{summary.get('already_exists', 0)}</b>",
+        f"❌ Total failed: <b>{summary.get('failed', 0)}</b>",
+    ])
+    details = list(parse_errors or []) + list(summary.get("failed_details") or [])
+    if details:
+        lines.extend(["", "<b>Failure details:</b>"] + [f"• {x}" for x in details[:20]])
+    return "\n".join(lines)
 
 
 async def _upload_team_line(engine: str, team_code: str, player_line: str, uploaded_by: int):
@@ -337,6 +387,9 @@ async def upload_players_command(message):
             "⚠️ Please use /upload_pl as a reply to player data text or a <code>.txt</code> file.\n\n"
             "Player format:\n"
             "<code>[Player Name][Country][Role][RH/LH-BAT &lt;LEVEL&gt;][RAF/LAF/RAM/LAM/RAO/LAO/RAL/LAL &lt;LEVEL&gt;]</code>\n\n"
+            "Showcase format (use <code>/upload_pl showcase</code>):\n"
+            "<code>SHOWCASE: IPL 2026</code>\n"
+            "<code>[Virat Kohli][India][Batsman][RH-BAT 98][RAF 20]</code>\n\n"
             "Multi-team format:\n"
             "<code>T20I-IND</code>\n"
             "<code>[Player Name][Country][Role][RH-BAT 96][RAF 38]</code>\n\n"
@@ -344,6 +397,28 @@ async def upload_players_command(message):
             "<code>[Player Name][Country][Role][RH-BAT 96][RAF 38]</code>",
             parse_mode="HTML",
         )
+        return
+
+    # Showcase is an explicit upload mode. Its source can contain multiple
+    # SHOWCASE: <name> sections in one Telegram message or .txt file.
+    if explicit_target and explicit_target.strip().lower() == "showcase":
+        sections, parse_errors = _parse_showcase_sections(raw_text)
+        if not sections:
+            await app.send_message(
+                chat_id,
+                "⚠️ Use <code>/upload_pl showcase</code> as a reply to Showcase data.\n\n"
+                "Format: <code>SHOWCASE: IPL 2026</code> followed by normal player lines.\n"
+                "You can include multiple Showcase sections in the same message or TXT file.",
+                parse_mode="HTML",
+            )
+            return
+        try:
+            summary = await upload_showcase_sections(sections, uploaded_by=user_id)
+        except Exception as exc:
+            print(f"[upload_pl] Showcase upload failed: {exc!r}")
+            await app.send_message(chat_id, f"🚫 Showcase upload failed safely: <code>{exc}</code>", parse_mode="HTML")
+            return
+        await app.send_message(chat_id, _render_showcase_upload_report(summary, parse_errors), parse_mode="HTML")
         return
 
     # A command target such as /upload_pl IPL-RCB or /upload_pl T20I-IND

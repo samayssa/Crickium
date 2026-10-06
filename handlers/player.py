@@ -9,6 +9,7 @@ from handlers.registry import register, register_callback
 from app import app
 from database.players_repo import get_player
 from database.special_players_repo import get_player_variants, search_player_variants, split_player_edition, display_edition, get_special_player
+from database.showcase_players_repo import get_showcase_player_by_identity, parse_showcase_image_target
 from database.squads_repo import get_team_squad
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
@@ -18,6 +19,7 @@ from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
 from buttons.catalog_buttons import catalog_page_keyboard
+from services.card_identity import owned_same_card, card_identity_key, player_kind, version_label
 
 _PLAYER_PAGE_STATE: dict[str, dict] = {}
 
@@ -53,9 +55,12 @@ def _player_bio_text(player: dict, owned: bool) -> str:
     name_block = f"<blockquote>👤 <b>{name}</b> {flag}</blockquote>"
     rarity_block = f"<blockquote>🏅 <b>Rarity.</b>    {rarity}</blockquote>"
 
-    special_block = None
-    if player.get("is_special") and player.get("edition"):
-        special_block = f"<blockquote>✨ <b>Special</b>    ➤ {_escape(display_edition(player.get('edition')))}</blockquote>"
+    version_block = None
+    kind = player_kind(player)
+    if kind == "special" and player.get("edition"):
+        version_block = f"<blockquote>✨ <b>Special</b>    ➤ {_escape(display_edition(player.get('edition')))}</blockquote>"
+    elif kind == "showcase":
+        version_block = f"<blockquote>🏆 <b>Showcase</b>  ➤ {_escape(player.get('showcase_name') or 'Showcase')}</blockquote>"
 
     details_block = (
         "<blockquote>"
@@ -74,19 +79,15 @@ def _player_bio_text(player: dict, owned: bool) -> str:
         "</blockquote>"
     )
     parts = [title, name_block, rarity_block]
-    if special_block:
-        parts.append(special_block)
+    if version_block:
+        parts.append(version_block)
     parts.extend(["", details_block, separator, stats_block])
     return "\n".join(parts)
 
 
 async def _send_player_card(chat_id: int, user_id: int, player: dict, reply_markup=None):
     squad = await get_team_squad(user_id) or []
-    owned = any(
-        int(p.get("player_id") or 0) == int(player.get("player_id") or 0)
-        and bool(p.get("is_special")) == bool(player.get("is_special"))
-        for p in squad
-    )
+    owned = any(owned_same_card(dict(p), player) for p in squad)
     text = _player_bio_text(player, owned)
     try:
         image_bytes, _is_custom = await get_player_card_bytes(player)
@@ -110,12 +111,18 @@ async def player_command(message):
         await app.send_message(chat_id, "<b>⚠️ Please tell me which player to look up.</b>\nUsage: <code>/player Virat Kohli</code>", parse_mode="HTML")
         return
 
-    base_name, edition = split_player_edition(name)
-    if edition:
-        player = await get_special_player(base_name, edition)
+    showcase_target = parse_showcase_image_target(name)
+    if showcase_target:
+        base_name, showcase_name = showcase_target
+        player = await get_showcase_player_by_identity(base_name, showcase_name)
         players = [player] if player else []
     else:
-        players = await search_player_variants(name)
+        base_name, edition = split_player_edition(name)
+        if edition:
+            player = await get_special_player(base_name, edition)
+            players = [player] if player else []
+        else:
+            players = await search_player_variants(name)
 
     if not players:
         await app.send_message(
@@ -128,7 +135,7 @@ async def player_command(message):
     if len(players) == 1:
         await _send_player_card(chat_id, int(user_id), players[0])
         try:
-            player_key = f"{int(players[0]['player_id'])}:{int(bool(players[0].get('is_special')))}"
+            player_key = card_identity_key(players[0])
             await record_quest_event(int(user_id), "CARD_VIEW", metadata={"player_key": player_key})
         except Exception as exc:
             print(f"[player] Quest card-view event failed: {exc!r}")
@@ -171,7 +178,7 @@ async def player_page_callback(callback_query):
     state["page"] = current
     player = players[current]
     squad = await get_team_squad(user_id) or []
-    owned = any(int(p.get("player_id") or 0) == int(player.get("player_id") or 0) and bool(p.get("is_special")) == bool(player.get("is_special")) for p in squad)
+    owned = any(owned_same_card(dict(p), player) for p in squad)
     text = _player_bio_text(player, owned)
     keyboard = catalog_page_keyboard(f"player_page:{token}", current, len(players))
     chat_id = callback_query["message"]["chat"]["id"]
@@ -196,7 +203,7 @@ async def player_page_callback(callback_query):
         except Exception:
             await _send_player_card(chat_id, user_id, player, keyboard)
     try:
-        player_key = f"{int(player['player_id'])}:{int(bool(player.get('is_special')))}"
+        player_key = card_identity_key(player)
         await record_quest_event(user_id, "CARD_VIEW", metadata={"player_key": player_key})
     except Exception as exc:
         print(f"[player] Quest page card-view event failed: {exc!r}")
