@@ -243,11 +243,7 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
         if isinstance(raw_squad, str):
             raw_squad = json.loads(raw_squad)
         def _player_kind(player_row: dict[str, Any]) -> str:
-            value = player_row.get("is_special")
-            is_special = value is True or (
-                isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
-            )
-            return "special" if is_special or int(player_row.get("player_id") or 0) < 0 else "global"
+            return player_kind(player_row)
 
         player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and _player_kind(p) == player_kind), None)
         if not player:
@@ -308,11 +304,7 @@ async def unequip_upgrade(user_id: int, player_id: int, player_kind: str, slot: 
         if isinstance(raw_squad, str):
             raw_squad = json.loads(raw_squad)
         def _player_kind(player_row: dict[str, Any]) -> str:
-            value = player_row.get("is_special")
-            is_special = value is True or (
-                isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
-            )
-            return "special" if is_special or int(player_row.get("player_id") or 0) < 0 else "global"
+            return player_kind(player_row)
 
         player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and _player_kind(p) == player_kind), None)
         if not player:

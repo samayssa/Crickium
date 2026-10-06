@@ -46,6 +46,8 @@ def parse_special_player_line(line: str):
 def as_special_player(row) -> dict:
     player = dict(row)
     player["is_special"] = True
+    player["is_showcase"] = False
+    player["player_kind"] = "special"
     player["edition"] = player.get("edition")
     special_id = int(player.get("special_player_id") or 0)
     player["special_edition_id"] = special_id
@@ -97,61 +99,89 @@ async def get_special_player_by_id(special_player_id: int) -> dict | None:
     return as_special_player(row) if row else None
 
 
-async def search_player_variants(query: str, limit: int = 100) -> list[dict]:
-    """Search global + special players by partial player name.
-
-    Kept separate from get_player_variants() so existing exact-name callers keep
-    their current behavior. Results are ordered with exact/prefix global names
-    first, followed by special editions, using their existing IDs for stability.
-    """
-    q = (query or "").strip()
+async def _variant_rows(query: str, *, exact: bool, limit: int = 100) -> list[dict]:
+    q=(query or "").strip()
     if not q:
         return []
-    like = f"%{q}%"
-    prefix = f"{q}%"
-    global_rows = await fetch(
-        """
-        SELECT * FROM players
-        WHERE LOWER(name) LIKE LOWER($1)
-        ORDER BY
-            CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END,
-            CASE WHEN LOWER(name) LIKE LOWER($3) THEN 0 ELSE 1 END,
-            player_id ASC
-        LIMIT $4;
-        """, like, q, prefix, limit,
-    )
-    special_rows = await fetch(
-        """
-        SELECT * FROM special_edition_players
-        WHERE LOWER(name) LIKE LOWER($1)
-        ORDER BY
-            CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END,
-            CASE WHEN LOWER(name) LIKE LOWER($3) THEN 0 ELSE 1 END,
-            special_player_id ASC
-        LIMIT $4;
-        """, like, q, prefix, limit,
-    )
-    result = [dict(r) | {"is_special": False, "edition": None, "special_edition_id": None} for r in global_rows]
-    result.extend(as_special_player(r) for r in special_rows)
-    return result
+    if exact:
+        where_global = "LOWER(p.name)=LOWER($1)"
+        where_special = "LOWER(sp.name)=LOWER($1)"
+        where_showcase = "LOWER(sc.name)=LOWER($1)"
+        order_sql = "CASE player_kind WHEN 'global' THEN 0 WHEN 'special' THEN 1 ELSE 2 END, sort_id ASC"
+        args=(q,)
+        limit_sql=''
+    else:
+        like=f"%{q}%"
+        prefix=f"{q}%"
+        where_global = "LOWER(p.name) LIKE LOWER($1)"
+        where_special = "LOWER(sp.name) LIKE LOWER($1)"
+        where_showcase = "LOWER(sc.name) LIKE LOWER($1) OR LOWER(ss.set_name) LIKE LOWER($1)"
+        order_sql = "CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END, CASE WHEN LOWER(name) LIKE LOWER($3) THEN 0 ELSE 1 END, CASE player_kind WHEN 'global' THEN 0 WHEN 'special' THEN 1 ELSE 2 END, sort_id ASC"
+        args=(like,q,prefix)
+        limit_sql=' LIMIT $4'
+    sql=f"""
+        SELECT source_id, name, country, role, bat_level, bowl_level, batting_hand, bowling_hand,
+               uploaded_by, created_at, sort_id, player_kind, is_special, edition,
+               special_edition_id, showcase_card_id, showcase_set_id, showcase_name
+        FROM (
+            SELECT p.player_id::BIGINT AS source_id, p.name, p.country, p.role, p.bat_level, p.bowl_level,
+                   p.batting_hand, p.bowling_hand, p.uploaded_by, p.created_at, p.player_id::BIGINT AS sort_id,
+                   'global'::TEXT AS player_kind, FALSE AS is_special, NULL::TEXT AS edition,
+                   NULL::BIGINT AS special_edition_id, NULL::BIGINT AS showcase_card_id,
+                   NULL::BIGINT AS showcase_set_id, NULL::TEXT AS showcase_name
+            FROM players p WHERE {where_global}
+            UNION ALL
+            SELECT sp.special_player_id::BIGINT AS source_id, sp.name, sp.country, sp.role, sp.bat_level, sp.bowl_level,
+                   sp.batting_hand, sp.bowling_hand, sp.uploaded_by, sp.created_at, sp.special_player_id::BIGINT AS sort_id,
+                   'special'::TEXT AS player_kind, TRUE AS is_special, sp.edition,
+                   sp.special_player_id::BIGINT AS special_edition_id, NULL::BIGINT AS showcase_card_id,
+                   NULL::BIGINT AS showcase_set_id, NULL::TEXT AS showcase_name
+            FROM special_edition_players sp WHERE {where_special}
+            UNION ALL
+            SELECT sc.showcase_card_id::BIGINT AS source_id, sc.name, sc.country, sc.role, sc.bat_level, sc.bowl_level,
+                   sc.batting_hand, sc.bowling_hand, sc.uploaded_by, sc.created_at, sc.showcase_card_id::BIGINT AS sort_id,
+                   'showcase'::TEXT AS player_kind, FALSE AS is_special, NULL::TEXT AS edition,
+                   NULL::BIGINT AS special_edition_id, sc.showcase_card_id::BIGINT AS showcase_card_id,
+                   sc.showcase_set_id::BIGINT AS showcase_set_id, ss.set_name AS showcase_name
+            FROM showcase_cards sc JOIN showcase_sets ss ON ss.showcase_set_id=sc.showcase_set_id
+            WHERE {where_showcase}
+        ) all_players
+        ORDER BY {order_sql}{limit_sql};
+    """
+    return [dict(r) for r in await fetch(sql, *args, *(() if exact else (int(limit),)))]
+
+
+async def search_player_variants(query: str, limit: int = 100) -> list[dict]:
+    rows = await _variant_rows(query, exact=False, limit=limit)
+    result=[]
+    for row in rows:
+        kind=row['player_kind']
+        if kind=='special':
+            row['special_player_id']=int(row['special_edition_id'])
+            result.append(as_special_player(row))
+        elif kind=='showcase':
+            from database.showcase_players_repo import as_showcase_player
+            result.append(as_showcase_player(row))
+        else:
+            row['player_id']=int(row['source_id']); row['is_special']=False; row['is_showcase']=False; row['edition']=None; row['special_edition_id']=None; row['player_kind']='global'
+            result.append(row)
+    return result[:int(limit)]
 
 
 async def get_player_variants(name: str) -> list[dict]:
-    global_rows = await fetch(
-        "SELECT * FROM players WHERE LOWER(name)=LOWER($1) LIMIT 1;", name
-    )
-    special_rows = await fetch(
-        """
-        SELECT * FROM special_edition_players
-        WHERE LOWER(name)=LOWER($1)
-        ORDER BY special_player_id ASC;
-        """,
-        name,
-    )
-    result: list[dict] = []
-    if global_rows:
-        result.append(dict(global_rows[0]) | {"is_special": False, "edition": None, "special_edition_id": None})
-    result.extend(as_special_player(row) for row in special_rows)
+    rows = await _variant_rows(name, exact=True)
+    result=[]
+    for row in rows:
+        kind=row['player_kind']
+        if kind=='special':
+            row['special_player_id']=int(row['special_edition_id'])
+            result.append(as_special_player(row))
+        elif kind=='showcase':
+            from database.showcase_players_repo import as_showcase_player
+            result.append(as_showcase_player(row))
+        else:
+            row['player_id']=int(row['source_id']); row['is_special']=False; row['is_showcase']=False; row['edition']=None; row['special_edition_id']=None; row['player_kind']='global'
+            result.append(row)
     return result
 
 
@@ -267,6 +297,14 @@ async def get_delete_target_by_player_id(player_id: int) -> dict | None:
     """
     pid = int(player_id)
     if pid < 0:
+        from services.card_identity import showcase_card_id_from_player_id
+        showcase_id = showcase_card_id_from_player_id(pid)
+        if showcase_id is not None:
+            from database.showcase_players_repo import get_showcase_player
+            player = await get_showcase_player(showcase_id)
+            if not player:
+                return None
+            return {"kind": "showcase", "player": player, "name": str(player.get("name") or "").strip(), "edition": None, "showcase_name": player.get("showcase_name")}
         player = await get_special_player_by_id(abs(pid))
         if not player:
             return None
@@ -293,27 +331,55 @@ async def get_delete_target_by_player_id(player_id: int) -> dict | None:
 
 
 async def search_delete_candidates(query: str, limit: int = 50) -> list[dict]:
-    """Find global + special players whose names contain the supplied text."""
-    q = (query or "").strip()
+    """Find Global + Special + Showcase cards with one query."""
+    q=(query or "").strip()
     if not q:
         return []
-    like = f"%{q}%"
-    global_rows = await fetch(
+    like=f"%{q}%"
+    rows=await fetch(
         """
-        SELECT * FROM players
-        WHERE LOWER(name) LIKE LOWER($1)
-        ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END, player_id ASC
+        SELECT source_id, name, country, role, bat_level, bowl_level, batting_hand, bowling_hand,
+               uploaded_by, created_at, sort_id, player_kind, is_special, edition, special_edition_id,
+               showcase_card_id, showcase_set_id, showcase_name
+        FROM (
+            SELECT p.player_id::BIGINT AS source_id, p.name, p.country, p.role, p.bat_level, p.bowl_level,
+                   p.batting_hand, p.bowling_hand, p.uploaded_by, p.created_at, p.player_id::BIGINT AS sort_id,
+                   'global'::TEXT AS player_kind, FALSE AS is_special, NULL::TEXT AS edition,
+                   NULL::BIGINT AS special_edition_id, NULL::BIGINT AS showcase_card_id,
+                   NULL::BIGINT AS showcase_set_id, NULL::TEXT AS showcase_name
+            FROM players p WHERE LOWER(p.name) LIKE LOWER($1)
+            UNION ALL
+            SELECT sp.special_player_id::BIGINT AS source_id, sp.name, sp.country, sp.role, sp.bat_level, sp.bowl_level,
+                   sp.batting_hand, sp.bowling_hand, sp.uploaded_by, sp.created_at, sp.special_player_id::BIGINT AS sort_id,
+                   'special'::TEXT AS player_kind, TRUE AS is_special, sp.edition,
+                   sp.special_player_id::BIGINT AS special_edition_id, NULL::BIGINT AS showcase_card_id,
+                   NULL::BIGINT AS showcase_set_id, NULL::TEXT AS showcase_name
+            FROM special_edition_players sp WHERE LOWER(sp.name) LIKE LOWER($1)
+            UNION ALL
+            SELECT sc.showcase_card_id::BIGINT AS source_id, sc.name, sc.country, sc.role, sc.bat_level, sc.bowl_level,
+                   sc.batting_hand, sc.bowling_hand, sc.uploaded_by, sc.created_at, sc.showcase_card_id::BIGINT AS sort_id,
+                   'showcase'::TEXT AS player_kind, FALSE AS is_special, NULL::TEXT AS edition,
+                   NULL::BIGINT AS special_edition_id, sc.showcase_card_id::BIGINT AS showcase_card_id,
+                   sc.showcase_set_id::BIGINT AS showcase_set_id, ss.set_name AS showcase_name
+            FROM showcase_cards sc JOIN showcase_sets ss ON ss.showcase_set_id=sc.showcase_set_id
+            WHERE LOWER(sc.name) LIKE LOWER($1) OR LOWER(ss.set_name) LIKE LOWER($1)
+        ) all_players
+        ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END,
+                 CASE player_kind WHEN 'global' THEN 0 WHEN 'special' THEN 1 ELSE 2 END,
+                 sort_id ASC
         LIMIT $3;
-        """, like, q, limit
+        """, like, q, int(limit),
     )
-    special_rows = await fetch(
-        """
-        SELECT * FROM special_edition_players
-        WHERE LOWER(name) LIKE LOWER($1)
-        ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 ELSE 1 END, special_player_id ASC
-        LIMIT $3;
-        """, like, q, limit
-    )
-    result = [dict(row) | {"is_special": False, "edition": None, "special_edition_id": None} for row in global_rows]
-    result.extend(as_special_player(row) for row in special_rows)
+    result=[]
+    for row in rows:
+        kind=row['player_kind']
+        if kind=='special':
+            row['special_player_id']=int(row['special_edition_id'])
+            result.append(as_special_player(row))
+        elif kind=='showcase':
+            from database.showcase_players_repo import as_showcase_player
+            result.append(as_showcase_player(row))
+        else:
+            d=dict(row); d['player_id']=int(d.pop('source_id')); d['is_special']=False; d['is_showcase']=False; d['edition']=None; d['special_edition_id']=None; d['player_kind']='global'; result.append(d)
     return result
+

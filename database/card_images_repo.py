@@ -72,3 +72,26 @@ async def save_special_player_card_image(special_player_id: int, file_id: str, c
 async def get_special_player_card_image(special_player_id: int) -> dict | None:
     row = await fetchrow("SELECT * FROM special_player_card_images WHERE special_player_id = $1;", special_player_id)
     return dict(row) if row else None
+
+
+async def save_showcase_player_card_image(showcase_card_id: int, file_id: str, channel_message_id: int | None, uploaded_by: int) -> None:
+    await execute(
+        """
+        INSERT INTO showcase_player_card_images (showcase_card_id, file_id, channel_message_id, uploaded_by, updated_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (showcase_card_id) DO UPDATE SET
+            file_id = EXCLUDED.file_id,
+            channel_message_id = EXCLUDED.channel_message_id,
+            uploaded_by = EXCLUDED.uploaded_by,
+            updated_at = NOW();
+        """,
+        int(showcase_card_id), file_id, channel_message_id, uploaded_by,
+    )
+
+
+async def get_showcase_player_card_image(showcase_card_id: int) -> dict | None:
+    row = await fetchrow(
+        "SELECT * FROM showcase_player_card_images WHERE showcase_card_id = $1;",
+        int(showcase_card_id),
+    )
+    return dict(row) if row else None

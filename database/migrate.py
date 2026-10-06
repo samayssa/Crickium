@@ -248,6 +248,45 @@ TABLES = {
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "showcase_sets": """
+        CREATE TABLE IF NOT EXISTS showcase_sets(
+            showcase_set_id BIGSERIAL PRIMARY KEY,
+            set_name TEXT NOT NULL UNIQUE,
+            set_slug TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'active',
+            uploaded_by BIGINT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
+    "showcase_cards": """
+        CREATE TABLE IF NOT EXISTS showcase_cards(
+            showcase_card_id BIGSERIAL PRIMARY KEY,
+            showcase_set_id BIGINT NOT NULL REFERENCES showcase_sets(showcase_set_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            country TEXT,
+            role TEXT NOT NULL,
+            bat_level INTEGER NOT NULL,
+            bowl_level INTEGER NOT NULL,
+            batting_hand TEXT,
+            bowling_hand TEXT,
+            base_player_id BIGINT,
+            uploaded_by BIGINT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(showcase_set_id, name)
+        );
+    """,
+    "showcase_player_card_images": """
+        CREATE TABLE IF NOT EXISTS showcase_player_card_images(
+            showcase_card_id BIGINT PRIMARY KEY REFERENCES showcase_cards(showcase_card_id) ON DELETE CASCADE,
+            file_id TEXT NOT NULL,
+            channel_message_id BIGINT,
+            uploaded_by BIGINT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
     "authorized_uploaders": """
         CREATE TABLE IF NOT EXISTS authorized_uploaders(
             user_id BIGINT PRIMARY KEY,
@@ -515,6 +554,11 @@ async def migrate():
     print("[migrate] Ensuring unique index on special-edition identity...")
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_special_edition_identity ON special_edition_players(LOWER(name), LOWER(edition));")
     await execute("CREATE INDEX IF NOT EXISTS idx_special_edition_name ON special_edition_players(LOWER(name));")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_showcase_set_name ON showcase_sets(LOWER(set_name));")
+    await execute("CREATE INDEX IF NOT EXISTS idx_showcase_cards_name ON showcase_cards(LOWER(name));")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_showcase_card_identity ON showcase_cards(showcase_set_id, LOWER(name));")
+    await execute("CREATE INDEX IF NOT EXISTS idx_showcase_cards_set ON showcase_cards(showcase_set_id, showcase_card_id);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_showcase_card_images_card ON showcase_player_card_images(showcase_card_id);")
     await execute("CREATE INDEX IF NOT EXISTS idx_auction_tournaments_creator_status ON auction_tournaments(creator_id, status, tournament_id DESC);")
     await execute("CREATE INDEX IF NOT EXISTS idx_auction_tournaments_group_status ON auction_tournaments(host_group_id, status, tournament_id DESC);")
     await execute("CREATE INDEX IF NOT EXISTS idx_auction_team_owner ON auction_tournament_teams(tournament_id, owner_user_id);")
@@ -884,7 +928,7 @@ async def migrate():
             id BIGSERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             player_id BIGINT NULL,
-            player_kind TEXT NULL CHECK (player_kind IS NULL OR player_kind IN ('global','special')),
+            player_kind TEXT NULL CHECK (player_kind IS NULL OR player_kind IN ('global','special','showcase')),
             upgrade_id INTEGER NOT NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE CASCADE,
             tier SMALLINT NOT NULL CHECK (tier BETWEEN 1 AND 5),
             owned_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -898,7 +942,7 @@ async def migrate():
         CREATE TABLE IF NOT EXISTS user_player_loadouts(
             user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             player_id BIGINT NOT NULL,
-            player_kind TEXT NOT NULL CHECK (player_kind IN ('global','special')),
+            player_kind TEXT NOT NULL CHECK (player_kind IN ('global','special','showcase')),
             batting_upgrade_id INTEGER NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE SET NULL,
             bowling_upgrade_id INTEGER NULL REFERENCES upgrade_catalog(upgrade_id) ON DELETE SET NULL,
             updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -934,6 +978,14 @@ async def migrate():
     await execute("ALTER TABLE upgrade_catalog_tiers ADD CONSTRAINT upgrade_catalog_tiers_tier_check CHECK (tier BETWEEN 1 AND 5);")
     await execute("ALTER TABLE user_player_upgrades DROP CONSTRAINT IF EXISTS user_player_upgrades_tier_check;")
     await execute("ALTER TABLE user_player_upgrades ADD CONSTRAINT user_player_upgrades_tier_check CHECK (tier BETWEEN 1 AND 5);")
+    await execute("ALTER TABLE user_player_upgrades DROP CONSTRAINT IF EXISTS user_player_upgrades_player_kind_check;")
+    await execute("ALTER TABLE user_player_upgrades ADD CONSTRAINT user_player_upgrades_player_kind_check CHECK (player_kind IS NULL OR player_kind IN ('global','special','showcase'));")
+    await execute("ALTER TABLE user_player_loadouts DROP CONSTRAINT IF EXISTS user_player_loadouts_player_kind_check;")
+    await execute("ALTER TABLE user_player_loadouts ADD CONSTRAINT user_player_loadouts_player_kind_check CHECK (player_kind IN ('global','special','showcase'));")
+    await execute("ALTER TABLE trade_requests DROP CONSTRAINT IF EXISTS trade_requests_sender_player_kind_check;")
+    await execute("ALTER TABLE trade_requests ADD CONSTRAINT trade_requests_sender_player_kind_check CHECK (sender_player_kind IN ('global','special','showcase'));")
+    await execute("ALTER TABLE trade_requests DROP CONSTRAINT IF EXISTS trade_requests_recipient_player_kind_check;")
+    await execute("ALTER TABLE trade_requests ADD CONSTRAINT trade_requests_recipient_player_kind_check CHECK (recipient_player_kind IS NULL OR recipient_player_kind IN ('global','special','showcase'));")
     await execute(
         """
         CREATE TABLE IF NOT EXISTS h2h_matches(
@@ -956,9 +1008,9 @@ async def migrate():
             sender_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             recipient_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             sender_player_id BIGINT NOT NULL,
-            sender_player_kind TEXT NOT NULL CHECK (sender_player_kind IN ('global','special')),
+            sender_player_kind TEXT NOT NULL CHECK (sender_player_kind IN ('global','special','showcase')),
             recipient_player_id BIGINT NULL,
-            recipient_player_kind TEXT NULL CHECK (recipient_player_kind IS NULL OR recipient_player_kind IN ('global','special')),
+            recipient_player_kind TEXT NULL CHECK (recipient_player_kind IS NULL OR recipient_player_kind IN ('global','special','showcase')),
             sender_player_json JSONB NOT NULL,
             recipient_player_json JSONB NULL,
             status TEXT NOT NULL DEFAULT 'awaiting_sender' CHECK (status IN ('awaiting_sender','awaiting_recipient','completed','declined','cancelled','expired')),

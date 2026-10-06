@@ -13,6 +13,8 @@ CLEAR_TABLES = [
     "team_squads",
     "players",
     "special_edition_players",
+    "showcase_sets",
+    "showcase_cards",
     "users",
     "probability_profiles",
 ]
