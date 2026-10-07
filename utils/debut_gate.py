@@ -3,13 +3,34 @@ from __future__ import annotations
 from database.query import fetchrow
 from database.squads_repo import get_team_squad
 from engines.lineup_engine import load_current_xi
+import time
+from utils.bounded_dict import BoundedDict
 
 MIN_PLAYERS_FOR_GAME = 11
 
 
+# Only POSITIVE results are cached: once a squad row exists the user has debuted until an
+# admin wipes data (/cleardata or /recover, which call invalidate_debut_cache()). Negative
+# results are never cached, so a new debut is picked up immediately. This removes one
+# SELECT from almost every command.
+_DEBUT_CACHE_TTL_SECONDS = 600.0
+_DEBUT_OK: BoundedDict = BoundedDict(5000)
+
+
+def invalidate_debut_cache() -> None:
+    _DEBUT_OK.clear()
+
+
 async def has_completed_debut(user_id: int) -> bool:
-    row = await fetchrow("SELECT 1 FROM team_squads WHERE user_id = $1 LIMIT 1;", user_id)
-    return row is not None
+    uid = int(user_id)
+    stamp = _DEBUT_OK.get(uid)
+    if stamp is not None and (time.monotonic() - stamp) < _DEBUT_CACHE_TTL_SECONDS:
+        return True
+    row = await fetchrow("SELECT 1 FROM team_squads WHERE user_id = $1 LIMIT 1;", uid)
+    if row is not None:
+        _DEBUT_OK[uid] = time.monotonic()
+        return True
+    return False
 
 
 async def squad_size(user_id: int) -> int:
