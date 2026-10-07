@@ -24,7 +24,7 @@ import random
 import re
 from typing import Any
 
-from database.probability_profiles_repo import load_probability_profiles
+from database.probability_profiles_repo import PROBABILITY_KEYS, load_probability_profiles
 
 OUTCOMES = ["dot", "single", "boundary", "six", "out", "mishit"]
 

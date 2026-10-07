@@ -41,6 +41,7 @@ BatterSlot) - this module is pure lookup/math, no state of its own.
 from __future__ import annotations
 
 import random
+from typing import Any
 
 OUTCOMES = [0, 1, 2, 3, 4, 6, "W", "WD", "NB", "LB", "BY"]
 

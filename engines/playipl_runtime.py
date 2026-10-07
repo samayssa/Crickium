@@ -687,7 +687,11 @@ def start_second_innings(session: PlaySession, target: int) -> None:
     session.this_over = []
     session.over_commentary = []
     session.last_over = []
-    session.quest_current_over = {}
+    try:
+        from services.quest_engine import flush_live_over
+        flush_live_over(session)
+    except Exception:
+        session.quest_current_over = {}
     session.last_over_commentary = []
     session.bowler_stats = {}
     session.partnership_runs = 0
