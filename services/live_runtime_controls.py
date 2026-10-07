@@ -13,7 +13,7 @@ def impact_batting_position_allowed(session: Any, team_id: int) -> bool:
     """Return whether the selected Impact IN player needs batting positioning.
 
     Positioning is determined by the incoming player's role, not by which side
-    is currently batting or bowling. Only Batsman/AllRounder Impact players
+    is currently batting or bowling. Batsman/AllRounder/Wicketkeeper Impact players
     receive the batting-position step. Bowlers and other roles return directly
     to the normal runtime stage.
     """
@@ -24,7 +24,7 @@ def impact_batting_position_allowed(session: Any, team_id: int) -> bool:
         return False
     player = find_player(session, team_id, in_id) or {}
     role = str(player.get("role") or "").strip().lower().replace(" ", "").replace("-", "")
-    return role in {"batsman", "allrounder"}
+    return role in {"batsman", "allrounder", "wicketkeeper", "wicketkeeperbatsman", "wk"}
 
 
 def impact_player_name_html(session: Any, player_id: int, name: str) -> str:

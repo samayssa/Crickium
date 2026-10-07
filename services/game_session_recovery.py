@@ -8,6 +8,7 @@ runtime registries the engines already use.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import pickle
 from typing import Any
 
@@ -17,6 +18,9 @@ _TERMINAL = {"timed_out", "completed", "declined", "ended", "expired"}
 _SAVER_TASK: asyncio.Task | None = None
 _SAVE_LOCK = asyncio.Lock()
 RECOVERY_CHECKPOINT_SECONDS = 10.0
+# digest of the last snapshot successfully written per (engine, match_id); lets an
+# unchanged session skip its DB write (periodic saver + post-callback sync overlap).
+_LAST_SNAPSHOT_DIGEST: dict[tuple[str, int], bytes] = {}
 
 
 async def ensure_schema() -> None:
@@ -34,6 +38,7 @@ async def delete_snapshot(engine: str, match_id: int) -> None:
             "DELETE FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
             str(engine).upper(), int(match_id),
         )
+        _LAST_SNAPSHOT_DIGEST.pop((str(engine).upper(), int(match_id)), None)
     except Exception as exc:
         print(f"[session-recovery] delete failed {engine}:{match_id}: {exc!r}")
 
@@ -58,6 +63,10 @@ async def persist_session(engine: str, session: Any) -> bool:
         return False
     try:
         payload = pickle.dumps(_normalize_for_pickle(session), protocol=pickle.HIGHEST_PROTOCOL)
+        digest_key = (str(engine).upper(), match_id)
+        digest = hashlib.blake2b(payload, digest_size=16).digest()
+        if _LAST_SNAPSHOT_DIGEST.get(digest_key) == digest:
+            return True  # identical to the snapshot already stored in PostgreSQL
         async with _SAVE_LOCK:
             await execute(
                 """
@@ -69,6 +78,7 @@ async def persist_session(engine: str, session: Any) -> bool:
                 """,
                 str(engine).upper(), match_id, payload,
             )
+        _LAST_SNAPSHOT_DIGEST[digest_key] = digest
         return True
     except Exception as exc:
         print(f"[session-recovery] persist failed {engine}:{match_id}: {exc!r}")

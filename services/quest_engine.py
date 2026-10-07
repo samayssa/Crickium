@@ -37,6 +37,34 @@ _EVENT_TYPES_FOR_QUEST_RUNNER = {
     "TOURNAMENT_MATCH_COMPLETED", "QUEST_EVENT",
 }
 
+# Event types (and, where the evaluator filters on it, metadata ``source``) that
+# at least one catalog task reads in _task_satisfied(). Anything else cannot change
+# quest progress, so persisting it and re-evaluating every quest would only burn
+# database compute. MATCH_COMPLETED is a trigger: its data lives in
+# quest_match_summaries, not quest_events.
+_CONSUMED_EVENT_SOURCES: dict[str, frozenset[str] | None] = {
+    "MATCH_COMPLETED": None,
+    "PLAYER_PURCHASE": None,
+    "COIN_SPENT": frozenset({"player_shop"}),
+    "RUBY_SPENT": frozenset({"upgrade_purchase", "upgrade_levelup"}),
+    "UPGRADE_APPLIED": None,
+    "CLAIM_SUCCESS": None,
+    "DAILY_REWARD_CLAIM": None,
+    "PACK_PURCHASED": None,
+    "PACK_OPENED": None,
+    "PLAYING_XI_CONFIRMED": None,
+    "OVERSEAS_XI_CONFIRMED": None,
+}
+# Event rows actually read back by the evaluator (MATCH_COMPLETED is not stored-read).
+_EVALUATED_EVENT_TYPES = sorted(t for t in _CONSUMED_EVENT_SOURCES if t != "MATCH_COMPLETED")
+
+
+def _event_can_affect_quests(event_type: str, metadata: dict[str, Any]) -> bool:
+    if event_type not in _CONSUMED_EVENT_SOURCES:
+        return False
+    sources = _CONSUMED_EVENT_SOURCES[event_type]
+    return sources is None or str(metadata.get("source") or "") in sources
+
 
 def _server_now() -> datetime:
     """Current server-local time, including the server's UTC offset."""
@@ -86,7 +114,32 @@ async def _latest_period(period_type: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+_PERIOD_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def invalidate_period_cache() -> None:
+    """Forget cached period rows (call after restoring/clearing quest tables)."""
+    _PERIOD_CACHE.clear()
+
+
 async def ensure_current_period(period_type: str, now: datetime | None = None) -> dict[str, Any]:
+    """Return the persisted current period.
+
+    Period rows are immutable once written, so the row is cached in memory only until
+    its persisted ``end_at`` boundary. PostgreSQL stays the source of truth: after the
+    boundary (or on restart) the row is re-read / advanced from the database.
+    """
+    if now is None and period_type in _PERIOD_CACHE:
+        cached = _PERIOD_CACHE[period_type]
+        if _server_now() < cached["end_at"]:
+            return dict(cached)
+    period = await _ensure_current_period_db(period_type, now)
+    if now is None:
+        _PERIOD_CACHE[period_type] = dict(period)
+    return period
+
+
+async def _ensure_current_period_db(period_type: str, now: datetime | None = None) -> dict[str, Any]:
     if period_type not in PERIODS:
         raise ValueError("invalid quest period")
     now = now or _server_now()
@@ -152,25 +205,15 @@ async def ensure_current_periods() -> None:
             print(f"[quest] Failed to ensure {period} period: {exc!r}")
 
 
-_QUEST_MAINTENANCE_TASK: Any = None
-
-
 async def start_quest_maintenance() -> None:
-    global _QUEST_MAINTENANCE_TASK
-    if _QUEST_MAINTENANCE_TASK is not None and not _QUEST_MAINTENANCE_TASK.done():
-        return
+    """Make sure the current quest periods exist once at startup.
 
-    import asyncio
-
-    async def _runner() -> None:
-        while True:
-            try:
-                await ensure_current_periods()
-            except Exception as exc:
-                print(f"[quest] refresh worker failed: {exc!r}")
-            await asyncio.sleep(30)
-
-    _QUEST_MAINTENANCE_TASK = asyncio.create_task(_runner(), name="crickium-quest-maintenance")
+    This used to start a loop that queried PostgreSQL every 30 seconds forever, which
+    kept the Neon compute endpoint awake 24/7 and prevented autosuspend. It is not
+    needed for correctness: every quest read/write path calls ensure_current_period(),
+    which advances periods from the persisted boundary on demand (restart-safe).
+    """
+    await ensure_current_periods()
 
 
 def _assignment_fingerprint(task_ids: list[str]) -> str:
@@ -250,27 +293,26 @@ async def get_quest_view(user_id: int, period_type: str) -> tuple[dict[str, Any]
 
 
 async def record_quest_event(user_id: int, event_type: str, *, value: int = 1, metadata: dict[str, Any] | None = None, occurred_at: datetime | None = None) -> None:
-    """Persist a verified gameplay/economy event, then evaluate current quests."""
+    """Persist a verified gameplay/economy event, then evaluate current quests.
+
+    Events that no quest task reads (card/stat views, team updates, loadout changes,
+    exit penalties, coin exchanges...) are ignored without touching the database.
+    """
     user_id = int(user_id)
     event_type = str(event_type).upper().strip()
     metadata = dict(metadata or {})
+    if not _event_can_affect_quests(event_type, metadata):
+        return
     now = occurred_at or _server_now()
     metadata.setdefault("event_date", now.astimezone().strftime("%Y-%m-%d"))
     try:
-        await execute(
-            """
-            INSERT INTO quest_events(event_id,user_id,event_type,value_int,metadata,occurred_at)
-            VALUES($1,$2,$3,$4,$5::jsonb,$6);
-            """,
-            uuid.uuid4(), user_id, event_type, int(value or 0), json.dumps(metadata, default=str), now,
-        )
-        if event_type != "QUEST_EVENT" and event_type in _EVENT_TYPES_FOR_QUEST_RUNNER:
+        if event_type != "MATCH_COMPLETED":
             await execute(
                 """
                 INSERT INTO quest_events(event_id,user_id,event_type,value_int,metadata,occurred_at)
-                VALUES($1,$2,'QUEST_EVENT',1,$3::jsonb,$4);
+                VALUES($1,$2,$3,$4,$5::jsonb,$6);
                 """,
-                uuid.uuid4(), user_id, json.dumps({"source": event_type}), now,
+                uuid.uuid4(), user_id, event_type, int(value or 0), json.dumps(metadata, default=str), now,
             )
         await evaluate_and_complete_user(user_id)
     except Exception as exc:
@@ -327,6 +369,68 @@ def _phase_for_over(over_number: int) -> str:
     if over_number <= 15:
         return "middle"
     return "death"
+
+
+def flush_live_over(session: Any) -> None:
+    """Move the in-progress over aggregate (if it saw any ball) into quest_over_history."""
+    current = getattr(session, "quest_current_over", None) or {}
+    if current.get("balls") or current.get("runs") or current.get("wickets"):
+        history = getattr(session, "quest_over_history", None)
+        if history is not None:
+            history.append({k: v for k, v in current.items() if k != "legal_balls_after"})
+    session.quest_current_over = {}
+
+
+def record_live_ball(session: Any, outcome: Any) -> None:
+    """Accumulate per-over aggregates for over/phase based quests.
+
+    Called by the PLAY / PLAYIPL / PLAYINT runtimes after every delivery, *after* the
+    innings state has been updated. It only touches in-memory session fields
+    (``quest_current_over`` / ``quest_over_history``), which are persisted with the
+    session snapshot and read by record_match_summary_for_session(). This hook was
+    called by all three runtimes but never defined, so ``over_history`` was always
+    empty and every over/phase quest (dots, maidens, phase runs/wickets/boundaries,
+    big overs...) was impossible to complete.
+    """
+    innings = session.innings
+    legal_after = int(innings.score.legal_balls or 0)
+    legal = bool(getattr(outcome, "legal", True))
+    over_number = ((legal_after - 1) // 6 + 1) if (legal and legal_after > 0) else (legal_after // 6 + 1)
+    innings_number = int(getattr(innings, "innings_number", 1) or 1)
+
+    current = getattr(session, "quest_current_over", None) or {}
+    if current and (int(current.get("innings_number") or 0), int(current.get("over_number") or 0)) != (innings_number, over_number):
+        flush_live_over(session)
+        current = {}
+    if not current:
+        current = {
+            "innings_number": innings_number,
+            "over_number": over_number,
+            "phase": _phase_for_over(over_number),
+            "batting_team_id": int(session.batting_team_id),
+            "bowling_team_id": int(session.bowling_team_id),
+            "runs": 0, "wickets": 0, "dots": 0, "fours": 0, "sixes": 0, "balls": 0,
+            "completed": False,
+        }
+        session.quest_current_over = current
+
+    runs = int(getattr(outcome, "runs", 0) or 0)
+    current["runs"] += runs
+    if bool(getattr(outcome, "wicket", False)):
+        current["wickets"] += 1
+    name = str(getattr(outcome, "outcome", "") or "")
+    if name == "four":
+        current["fours"] += 1
+    elif name == "six":
+        current["sixes"] += 1
+    if legal:
+        current["balls"] += 1
+        if runs == 0:
+            current["dots"] += 1
+    current["legal_balls_after"] = legal_after
+    if legal and legal_after > 0 and legal_after % 6 == 0:
+        current["completed"] = True
+        flush_live_over(session)
 
 
 def _match_metrics(summaries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -823,16 +927,79 @@ async def _load_current_metrics(user_id: int, period_type: str) -> tuple[dict[st
         "raw_summaries": summaries,
     }
 
+def _in_window(value: Any, start: datetime, end: datetime) -> bool:
+    if value is None:
+        return False
+    if getattr(value, "tzinfo", None) is None:
+        value = value.replace(tzinfo=start.tzinfo)
+    return start <= value < end
+
+
 async def evaluate_and_complete_user(user_id: int) -> None:
+    """Evaluate the user's daily/weekly/monthly tasks with a fixed number of queries.
+
+    One events query, one match-summary query, one completions query and one
+    assignment lookup per period replace the old per-period / per-task query storm.
+    Completion stays idempotent: _complete_task() inserts with ON CONFLICT DO NOTHING
+    inside the reward transaction, so concurrent evaluations cannot double-reward.
+    """
+    user_id = int(user_id)
+    try:
+        periods = {pt: await ensure_current_period(pt) for pt in PERIODS}
+        lo = min(p["start_at"] for p in periods.values())
+        hi = max(p["end_at"] for p in periods.values())
+        events_all = [dict(r) for r in await fetch(
+            "SELECT event_type, value_int, metadata, occurred_at FROM quest_events "
+            "WHERE user_id=$1 AND occurred_at >= $2 AND occurred_at < $3 AND event_type = ANY($4::text[]) "
+            "ORDER BY occurred_at;",
+            user_id, lo, hi, _EVALUATED_EVENT_TYPES,
+        )]
+        summaries_all = [dict(r) for r in await fetch(
+            "SELECT * FROM quest_match_summaries WHERE user_id=$1 AND played_at >= $2 AND played_at < $3 ORDER BY played_at;",
+            user_id, lo, hi,
+        )]
+        completions_all = [dict(r) for r in await fetch(
+            "SELECT period_type, period_key, task_id, completed_at FROM quest_completions "
+            "WHERE user_id=$1 AND completed_at >= $2;",
+            user_id, lo,
+        )]
+    except Exception as exc:
+        print(f"[quest] evaluation load failed for user_id={user_id}: {exc!r}")
+        return
+
+    # Daily first so weekly/monthly quest-on-quest tasks see fresh daily completions.
     for period_type in PERIODS:
         try:
-            period, _events, _summaries, completions, metrics = await _load_current_metrics(user_id, period_type)
-            _, tasks, _done = await get_quest_view(user_id, period_type)
-            for task in tasks:
-                if await is_task_completed(user_id, period_type, period, task["id"]):
-                    continue
-                if _task_satisfied(task, period_type, metrics, completions):
-                    await _complete_task(user_id, period_type, period, task)
+            period = periods[period_type]
+            start, end = period["start_at"], period["end_at"]
+            pkey = str(period["period_key"])
+            _p, _assignment, tasks = await _assignment_tasks(user_id, period_type)
+            done = {str(c["task_id"]) for c in completions_all
+                    if str(c["period_type"]) == period_type and str(c["period_key"]) == pkey}
+            pending = [t for t in tasks if str(t["id"]) not in done]
+            if not pending:
+                continue
+            events = [e for e in events_all if _in_window(e.get("occurred_at"), start, end)]
+            summaries = [s for s in summaries_all if _in_window(s.get("played_at"), start, end)]
+            match_metrics = _match_metrics(summaries)
+            match_metrics["user_id"] = user_id
+            metrics = {
+                "events": _events_metrics(events),
+                "matches": match_metrics,
+                "period_key": pkey,
+                "user_id": user_id,
+                "period_start": start,
+                "period_end": end,
+                "raw_events": events,
+                "raw_summaries": summaries,
+            }
+            for task in pending:
+                if _task_satisfied(task, period_type, metrics, completions_all):
+                    if await _complete_task(user_id, period_type, period, task):
+                        completions_all.append({
+                            "period_type": period_type, "period_key": pkey,
+                            "task_id": str(task["id"]), "completed_at": _server_now(),
+                        })
         except Exception as exc:
             print(f"[quest] evaluation failed for user_id={user_id} period={period_type}: {exc!r}")
 
@@ -931,7 +1098,7 @@ async def record_match_summary_for_session(session: Any, innings_1: dict[str, An
 
     full_overs = list(getattr(session, "quest_over_history", []) or [])
     current = dict(getattr(session, "quest_current_over", {}) or {})
-    if current.get("balls"):
+    if current.get("balls") or current.get("runs") or current.get("wickets"):
         current.setdefault("innings_number", int(innings_2.get("innings_number") or 2))
         current.setdefault("over_number", ((int(current.get("legal_balls_after") or 0) - 1) // 6) + 1 if current.get("legal_balls_after") else 1)
         current.setdefault("phase", _phase_for_over(int(current.get("over_number") or 1)))
@@ -994,10 +1161,15 @@ async def record_match_summary_for_session(session: Any, innings_1: dict[str, An
                 bowling=EXCLUDED.bowling,over_history=EXCLUDED.over_history,played_at=NOW();
             """,
             user_id, engine, data["match_id"], match_type, data["pitch"], data["won"], data["chasing"], data["defending"], data["late_chase"],
-            data["comeback_chase"], data["comeback_defense"], data["target"], data["batting_runs"], data["bowling_wickets"], data["conceded_boundary"],
+            data["comeback_chase"], data["comeback_defense"], int(data["target"] or 0), data["batting_runs"], data["bowling_wickets"], data["conceded_boundary"],
             json.dumps(data["batting"], default=str), json.dumps(data["bowling"], default=str), json.dumps(data["over_history"], default=str),
         )
         await record_quest_event(user_id, "MATCH_COMPLETED", metadata={"engine": engine, "match_id": data["match_id"], "mode": match_type})
 
+    # Isolate the two participants: a failure for one player must not stop the other
+    # player's summary (and quest progress) from being recorded.
     for uid in (challenger_id, opponent_id):
-        await _one(uid)
+        try:
+            await _one(uid)
+        except Exception as exc:
+            print(f"[quest] match summary failed engine={engine} match_id={getattr(session, 'match_id', None)} user_id={uid}: {exc!r}")

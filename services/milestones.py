@@ -21,6 +21,7 @@ from utils.PremiumEmoji import (
     milestone_emoji_html,
 )
 from utils.mentions import mention_name_only_html
+from utils.background import spawn
 
 ENGINE_LABELS = {
     "PLAY": "PLAY",
@@ -305,6 +306,6 @@ def schedule_milestone_notifications(session: Any, outcome: Any, striker_before:
             return
         text = "\n\n".join(_build_event_text(session, event) for event in events)
         media = _media_for(events)
-        asyncio.create_task(_send_alert(int(session.chat_id), text, media=media))
+        spawn(_send_alert(int(session.chat_id), text, media=media), name='milestone-alert')
     except Exception as exc:
         print(f"[milestones] collection failed: {exc!r}")
