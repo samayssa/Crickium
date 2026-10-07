@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import asyncio
 from handlers.registry import register_callback
+from services.match_summary import send_match_summary
 from app import app
 from buttons.playso_buttons import length_keyboard, delivery_keyboard, line_keyboard, foot_keyboard, intent_keyboard, shot_keyboard
 from database.playso_repo import get_match, set_state, set_basic

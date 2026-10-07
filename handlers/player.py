@@ -18,10 +18,11 @@ from utils.price_chart import get_price, format_price
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
+from utils.bounded_dict import BoundedDict
 from buttons.catalog_buttons import catalog_page_keyboard
 from services.card_identity import owned_same_card, card_identity_key, player_kind, version_label
 
-_PLAYER_PAGE_STATE: dict[str, dict] = {}
+_PLAYER_PAGE_STATE: dict[str, dict] = BoundedDict(1000)
 
 
 def _escape(value: object | None) -> str:

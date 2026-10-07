@@ -17,6 +17,10 @@ from utils.rarity import get_rarity
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
+from buttons.catalog_buttons import catalog_page_keyboard
+from utils.bounded_dict import BoundedDict
+
+_PLSTATS_PAGE_STATE: BoundedDict = BoundedDict(1000)
 from services.card_identity import owned_same_card, player_kind, card_identity_key
 
 

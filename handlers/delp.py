@@ -23,8 +23,9 @@ from database.showcase_players_repo import parse_showcase_image_target, get_show
 from services.card_identity import player_kind
 from buttons.delp_buttons import delete_confirm_keyboard
 from config import ADMIN_USER_ID
+from utils.bounded_dict import BoundedDict
 
-_PENDING: dict[str, dict] = {}
+_PENDING: dict[str, dict] = BoundedDict(1000)
 
 
 async def _allowed(user_id: int) -> bool:

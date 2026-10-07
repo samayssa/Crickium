@@ -30,6 +30,11 @@ async def recover_command(message):
         )
         return
 
+    declared_size = int(document.get("file_size") or 0)
+    if declared_size > 64 * 1024 * 1024:
+        await app.send_message(chat_id, "⚠️ That backup file is larger than the 64 MB restore limit.")
+        return
+
     print(f"[recover] /recover invoked by user_id={user_id}, file_id={document['file_id'][:20]}...")
     await app.send_message(
         chat_id,

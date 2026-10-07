@@ -37,7 +37,6 @@ def register_callback(action):
                 except Exception:
                     match_id = None
 
-            before = None
             actor_id = int((callback_query.get("from") or {}).get("id") or 0)
             if engine and match_id is not None:
                 try:
@@ -48,8 +47,7 @@ def register_callback(action):
                     print(f"[registry] runtime restore failed for {action}: {exc!r}")
 
                 try:
-                    from utils.game_inactivity import cancel, game_signature
-                    before = await game_signature(engine, match_id)
+                    from utils.game_inactivity import cancel
                     # The user has actively touched the game. Stop their timer
                     # before running any DB/Telegram work so a boundary-second
                     # race cannot declare them a loser while their callback is
@@ -72,8 +70,7 @@ def register_callback(action):
 
             if engine and match_id is not None:
                 try:
-                    from utils.game_inactivity import game_signature, sync_after_change
-                    after = await game_signature(engine, match_id)
+                    from utils.game_inactivity import sync_after_change
                     await sync_after_change(engine, match_id, actor_id)
                 except Exception as exc:
                     print(f"[registry] inactivity post-sync failed for {action}: {exc!r}")

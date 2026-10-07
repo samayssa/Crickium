@@ -12,6 +12,8 @@ from database.players_repo import get_player
 from database.special_players_repo import get_player_variants, search_player_variants, get_special_player, split_player_edition, display_edition
 from database.showcase_players_repo import get_showcase_player_by_identity, get_showcase_player
 from database.squads_repo import get_team_squad, save_team_squad
+from utils.user_locks import user_lock
+from utils.bounded_dict import BoundedDict
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
 from utils.rarity import get_rarity
@@ -31,7 +33,7 @@ SUCCESS_FOOTER = "🥳 Yayy! You invested in the right player."
 INSUFFICIENT_BALANCE_FOOTER = "❌ You don't have enough balance to buy this player."
 ALREADY_OWNED_FOOTER = "ℹ️ You already own this player."
 DECLINE_FOOTER = "🕐 Maybe next time!"
-_BUY_PAGE_STATE: dict[str, dict] = {}
+_BUY_PAGE_STATE: dict[str, dict] = BoundedDict(1000)
 
 
 def _escape(value: object | None) -> str:
@@ -93,23 +95,50 @@ async def _update_prompt(callback_query: dict, text: str, reply_markup=None) -> 
         await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=reply_markup)
 
 
+def _parse_squad_json(raw) -> list[dict]:
+    import json as _json
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return _json.loads(raw)
+    if isinstance(raw, list):
+        return raw
+    return _json.loads(_json.dumps(raw, default=str))
+
+
 async def _attempt_purchase(user_id: int, player: dict, buy_price: int) -> str:
-    squad = await get_team_squad(user_id) or []
-    already_owned = any(owned_same_card(dict(p), player) for p in squad)
-    if already_owned:
-        return "already_owned"
+    """Buy a player: ownership check, debit and squad write are ONE atomic transaction.
+
+    The user lock stops a double-pressed button from running two purchases at once in
+    this process; FOR UPDATE on the squad row and the conditional debit keep the
+    database correct regardless (no double charge, no lost squad update, no coins
+    taken without the player being added if the process dies mid-purchase).
+    """
+    import json as _json
 
     async def _tx(conn):
-        balance = int(await conn.fetchval("SELECT balance FROM users WHERE user_id = $1;", user_id) or 0)
-        if balance < buy_price:
+        row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id = $1 FOR UPDATE;", user_id)
+        squad = _parse_squad_json(row["squad"]) if row else []
+        if any(owned_same_card(dict(p), player) for p in squad):
+            return "already_owned"
+        debited = await conn.fetchval(
+            "UPDATE users SET balance = balance - $1, total_spent = COALESCE(total_spent,0) + $1 "
+            "WHERE user_id = $2 AND COALESCE(balance,0) >= $1 RETURNING balance;",
+            buy_price, user_id,
+        )
+        if debited is None:
             return "insufficient_balance"
-        await conn.execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", buy_price, user_id)
+        squad.append(dict(player))
+        await conn.execute(
+            "INSERT INTO team_squads (user_id, squad, updated_at) VALUES ($1, $2::jsonb, NOW()) "
+            "ON CONFLICT (user_id) DO UPDATE SET squad = EXCLUDED.squad, updated_at = NOW();",
+            user_id, _json.dumps(squad, default=str),
+        )
         return "success"
 
-    result = await transaction(_tx)
+    async with user_lock(user_id):
+        result = await transaction(_tx)
     if result == "success":
-        squad.append(dict(player))
-        await save_team_squad(user_id, squad)
         await reset_player_user_stats(user_id, int(player["player_id"]))
     return result
 

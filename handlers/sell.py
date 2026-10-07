@@ -8,12 +8,14 @@ import string
 
 from handlers.registry import register, register_callback
 from app import app
-from database.query import execute, fetchrow
+from database.query import execute, fetchrow, transaction
 from database.players_repo import get_player
 from database.special_players_repo import get_special_player_by_id, display_edition
 from database.showcase_players_repo import get_showcase_player
 import uuid
 from database.squads_repo import get_team_squad, save_team_squad
+from utils.user_locks import user_lock
+from utils.bounded_dict import BoundedDict
 from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
 from utils.rarity import get_rarity
@@ -31,8 +33,8 @@ CANCEL_NOTICE = "❌ Sale cancelled — this player stays in your squad."
 
 # In-memory batch-sale snapshots keep callback data short while preserving the exact
 # numbered players shown to the user until the confirmation/cancellation is pressed.
-_PENDING_BATCH_SALES: dict[str, dict] = {}
-_PENDING_SELL_SEARCH: dict[str, dict] = {}
+_PENDING_BATCH_SALES: dict[str, dict] = BoundedDict(1000)
+_PENDING_SELL_SEARCH: dict[str, dict] = BoundedDict(1000)
 
 
 def _new_sale_token() -> str:
@@ -248,6 +250,40 @@ async def _update_prompt(callback_query: dict, text: str, reply_markup=None) -> 
         await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=reply_markup)
 
 
+
+async def _sell_players_atomic(seller_id: int, player_ids: set[int], credit: int) -> bool:
+    """Remove players from the squad and credit coins in ONE transaction.
+
+    The squad row is locked (FOR UPDATE) and ownership is re-checked inside the
+    transaction, so a double-pressed confirm button (or a concurrent trade/buy) can
+    neither credit the coins twice nor remove players that are already gone, and a
+    crash cannot leave a player removed without payment (or paid without removal).
+    Squad ``player_id`` values are unique across global/special/showcase cards.
+    Returns False, writing nothing, when any of ``player_ids`` is no longer owned.
+    """
+    import json as _json
+
+    async def _tx(conn):
+        row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id = $1 FOR UPDATE;", seller_id)
+        if not row:
+            return False
+        raw = row["squad"]
+        squad = _json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, list) else _json.loads(_json.dumps(raw, default=str)))
+        owned_ids = {int(p.get("player_id") or 0) for p in squad}
+        if not player_ids.issubset(owned_ids):
+            return False
+        remaining = [p for p in squad if int(p.get("player_id") or 0) not in player_ids]
+        await conn.execute(
+            "UPDATE team_squads SET squad = $2::jsonb, updated_at = NOW() WHERE user_id = $1;",
+            seller_id, _json.dumps(remaining, default=str),
+        )
+        await conn.execute("UPDATE users SET balance = COALESCE(balance,0) + $1 WHERE user_id = $2;", int(credit), seller_id)
+        return True
+
+    async with user_lock(seller_id):
+        return bool(await transaction(_tx))
+
+
 @register("sell")
 async def sell_command(message):
     chat_id = message["chat"]["id"]
@@ -453,10 +489,11 @@ async def on_sell_confirm(callback_query):
     ovr = overall_rating(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
     _buy_price, sell_price = get_price(ovr)
 
-    new_squad = [p for p in squad if int(p.get("player_id") or 0) != pid]
-    await save_team_squad(seller_id, new_squad)
+    if not await _sell_players_atomic(seller_id, {pid}, int(sell_price)):
+        await app.answer_callback_query(callback_query["id"], "You no longer own this player.", show_alert=True)
+        await _update_prompt(callback_query, _player_sale_text(player, "ℹ️ You no longer own this player."), NO_KEYBOARD)
+        return
     await reset_player_user_stats(seller_id, pid)
-    await execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2;", sell_price, seller_id)
 
     await app.answer_callback_query(callback_query["id"], "Sold!")
     await _update_prompt(callback_query, _player_sold_text(player, sell_price), NO_KEYBOARD)
@@ -500,11 +537,13 @@ async def on_sell_range_confirm(callback_query):
         _buy_price, sell_price = get_price(ovr)
         total_sell += int(sell_price)
 
-    new_squad = [p for p in squad if int(p.get("player_id") or 0) not in id_set]
-    await save_team_squad(seller_id, new_squad)
+    if not await _sell_players_atomic(seller_id, id_set, int(total_sell)):
+        _PENDING_BATCH_SALES.pop(token, None)
+        await app.answer_callback_query(callback_query["id"], "Your squad changed. Please run the sell range again.", show_alert=True)
+        await _update_prompt(callback_query, "<b>⚠️ Your squad changed after this sale list was created. Please run the command again.</b>", NO_KEYBOARD)
+        return
     for player in selected:
         await reset_player_user_stats(seller_id, int(player["player_id"]))
-    await execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2;", total_sell, seller_id)
 
     _PENDING_BATCH_SALES.pop(token, None)
     await app.answer_callback_query(callback_query["id"], "Players sold!")

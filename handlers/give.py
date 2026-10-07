@@ -41,7 +41,8 @@ def _parse_username(tokens: list[str]) -> str | None:
 
 async def _transfer_funds(sender_id: int, recipient_id: int, amount: int) -> tuple[int, int]:
     async def _tx(conn):
-        sender_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1;", sender_id)
+        # FOR UPDATE serializes concurrent /give from the same sender (no double-spend of one balance).
+        sender_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1 FOR UPDATE;", sender_id)
         sender_balance = int(sender_balance or 0)
         if sender_balance < amount:
             return sender_balance, -1
@@ -51,7 +52,8 @@ async def _transfer_funds(sender_id: int, recipient_id: int, amount: int) -> tup
             return sender_balance, -2
 
         await conn.execute(
-            "UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;",
+            "UPDATE users SET balance = balance - $1, total_spent = COALESCE(total_spent,0) + $1 "
+            "WHERE user_id = $2 AND COALESCE(balance,0) >= $1;",
             amount, sender_id,
         )
         await conn.execute(
