@@ -12,6 +12,7 @@ from utils.mentions import mention_html
 from buttons.play_buttons import start_match_keyboard
 from services.card_identity import display_card_name
 from .live import begin_match_flow
+from utils.background import spawn
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -87,4 +88,4 @@ async def on_play_start(callback_query):
         reply_markup=NO_KEYBOARD,
     )
 
-    asyncio.create_task(begin_match_flow(callback_query["message"]["chat"]["id"], match))
+    spawn(begin_match_flow(callback_query["message"]["chat"]["id"], match), name='begin-match-flow')
