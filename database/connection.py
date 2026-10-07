@@ -190,7 +190,11 @@ async def connect():
                 **connect_kwargs,
                 min_size=0,
                 max_size=5,
+                # Close idle connections after 5 minutes so Neon can autosuspend the
+                # compute endpoint; never let a stalled network wait forever.
                 max_inactive_connection_lifetime=300.0,
+                command_timeout=60.0,
+                timeout=30.0,
             )
             clear_database_quota_block()
             print("[db/connection] Pool created successfully.")

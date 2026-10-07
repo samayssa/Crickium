@@ -978,14 +978,6 @@ async def migrate():
     await execute("ALTER TABLE upgrade_catalog_tiers ADD CONSTRAINT upgrade_catalog_tiers_tier_check CHECK (tier BETWEEN 1 AND 5);")
     await execute("ALTER TABLE user_player_upgrades DROP CONSTRAINT IF EXISTS user_player_upgrades_tier_check;")
     await execute("ALTER TABLE user_player_upgrades ADD CONSTRAINT user_player_upgrades_tier_check CHECK (tier BETWEEN 1 AND 5);")
-    await execute("ALTER TABLE user_player_upgrades DROP CONSTRAINT IF EXISTS user_player_upgrades_player_kind_check;")
-    await execute("ALTER TABLE user_player_upgrades ADD CONSTRAINT user_player_upgrades_player_kind_check CHECK (player_kind IS NULL OR player_kind IN ('global','special','showcase'));")
-    await execute("ALTER TABLE user_player_loadouts DROP CONSTRAINT IF EXISTS user_player_loadouts_player_kind_check;")
-    await execute("ALTER TABLE user_player_loadouts ADD CONSTRAINT user_player_loadouts_player_kind_check CHECK (player_kind IN ('global','special','showcase'));")
-    await execute("ALTER TABLE trade_requests DROP CONSTRAINT IF EXISTS trade_requests_sender_player_kind_check;")
-    await execute("ALTER TABLE trade_requests ADD CONSTRAINT trade_requests_sender_player_kind_check CHECK (sender_player_kind IN ('global','special','showcase'));")
-    await execute("ALTER TABLE trade_requests DROP CONSTRAINT IF EXISTS trade_requests_recipient_player_kind_check;")
-    await execute("ALTER TABLE trade_requests ADD CONSTRAINT trade_requests_recipient_player_kind_check CHECK (recipient_player_kind IS NULL OR recipient_player_kind IN ('global','special','showcase'));")
     await execute(
         """
         CREATE TABLE IF NOT EXISTS h2h_matches(
@@ -1023,12 +1015,56 @@ async def migrate():
     )
     await execute("CREATE INDEX IF NOT EXISTS idx_trade_sender_status ON trade_requests(sender_id, status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_trade_recipient_status ON trade_requests(recipient_id, status);")
+
+    # Allow the 'showcase' card kind in existing CHECK constraints. Done AFTER every table
+    # exists (a fresh database used to fail here because trade_requests was altered before
+    # it was created) and only when the live constraint does not already allow it, so
+    # normal restarts do not re-validate these tables.
+    for _table, _constraint, _check in (
+        ("user_player_upgrades", "user_player_upgrades_player_kind_check", "player_kind IS NULL OR player_kind IN ('global','special','showcase')"),
+        ("user_player_loadouts", "user_player_loadouts_player_kind_check", "player_kind IN ('global','special','showcase')"),
+        ("trade_requests", "trade_requests_sender_player_kind_check", "sender_player_kind IN ('global','special','showcase')"),
+        ("trade_requests", "trade_requests_recipient_player_kind_check", "recipient_player_kind IS NULL OR recipient_player_kind IN ('global','special','showcase')"),
+    ):
+        await execute(f"""
+            DO $do$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = '{_constraint}' AND conrelid = '{_table}'::regclass
+                      AND pg_get_constraintdef(oid) LIKE '%showcase%'
+                ) THEN
+                    ALTER TABLE {_table} DROP CONSTRAINT IF EXISTS {_constraint};
+                    ALTER TABLE {_table} ADD CONSTRAINT {_constraint} CHECK ({_check});
+                END IF;
+            END
+            $do$;
+        """)
     print("[migrate] Player upgrade tables OK.")
 
     from services.player_upgrades import UPGRADES
     from utils.upgrade_prices import UPGRADE_RUBY_PRICES, TIER_STRENGTHS
     import json as _json
-    for upgrade in UPGRADES:
+    import hashlib as _hashlib
+
+    # Seeding is ~150 statements. Skip it when the catalogue definition is unchanged
+    # since the last successful seed (fingerprint kept in bot_runtime_state) and the
+    # table still holds every upgrade, so routine restarts do not wake Neon for it.
+    from database.query import fetchval as _fetchval
+    _seed_fingerprint = _hashlib.sha256(_json.dumps(
+        [[u.key, u.name, u.category, u.description, u.detail, sorted(u.roles), u.family,
+          sorted(u.tactics), sorted(u.phases), sorted(u.approaches), u.effect_kind,
+          list(u.outcomes), list(u.fund_from), sorted(u.counter_approaches)] for u in UPGRADES]
+        + [sorted((int(k), float(v)) for k, v in TIER_STRENGTHS.items()),
+           sorted((int(k), int(v)) for k, v in UPGRADE_RUBY_PRICES.items())],
+        default=str, sort_keys=True,
+    ).encode("utf-8")).hexdigest()
+    _stored_fingerprint = await _fetchval("SELECT state_value FROM bot_runtime_state WHERE state_key='upgrade_catalog_seed';")
+    _seeded_rows = await _fetchval("SELECT COUNT(*) FROM upgrade_catalog WHERE active;")
+    _skip_seed = _stored_fingerprint == _seed_fingerprint and int(_seeded_rows or 0) >= len(UPGRADES)
+    if _skip_seed:
+        print("[migrate] Player upgrade catalogue unchanged; seeding skipped.")
+    for upgrade in ([] if _skip_seed else UPGRADES):
         await execute(
             """
             INSERT INTO upgrade_catalog(
@@ -1056,6 +1092,12 @@ async def migrate():
                 """,
                 int(upgrade_id), int(tier), float(strength), int(UPGRADE_RUBY_PRICES[tier]),
             )
+    if not _skip_seed:
+        await execute(
+            "INSERT INTO bot_runtime_state(state_key,state_value,updated_at) VALUES('upgrade_catalog_seed',$1,NOW()) "
+            "ON CONFLICT(state_key) DO UPDATE SET state_value=EXCLUDED.state_value, updated_at=NOW();",
+            _seed_fingerprint,
+        )
     print("[migrate] Player upgrade catalogue seeded.")
 
     print("Migration Complete.")

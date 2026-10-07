@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import zlib
 import uuid
 import re
 from collections import defaultdict, deque
@@ -142,10 +143,20 @@ def _json_object_hook(value):
     return value
 
 
+MAX_BACKUP_COMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_BACKUP_DECOMPRESSED_BYTES = 512 * 1024 * 1024
+
+
 def _decode_backup(raw_bytes: bytes) -> dict:
+    if len(raw_bytes) > MAX_BACKUP_COMPRESSED_BYTES:
+        raise ValueError("Backup file is too large to restore safely.")
     try:
-        raw = gzip.decompress(raw_bytes)
-    except OSError:
+        # Bounded decompression: a tiny gzip "bomb" must not exhaust memory.
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        raw = decompressor.decompress(raw_bytes, MAX_BACKUP_DECOMPRESSED_BYTES + 1)
+        if len(raw) > MAX_BACKUP_DECOMPRESSED_BYTES or decompressor.unconsumed_tail:
+            raise ValueError("Backup file expands beyond the allowed size limit.")
+    except zlib.error:
         raw = raw_bytes
 
     return json.loads(
@@ -1731,6 +1742,17 @@ async def import_tables(
                         created_backup_only
                     )
                 )
+
+    # Restored quest tables may carry different period rows than the cached ones.
+    try:
+        from services.quest_engine import invalidate_period_cache
+        invalidate_period_cache()
+        from utils.debut_gate import invalidate_debut_cache
+        invalidate_debut_cache()
+        from database.broadcast_repo import _RECENT_UPSERTS
+        _RECENT_UPSERTS.clear()
+    except Exception:
+        pass
 
     print(
         f"[backup_repo] import_tables() -> "
