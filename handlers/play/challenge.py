@@ -12,6 +12,7 @@ from database.play_repo import (
     get_active_match_in_chat, get_active_match_for_user,
 )
 from database.playint_repo import get_active_match_in_chat as get_playint_match_in_chat, get_active_match_for_user as get_playint_match_for_user
+from database.playwpl_repo import get_active_match_in_chat as get_playwpl_match_in_chat, get_active_match_for_user as get_playwpl_match_for_user
 from utils.mentions import mention_html
 from buttons.play_buttons import challenge_keyboard
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
@@ -94,6 +95,10 @@ async def play_command(message):
         )
         return
 
+    active_wpl_in_chat = await get_playwpl_match_in_chat(chat_id)
+    if active_wpl_in_chat:
+        await app.send_message(chat_id, f"<b>⚠️ A PlayWPL game is already going on in {html.escape(str(chat_title))}. Finish it before starting a new game.</b>", parse_mode="HTML")
+        return
     active_playint_in_chat = await get_playint_match_in_chat(chat_id)
     if active_playint_in_chat:
         await app.send_message(chat_id, f"<b>⚠️ A PlayInt game is already going on in {html.escape(str(chat_title))}. Finish it before starting a new game.</b>", parse_mode="HTML")
@@ -109,6 +114,10 @@ async def play_command(message):
         )
         return
 
+    active_wpl_for_challenger = await get_playwpl_match_for_user(challenger_id)
+    if active_wpl_for_challenger:
+        await app.send_message(chat_id, "<b>⚠️ You're already in a PlayWPL game. Please complete it before starting a new game.</b>", parse_mode="HTML")
+        return
     active_playint_for_challenger = await get_playint_match_for_user(challenger_id)
     if active_playint_for_challenger:
         await app.send_message(chat_id, "<b>⚠️ You're already in a PlayInt game. Please complete it before starting a new game.</b>", parse_mode="HTML")
@@ -184,6 +193,11 @@ async def play_command(message):
         )
         return
 
+    active_wpl_for_opponent = await get_playwpl_match_for_user(opponent_id)
+    if active_wpl_for_opponent:
+        om = mention_html(opponent_id, opponent_username, opponent_name)
+        await app.send_message(chat_id, f"<b>⚠️ {om} is already in a PlayWPL game.</b>", parse_mode="HTML")
+        return
     active_playint_for_opponent = await get_playint_match_for_user(opponent_id)
     if active_playint_for_opponent:
         opponent_mention = mention_html(opponent_id, opponent_username, opponent_name)
@@ -278,6 +292,9 @@ async def on_play_accept(callback_query):
         )
         return
 
+    if await get_playwpl_match_for_user(int(presser["id"])):
+        await app.answer_callback_query(callback_query["id"], "You are already in a PlayWPL game. Finish it first.", show_alert=True)
+        return
     if await get_playint_match_for_user(int(presser["id"])):
         await app.answer_callback_query(callback_query["id"], "You're already in a PlayInt game. Finish it first.", show_alert=True)
         return
