@@ -16,6 +16,11 @@ from database.playipl_repo import (
     get_match as get_playipl_match,
     update_status as update_playipl_status,
 )
+from database.playwpl_repo import (
+    get_active_match_in_chat as get_playwpl_match_in_chat,
+    get_match as get_playwpl_match,
+    update_status as update_playwpl_status,
+)
 from database.playint_repo import (
     get_active_match_in_chat as get_playint_match_in_chat,
     get_match as get_playint_match,
@@ -30,6 +35,7 @@ from buttons.endgame_buttons import abandon_confirm_keyboard
 from engines.play_runtime import get_session as get_play_session, get_session_in_chat as get_play_session_in_chat, clear_session
 from engines.playint_runtime import get_playint_session, get_playint_session_in_chat, clear_playint_session
 from engines.playipl_runtime import get_playipl_session, get_playipl_session_in_chat, clear_playipl_session
+from engines.playwpl_runtime import get_playwpl_session, get_playwpl_session_in_chat, clear_playwpl_session
 from engines.play_engine import pitch_label
 from utils.mentions import mention_html
 from utils.timers import cancel_timer
@@ -105,8 +111,12 @@ def _game_summary(
         mode = "PLAYINT • T20 International"
     elif engine == "playso":
         mode = "PLAYSO • Super Over"
-    else:
+    elif engine == "playipl":
         mode = "PLAYIPL • Indian Premier League"
+    elif engine == "playwpl":
+        mode = "PLAYWPL • Women's Premier League"
+    else:
+        mode = engine.upper()
     first_text = "Not yet played"
     second_text = "Not yet played"
 
@@ -161,6 +171,14 @@ async def _find_active(chat_id: int):
     if match:
         return dict(match), "playipl"
 
+    session = get_playwpl_session_in_chat(chat_id)
+    if session is not None:
+        return dict(session.match), "playwpl"
+
+    match = await get_playwpl_match_in_chat(chat_id)
+    if match:
+        return dict(match), "playwpl"
+
     match = await get_playso_match_in_chat(chat_id)
     if match:
         return dict(match), "playso"
@@ -204,12 +222,20 @@ async def _find_active(chat_id: int):
             ORDER BY match_id DESC LIMIT 1;""",
         chat_id, *terminal_list,
     )
+    wpl_row = await fetchrow(
+        f"""SELECT * FROM wpl_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
+    )
 
     candidates = [(dict(play_row), "play")] if play_row else []
     if playint_row:
         candidates.append((dict(playint_row), "playint"))
     if playipl_row:
         candidates.append((dict(playipl_row), "playipl"))
+    if wpl_row:
+        candidates.append((dict(wpl_row), "playwpl"))
     if playso_row:
         candidates.append((dict(playso_row), "playso"))
     if candidates:
@@ -228,6 +254,8 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
         session = get_playint_session(match_id)
     elif engine == "playso":
         session = None
+    elif engine == "playwpl":
+        session = get_playwpl_session(match_id)
     else:
         session = get_playipl_session(match_id)
 
@@ -245,6 +273,8 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
             match = await get_playint_match(match_id)
         elif engine == "playso":
             match = await get_playso_match(match_id)
+        elif engine == "playwpl":
+            match = await get_playwpl_match(match_id)
         else:
             match = await get_playipl_match(match_id)
         if match:
@@ -267,6 +297,8 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
         clear_playint_session(match_id)
     elif engine == "playso":
         return
+    elif engine == "playwpl":
+        clear_playwpl_session(match_id)
     else:
         clear_playipl_session(match_id)
 
@@ -308,6 +340,8 @@ async def abond_command(message):
         session = get_playint_session(match["match_id"])
     elif engine == "playso":
         session = None
+    elif engine == "playwpl":
+        session = get_playwpl_session(match["match_id"])
     else:
         session = get_playipl_session(match["match_id"])
     text = _game_summary(match, engine=engine, session=session)
@@ -357,13 +391,18 @@ async def abandon_yes(callback_query):
             await update_playint_status(mid, "ended")
         elif engine == "playso":
             await set_playso_state(mid, match.get("state") or {}, status="ended")
+        elif engine == "playwpl":
+            await update_playwpl_status(mid, "ended")
         else:
             await update_playipl_status(mid, "ended")
         cancel_timer("challenge", mid)
         cancel_timer("toss_call", mid)
         cancel_timer("decision", mid)
         from utils.game_inactivity import cancel_match as cancel_inactivity_match
-        cancel_inactivity_match("PLAYSO", mid)
+        if engine == "playso":
+            cancel_inactivity_match("PLAYSO", mid)
+        elif engine == "playwpl":
+            cancel_inactivity_match("PLAYWPL", mid)
     except Exception as exc:
         print(f"[abandon] Failed to mark {engine} match_id={mid} ended: {exc!r}")
         await app.answer_callback_query(
@@ -383,6 +422,9 @@ async def abandon_yes(callback_query):
         elif engine == "playipl":
             session = get_playipl_session_in_chat(chat_id)
             payload = collect_runtime_session("PLAYIPL", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYIPL", dict(match), termination="abandoned", reason="administrator abandoned the game")
+        elif engine == "playwpl":
+            session = get_playwpl_session_in_chat(chat_id)
+            payload = collect_runtime_session("PLAYWPL", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYWPL", dict(match), termination="abandoned", reason="administrator abandoned the game")
         else:
             payload = collect_playso_match(dict(match), dict(match.get("state") or {}), termination="abandoned", reason="administrator abandoned the game")
         await send_report(app, payload)

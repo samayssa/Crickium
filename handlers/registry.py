@@ -22,6 +22,8 @@ def register_callback(action):
             match_id = None
             if action.startswith("playipl_"):
                 engine = "PLAYIPL"
+            elif action.startswith("playwpl_"):
+                engine = "PLAYWPL"
             elif action.startswith("playint_"):
                 engine = "PLAYINT"
             elif action.startswith("playso_"):

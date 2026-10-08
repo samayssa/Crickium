@@ -12,6 +12,7 @@ from database.squads_repo import get_team_squad
 from database.play_repo import get_active_match_for_user as get_play_active
 from database.playint_repo import get_active_match_for_user as get_playint_active
 from database.playipl_repo import get_active_match_for_user as get_playipl_active
+from database.playwpl_repo import get_active_match_for_user as get_playwpl_active
 from utils.mentions import mention_html
 from services.card_identity import player_kind, card_identity_key
 from buttons.social_trade_buttons import (
@@ -229,6 +230,7 @@ async def _active_match(user_id: int) -> bool:
         await get_play_active(int(user_id))
         or await get_playint_active(int(user_id))
         or await get_playipl_active(int(user_id))
+        or await get_playwpl_active(int(user_id))
     )
 
 

@@ -9,6 +9,7 @@ from handlers.registry import register
 from database.play_repo import get_active_match_for_user as get_play_active_for_user, set_message_id as set_play_message_id
 from database.playint_repo import get_active_match_for_user as get_playint_active_for_user, set_message_id as set_playint_message_id
 from database.playipl_repo import get_active_match_for_user as get_playipl_active_for_user, set_message_id as set_playipl_message_id
+from database.playwpl_repo import get_active_match_for_user as get_playwpl_active_for_user, set_message_id as set_playwpl_message_id
 from database.playso_repo import get_active_match_for_user as get_playso_active_for_user, set_message_id as set_playso_message_id
 
 
@@ -32,6 +33,7 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
         from engines.play_runtime import get_session_in_chat
         from engines.playint_runtime import get_playint_session_in_chat
         from engines.playipl_runtime import get_playipl_session_in_chat
+        from engines.playwpl_runtime import get_playwpl_session_in_chat
 
         play_session = get_session_in_chat(int(chat_id))
         if play_session is not None and uid in {
@@ -53,6 +55,13 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
             int(playipl_session.match.get("opponent_id") or 0),
         }:
             return "PLAYIPL", playipl_session
+
+        playwpl_session = get_playwpl_session_in_chat(int(chat_id))
+        if playwpl_session is not None and uid in {
+            int(playwpl_session.match.get("challenger_id") or 0),
+            int(playwpl_session.match.get("opponent_id") or 0),
+        }:
+            return "PLAYWPL", playwpl_session
 
         playso_match = await get_playso_active_for_user(uid)
         if playso_match and str(playso_match.get("status") or "") != "pending" and int(playso_match.get("chat_id") or 0) == int(chat_id):
@@ -96,6 +105,17 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
         if str(playipl_match.get("status") or "") in {"accepted", "team_selection", "pitch_selected", "toss_done", "lineup"}:
             return "PLAYIPL_DB", dict(playipl_match)
         return "PLAYIPL_UNAVAILABLE", playipl_match
+
+    playwpl_match = await get_playwpl_active_for_user(uid)
+    if playwpl_match:
+        match_id = int(playwpl_match["match_id"])
+        from services.game_session_recovery import restore_or_rebuild
+        session = await restore_or_rebuild("PLAYWPL", dict(playwpl_match))
+        if session is not None:
+            return "PLAYWPL", session
+        if str(playwpl_match.get("status") or "") in {"accepted", "team_selection", "pitch_selected", "toss_done", "lineup"}:
+            return "PLAYWPL_DB", dict(playwpl_match)
+        return "PLAYWPL_UNAVAILABLE", playwpl_match
 
     playso_match = await get_playso_active_for_user(uid)
     if playso_match and str(playso_match.get("status") or "") != "pending":
@@ -168,6 +188,13 @@ def _resume_markup(engine: str, session: Any):
             strategy_keyboard,
         )
         from engines.playint_runtime import next_bowler_card
+    elif engine == "PLAYWPL":
+        from buttons.playwpl_buttons import (
+            bowler_selection_keyboard,
+            bowler_tactic_keyboard,
+            strategy_keyboard,
+        )
+        from engines.playwpl_runtime import next_bowler_card
     else:
         from buttons.playipl_buttons import (
             bowler_selection_keyboard,
@@ -236,6 +263,8 @@ def _render_resume_scorecard(engine: str, session: Any) -> str:
         from engines.play_runtime import render_live_scorecard
     elif engine == "PLAYINT":
         from engines.playint_runtime import render_live_scorecard
+    elif engine == "PLAYWPL":
+        from engines.playwpl_runtime import render_live_scorecard
     else:
         from engines.playipl_runtime import render_live_scorecard
     return render_live_scorecard(
@@ -286,11 +315,13 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
             await send_playing_xi(chat_id, match)
             return True
 
-    if engine in {"PLAYINT", "PLAYIPL"}:
+    if engine in {"PLAYINT", "PLAYIPL", "PLAYWPL"}:
         prefix = engine.lower()
         if status in {"accepted", "team_selection"} and not match.get("challenger_team_code"):
             if engine == "PLAYINT":
                 from handlers.playint.teams import send_team_selection
+            elif engine == "PLAYWPL":
+                from handlers.playwpl.teams import send_team_selection
             else:
                 from handlers.playipl.teams import send_team_selection
             await send_team_selection(chat_id, match)
@@ -299,6 +330,8 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
             if status == "team_selection":
                 if engine == "PLAYINT":
                     from handlers.playint.lineup import send_build_messages
+                elif engine == "PLAYWPL":
+                    from handlers.playwpl.lineup import send_build_messages
                 else:
                     from handlers.playipl.lineup import send_build_messages
                 await send_build_messages(chat_id, match)
@@ -306,6 +339,8 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
         if status in {"accepted", "team_selection"} and not (match.get("challenger_team_code") and match.get("opponent_team_code")):
             if engine == "PLAYINT":
                 from handlers.playint.teams import send_team_selection
+            elif engine == "PLAYWPL":
+                from handlers.playwpl.teams import send_team_selection
             else:
                 from handlers.playipl.teams import send_team_selection
             await send_team_selection(chat_id, match)
@@ -313,6 +348,8 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
         if status == "lineup" and not match.get("pitch") and match.get("challenger_xi_confirmed") and match.get("opponent_xi_confirmed"):
             if engine == "PLAYINT":
                 from handlers.playint.pitch import send_pitch_selection
+            elif engine == "PLAYWPL":
+                from handlers.playwpl.pitch import send_pitch_selection
             else:
                 from handlers.playipl.pitch import send_pitch_selection
             await send_pitch_selection(chat_id, match)
@@ -320,6 +357,8 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
         if status == "lineup" and not (match.get("challenger_xi_confirmed") and match.get("opponent_xi_confirmed")):
             if engine == "PLAYINT":
                 from handlers.playint.lineup import send_build_messages
+            elif engine == "PLAYWPL":
+                from handlers.playwpl.lineup import send_build_messages
             else:
                 from handlers.playipl.lineup import send_build_messages
             await send_build_messages(chat_id, match)
@@ -331,6 +370,8 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
         if status == "pitch_selected":
             if engine == "PLAYINT":
                 from handlers.playint.toss import send_toss_call
+            elif engine == "PLAYWPL":
+                from handlers.playwpl.toss import send_toss_call
             else:
                 from handlers.playipl.toss import send_toss_call
             await send_toss_call(chat_id, match)
@@ -340,11 +381,17 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
             from database.playint_teams_repo import team_name as int_team_name
             from buttons.playint_buttons import decision_keyboard as int_decision_keyboard
             from buttons.playipl_buttons import decision_keyboard as ipl_decision_keyboard
+            from buttons.playwpl_buttons import decision_keyboard as wpl_decision_keyboard
             if engine == "PLAYINT":
                 from handlers.playint.toss import _result as toss_result_text
                 winner_team_name = int_team_name(match.get("challenger_team_code") if int(match.get("toss_winner_id") or 0) == int(match["challenger_id"]) else match.get("opponent_team_code"))
                 text = toss_result_text(winner_team_name, match.get("toss_call"), match.get("toss_result"))
                 keyboard = int_decision_keyboard(mid)
+            elif engine == "PLAYWPL":
+                from handlers.playwpl.toss import _result as toss_result_text
+                winner_code = match.get("challenger_team_code") if int(match.get("toss_winner_id") or 0) == int(match["challenger_id"]) else match.get("opponent_team_code")
+                text = toss_result_text(winner_code, match.get("toss_call"), match.get("toss_result"))
+                keyboard = wpl_decision_keyboard(mid)
             else:
                 from handlers.playipl.toss import _result as toss_result_text
                 winner_code = match.get("challenger_team_code") if int(match.get("toss_winner_id") or 0) == int(match["challenger_id"]) else match.get("opponent_team_code")
@@ -352,6 +399,8 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
                 keyboard = ipl_decision_keyboard(mid)
             if engine == "PLAYINT":
                 setter = set_playint_message_id
+            elif engine == "PLAYWPL":
+                setter = set_playwpl_message_id
             else:
                 setter = set_playipl_message_id
             sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
@@ -368,6 +417,8 @@ async def _update_live_message_id(engine: str, session: Any, message_id: int) ->
             await set_playint_message_id(int(session.match_id), int(message_id))
         elif engine == "PLAYSO":
             await set_playso_message_id(int(session["match_id"]), int(message_id))
+        elif engine == "PLAYWPL":
+            await set_playwpl_message_id(int(session.match_id), int(message_id))
         else:
             await set_playipl_message_id(int(session.match_id), int(message_id))
     except Exception as exc:
