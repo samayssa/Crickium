@@ -47,6 +47,7 @@ from database.squads_repo import get_team_squad
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
 from engines.innings_engine import create_innings
 from services.match_summary import send_match_summary, snapshot_normal_session, player_details, best_player
+from services.match_analysis import collect_legacy_session, send_report
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -152,6 +153,11 @@ def _over_summary_text(session) -> str:
 
 async def _start_second_innings(chat_id: int, challenge: dict[str, Any], session):
     session.meta["first_innings_card_snapshot"] = snapshot_normal_session(session)
+    session.meta["_analysis_balls_first"] = list(session.meta.get("_analysis_balls") or [])
+    session.meta["_analysis_score_first"] = {
+        "extras": dict(getattr(session.score, "extras", {}) or {}),
+        "wickets_fallen": list(getattr(session.score, "wickets_fallen", []) or []),
+    }
     first_innings_summary = innings_summary(
         session.meta.get("batting_display"),
         session.innings.score.runs,
@@ -276,6 +282,20 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
     except Exception as exc:
         print(f"[match] Failed to update challenge status to completed: {exc!r}")
 
+    try:
+        winner_id = None
+        loser_id = None
+        if winner_name and loser_name:
+            winner_id = session.meta.get("batting_team_id") if str(winner_name) == str(batting_display) else session.meta.get("bowling_team_id")
+            loser_id = session.meta.get("bowling_team_id") if winner_id == session.meta.get("batting_team_id") else session.meta.get("batting_team_id")
+        await send_report(
+            app,
+            collect_legacy_session(
+                session, termination="completed", winner_id=winner_id, loser_id=loser_id,
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] MATCH completion report failed: {exc!r}")
     try:
         from services.match_notification import send_match_completion_notification
         await send_match_completion_notification(

@@ -4,6 +4,7 @@ import html
 
 from handlers.registry import register, register_callback
 from app import app
+from services.match_analysis import collect_match_row, collect_playso_match, collect_runtime_session, send_report
 from config import ADMIN_USER_ID
 from database.play_repo import (
     get_active_match_in_chat as get_play_match_in_chat,
@@ -371,6 +372,22 @@ async def abandon_yes(callback_query):
             show_alert=True,
         )
         return
+
+    try:
+        if engine == "play":
+            session = get_play_session_in_chat(chat_id)
+            payload = collect_runtime_session("PLAY", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAY", dict(match), termination="abandoned", reason="administrator abandoned the game")
+        elif engine == "playint":
+            session = get_playint_session_in_chat(chat_id)
+            payload = collect_runtime_session("PLAYINT", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYINT", dict(match), termination="abandoned", reason="administrator abandoned the game")
+        elif engine == "playipl":
+            session = get_playipl_session_in_chat(chat_id)
+            payload = collect_runtime_session("PLAYIPL", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYIPL", dict(match), termination="abandoned", reason="administrator abandoned the game")
+        else:
+            payload = collect_playso_match(dict(match), dict(match.get("state") or {}), termination="abandoned", reason="administrator abandoned the game")
+        await send_report(app, payload)
+    except Exception as exc:
+        print(f"[match_analysis] abandon report failed: {exc!r}")
 
     await _clear_live_messages(chat_id, mid, engine)
 

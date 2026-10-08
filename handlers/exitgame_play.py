@@ -19,6 +19,7 @@ from engines.level_engine import WIN_XP, EXIT_PENALTY_XP
 from engines.play_runtime import clear_session, get_session
 from services.player_match_stats import record_session_player_stats
 from utils.mentions import mention_html
+from services.match_analysis import collect_match_row, collect_playso_match, collect_runtime_session, send_report
 from buttons.play_buttons import exit_confirm_keyboard
 from buttons.playso_buttons import exit_confirm_keyboard as playso_exit_confirm_keyboard
 from utils.game_inactivity import cancel_match as cancel_inactivity_match
@@ -159,6 +160,22 @@ async def on_play_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] Failed to award XP/stats for match_id={match_id}: {exc!r}")
 
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAY", live_session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if live_session else collect_match_row(
+                "PLAY", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAY exit report failed: {exc!r}")
+
     await _remove_game_option_messages(chat_id, match, live_session)
 
     try:
@@ -225,6 +242,21 @@ async def on_playint_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] PlayInt XP/stats failed: {exc!r}")
     session = playint_session
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYINT", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYINT", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYINT exit report failed: {exc!r}")
     await _remove_game_option_messages(chat_id, match, session)
     if session:
         clear_playint_session(match_id)
@@ -319,6 +351,21 @@ async def on_playipl_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] PlayIPL XP/stats failed: {exc!r}")
 
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYIPL", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYIPL", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYIPL exit report failed: {exc!r}")
     await _remove_game_option_messages(chat_id, match, session)
     if session:
         clear_playipl_session(match_id)
@@ -385,6 +432,19 @@ async def on_playso_exit_yes(callback_query):
         await record_h2h_result(900_000_000_000_000_000 + int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
     except Exception as exc:
         print(f"[exitgame_play] PlaySO XP/stats failed: {exc!r}")
+
+    report_state = dict(match.get("state") or {})
+    try:
+        await send_report(
+            app,
+            collect_playso_match(
+                dict(match), report_state, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited the Super Over",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYSO exit report failed: {exc!r}")
 
     await _remove_game_option_messages(chat_id, match)
 

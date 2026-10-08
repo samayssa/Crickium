@@ -3,6 +3,7 @@ print("endgame.py loaded")
 from handlers.registry import register, register_callback
 from app import app
 from engines.match_engine import MATCH_ENGINE
+from services.match_analysis import collect_legacy_session, send_report
 from database.challenges_repo import update_status
 from utils.timers import cancel_timer
 from buttons.endgame_buttons import endgame_confirm_keyboard
@@ -73,6 +74,20 @@ async def _finalize_endgame(chat_id: int, ender_user_id: int):
         cancel_timer("decision", session.challenge_id)
 
     await app.send_message(chat_id, "\n".join(text_lines), parse_mode="Markdown")
+    try:
+        await send_report(
+            app,
+            collect_legacy_session(
+                session,
+                termination="exited",
+                winner_id=session.opponent.user_id if ender_user_id == session.challenger.user_id else session.challenger.user_id,
+                loser_id=int(ender_user_id),
+                ended_by_user_id=int(ender_user_id),
+                reason="player requested end",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] legacy endgame report failed: {exc!r}")
     MATCH_ENGINE.clear_session(chat_id)
     print(f"[endgame] Match ended by user_id={ender_user_id} in chat_id={chat_id}")
 
