@@ -26,6 +26,7 @@ from utils.background import spawn
 ENGINE_LABELS = {
     "PLAY": "PLAY",
     "PLAYIPL": "IPL",
+    "PLAYWPL": "WPL",
     "PLAYINT": "INTERNATIONAL",
 }
 
@@ -93,6 +94,8 @@ def _engine_key_for_session(session: Any) -> str:
         return "PLAYINT"
     if "PLAYIPL" in name:
         return "PLAYIPL"
+    if "PLAYWPL" in name:
+        return "PLAYWPL"
     return "PLAY"
 
 

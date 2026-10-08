@@ -14,6 +14,7 @@ async def next_match_number() -> int:
           + (SELECT COUNT(*) FROM play_matches WHERE status='completed')
           + (SELECT COUNT(*) FROM playint_matches WHERE status='completed')
           + (SELECT COUNT(*) FROM playipl_matches WHERE status='completed')
+          + (SELECT COUNT(*) FROM wpl_matches WHERE status='completed')
           + (SELECT COUNT(*) FROM match_challenges WHERE status='completed');
         """
     )

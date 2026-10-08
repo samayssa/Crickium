@@ -107,6 +107,8 @@ async def _load_origin_session(engine: str, match_id: int):
         from engines.playint_runtime import get_playint_session as get_session
     elif engine == "PLAYIPL":
         from engines.playipl_runtime import get_playipl_session as get_session
+    elif engine == "PLAYWPL":
+        from engines.playwpl_runtime import get_playwpl_session as get_session
     else:
         return None
     return get_session(int(match_id))
@@ -119,6 +121,8 @@ def _clear_origin_session(engine: str, match_id: int) -> None:
         from engines.playint_runtime import clear_playint_session as clear_session
     elif engine == "PLAYIPL":
         from engines.playipl_runtime import clear_playipl_session as clear_session
+    elif engine == "PLAYWPL":
+        from engines.playwpl_runtime import clear_playwpl_session as clear_session
     else:
         return
     clear_session(int(match_id))
@@ -131,6 +135,8 @@ def _helpers(engine: str):
         from handlers.playint.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
     elif engine == "PLAYIPL":
         from handlers.playipl.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
+    elif engine == "PLAYWPL":
+        from handlers.playwpl.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
     else:
         raise ValueError(engine)
     return _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
@@ -156,6 +162,8 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
             from database.playint_repo import get_match
         elif origin_engine == "PLAYIPL":
             from database.playipl_repo import get_match
+        elif origin_engine == "PLAYWPL":
+            from database.playwpl_repo import get_match
         else:
             return
         origin_match = await get_match(origin_match_id)
@@ -218,8 +226,10 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
             from engines.play_runtime import player_of_the_match
         elif origin_engine == "PLAYINT":
             from engines.playint_runtime import player_of_the_match
-        else:
+        elif origin_engine == "PLAYIPL":
             from engines.playipl_runtime import player_of_the_match
+        else:
+            from engines.playwpl_runtime import player_of_the_match
         potm_name = player_of_the_match(innings_1, innings_2)
         await send_match_summary(
             app,
@@ -240,12 +250,12 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
 
     try:
         from services.match_analysis import collect_runtime_session, send_report
-        if origin_engine in {"PLAY", "PLAYINT", "PLAYIPL"} and session is not None:
+        if origin_engine in {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"} and session is not None:
             report = collect_runtime_session(
                 origin_engine, session, termination="completed", winner_id=winner_id, loser_id=loser_id,
                 reason="decided by Super Over",
             )
-            report["game_name"] = {"PLAY":"Play", "PLAYINT":"PlayInt", "PLAYIPL":"PlayIPL"}.get(origin_engine, origin_engine) + " + Super Over"
+            report["game_name"] = {"PLAY":"Play", "PLAYINT":"PlayInt", "PLAYIPL":"PlayIPL", "PLAYWPL":"PlayWPL"}.get(origin_engine, origin_engine) + " + Super Over"
             rounds = list(state.get("super_over_rounds") or [])
             rounds.append({"round": len(rounds)+1, "innings": so_history})
             report["super_over_rounds"] = rounds
@@ -258,8 +268,10 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
             from database.play_repo import update_status
         elif origin_engine == "PLAYINT":
             from database.playint_repo import update_status
-        else:
+        elif origin_engine == "PLAYIPL":
             from database.playipl_repo import update_status
+        else:
+            from database.playwpl_repo import update_status
         await update_status(origin_match_id, "completed")
     except Exception as exc:
         print(f"[super_over_bridge] failed to mark original match completed: {exc!r}")

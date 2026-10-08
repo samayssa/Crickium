@@ -111,6 +111,9 @@ def _inject(engine: str, session: Any) -> Any | None:
     elif engine == "PLAYIPL":
         from engines.playipl_runtime import _PLAYIPL_SESSIONS
         _PLAYIPL_SESSIONS[mid] = session
+    elif engine == "PLAYWPL":
+        from engines.playwpl_runtime import _PLAYWPL_SESSIONS
+        _PLAYWPL_SESSIONS[mid] = session
     else:
         return None
     return session
@@ -130,6 +133,9 @@ async def restore_session(engine: str, match_id: int) -> Any | None:
         elif engine == "PLAYIPL":
             from engines.playipl_runtime import get_playipl_session
             live = get_playipl_session(mid)
+        elif engine == "PLAYWPL":
+            from engines.playwpl_runtime import get_playwpl_session
+            live = get_playwpl_session(mid)
         else:
             return None
         if live is not None:
@@ -162,6 +168,11 @@ def _active_runtime_sessions() -> list[tuple[str, Any]]:
     try:
         from engines.playipl_runtime import _PLAYIPL_SESSIONS
         out.extend(("PLAYIPL", s) for s in list(_PLAYIPL_SESSIONS.values()))
+    except Exception:
+        pass
+    try:
+        from engines.playwpl_runtime import _PLAYWPL_SESSIONS
+        out.extend(("PLAYWPL", s) for s in list(_PLAYWPL_SESSIONS.values()))
     except Exception:
         pass
     return out
@@ -213,6 +224,11 @@ async def post_callback_sync(engine: str, match_id: int) -> None:
         match = await get_match(int(match_id))
         from engines.playipl_runtime import get_playipl_session
         session = get_playipl_session(int(match_id))
+    elif engine == "PLAYWPL":
+        from database.playwpl_repo import get_match
+        match = await get_match(int(match_id))
+        from engines.playwpl_runtime import get_playwpl_session
+        session = get_playwpl_session(int(match_id))
     else:
         return
 
@@ -293,6 +309,19 @@ async def _rebuild_team_engine(engine: str, match: dict) -> Any | None:
         loader = get_teams_player_ids
         c_squad = await loader(match["challenger_team_code"], challenger_ids, engine_key=engine_key)
         o_squad = await loader(match["opponent_team_code"], opponent_ids, engine_key=engine_key)
+        names = team_label
+    elif engine == "PLAYWPL":
+        from database.playwpl_repo import get_teams_player_ids
+        from engines.playwpl_runtime import create_playwpl_session
+        engine_key = "WPL"
+        from database.playwpl_teams_repo import team_label
+        challenger_ids = match.get("challenger_xi") or []
+        opponent_ids = match.get("opponent_xi") or []
+        if isinstance(challenger_ids, str): challenger_ids = json.loads(challenger_ids)
+        if isinstance(opponent_ids, str): opponent_ids = json.loads(opponent_ids)
+        loader = get_teams_player_ids
+        c_squad = await loader(match["challenger_team_code"], challenger_ids)
+        o_squad = await loader(match["opponent_team_code"], opponent_ids)
         names = team_name
     else:
         from database.playipl_repo import get_teams_player_ids
@@ -319,19 +348,30 @@ async def _rebuild_team_engine(engine: str, match: dict) -> Any | None:
     bowling_squad = c_squad if bowling_id == challenger_id else o_squad
     from engines.play_engine import playing_xi
     # The live runtimes take a full squad and derive their bowling pool/XI.
-    session = create_playint_session(
-        match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
-        pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
-        batting_team_id=batting_id, bowling_team_id=bowling_id,
-        batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
-        batting_squad=batting_squad, bowling_squad=bowling_squad,
-    ) if engine == "PLAYINT" else create_playipl_session(
-        match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
-        pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
-        batting_team_id=batting_id, bowling_team_id=bowling_id,
-        batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
-        batting_squad=batting_squad, bowling_squad=bowling_squad,
-    )
+    if engine == "PLAYINT":
+        session = create_playint_session(
+            match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
+            pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
+            batting_team_id=batting_id, bowling_team_id=bowling_id,
+            batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
+            batting_squad=batting_squad, bowling_squad=bowling_squad,
+        )
+    elif engine == "PLAYIPL":
+        session = create_playipl_session(
+            match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
+            pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
+            batting_team_id=batting_id, bowling_team_id=bowling_id,
+            batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
+            batting_squad=batting_squad, bowling_squad=bowling_squad,
+        )
+    else:
+        session = create_playwpl_session(
+            match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
+            pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
+            batting_team_id=batting_id, bowling_team_id=bowling_id,
+            batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
+            batting_squad=batting_squad, bowling_squad=bowling_squad,
+        )
     try:
         from database.player_upgrades_repo import restore_snapshot
         snap = await restore_snapshot(int(match["match_id"]))
@@ -356,7 +396,7 @@ async def restore_or_rebuild(engine: str, match: dict) -> Any | None:
         return None
     if engine == "PLAY":
         session = await _rebuild_play(match)
-    elif engine in {"PLAYINT", "PLAYIPL"}:
+    elif engine in {"PLAYINT", "PLAYIPL", "PLAYWPL"}:
         session = await _rebuild_team_engine(engine, match)
     else:
         session = None

@@ -85,7 +85,7 @@ async def award_timeout_rewards(winner_id: int, loser_id: int) -> dict:
 
 
 def build_timeout_message(winner_mention: str, loser_mention: str, engine: str) -> str:
-    mode = {"PLAY":"PLAY", "PLAYINT":"PLAY INTERNATIONAL", "PLAYIPL":"PLAY IPL"}.get(engine, engine)
+    mode = {"PLAY":"PLAY", "PLAYINT":"PLAY INTERNATIONAL", "PLAYIPL":"PLAY IPL", "PLAYWPL":"PLAY WPL"}.get(engine, engine)
     return (
         "<b>╭━━〔 🏆 MATCH DECIDED 〕━━╮</b>\n\n"
         f"🎮 <b>{mode}</b>\n\n"
