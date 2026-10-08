@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 from app import app
 from database.query import execute, fetchrow
 from utils.mentions import mention_html
+from services.match_analysis import collect_match_row, collect_playso_match, collect_runtime_session, send_report
 
 _TIMEOUT_SECONDS = 180
 _REMINDER_SECONDS = (120, 60)
@@ -348,6 +349,28 @@ async def _default_timeout_callback(match: dict, timed_out: dict, winner: dict) 
     engine = _engine_for_match(match)
     from services.match_rewards import award_timeout_rewards, build_timeout_message
     await award_timeout_rewards(int(winner["id"]), int(timed_out["id"]))
+    # Build/send the report before runtime cleanup so complete telemetry survives.
+    try:
+        payload = None
+        if engine == "PLAY":
+            from engines.play_runtime import get_session
+            session = get_session(int(match["match_id"]))
+            payload = collect_runtime_session("PLAY", session, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout") if session else collect_match_row("PLAY", dict(match), termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
+        elif engine == "PLAYINT":
+            from engines.playint_runtime import get_playint_session
+            session = get_playint_session(int(match["match_id"]))
+            payload = collect_runtime_session("PLAYINT", session, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout") if session else collect_match_row("PLAYINT", dict(match), termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
+        elif engine == "PLAYIPL":
+            from engines.playipl_runtime import get_playipl_session
+            session = get_playipl_session(int(match["match_id"]))
+            payload = collect_runtime_session("PLAYIPL", session, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout") if session else collect_match_row("PLAYIPL", dict(match), termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
+        elif engine == "PLAYSO":
+            state = dict(match.get("state") or {})
+            payload = collect_playso_match(dict(match), state, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
+        if payload:
+            await send_report(app, payload)
+    except Exception as exc:
+        print(f"[match_analysis] timeout report failed: {exc!r}")
     await _clear_engine_session(engine, int(match["match_id"]))
     await _clear_engine_messages(match)
     winner_mention = _display(winner)
