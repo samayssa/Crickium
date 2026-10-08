@@ -98,6 +98,8 @@ def _status_claim_sql(engine: str) -> str:
         table, statuses = "play_matches", "ARRAY['accepted','pitch_selected','toss_done','lineup']"
     elif engine == "PLAYINT":
         table, statuses = "playint_matches", "ARRAY['accepted','team_selection','pitch_selected','toss_done','lineup']"
+    elif engine == "PLAYWPL":
+        table, statuses = "wpl_matches", "ARRAY['accepted','team_selection','pitch_selected','toss_done','lineup','live']"
     elif engine == "PLAYSO":
         table, statuses = "playso_matches", "ARRAY['accepted','pitch_selected','toss_done','lineup','live','innings_break']"
     else:
@@ -110,6 +112,8 @@ async def _current_match(engine: str, match_id: int):
         return await fetchrow("SELECT * FROM play_matches WHERE match_id=$1;", match_id)
     if engine == "PLAYINT":
         return await fetchrow("SELECT * FROM playint_matches WHERE match_id=$1;", match_id)
+    if engine == "PLAYWPL":
+        return await fetchrow("SELECT * FROM wpl_matches WHERE match_id=$1;", match_id)
     if engine == "PLAYSO":
         return await fetchrow("SELECT * FROM playso_matches WHERE match_id=$1;", match_id)
     return await fetchrow("SELECT * FROM playipl_matches WHERE match_id=$1;", match_id)
@@ -364,6 +368,10 @@ async def _default_timeout_callback(match: dict, timed_out: dict, winner: dict) 
             from engines.playipl_runtime import get_playipl_session
             session = get_playipl_session(int(match["match_id"]))
             payload = collect_runtime_session("PLAYIPL", session, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout") if session else collect_match_row("PLAYIPL", dict(match), termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
+        elif engine == "PLAYWPL":
+            from engines.playwpl_runtime import get_playwpl_session
+            session = get_playwpl_session(int(match["match_id"]))
+            payload = collect_runtime_session("PLAYWPL", session, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout") if session else collect_match_row("PLAYWPL", dict(match), termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
         elif engine == "PLAYSO":
             state = dict(match.get("state") or {})
             payload = collect_playso_match(dict(match), state, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
