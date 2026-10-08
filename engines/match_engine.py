@@ -6018,6 +6018,9 @@ class MatchEngine:
                 result_bowler = None
         else:
             result_bowler = None
+        batter_before = dict(session.current_batsman or {})
+        bowler_before = dict(session.current_bowler or {})
+        score_legal_before = int(session.score.legal_balls or 0)
         result = {
             "outcome": outcome,
             "runs": runs_map.get(outcome, 0),
@@ -6034,6 +6037,21 @@ class MatchEngine:
                 "length": session.selected_length,
             }),
             "next_bowler": result_bowler,
+            "batter_name": batter_before.get("name") or self.current_batsman_name(session),
+            "batter_id": batter_before.get("player_id"),
+            "bowler_name": bowler_before.get("name") or self.current_bowler_name(session),
+            "bowler_id": bowler_before.get("player_id"),
+            "delivery_type": session.selected_delivery,
+            "line": session.selected_line,
+            "length": session.selected_length,
+            "foot_movement": session.selected_foot,
+            "stroke_type": session.selected_stroke_type,
+            "stroke_intent": session.selected_intent,
+            "specific_shot": session.selected_shot,
+            "legal_delivery": outcome not in {"wide", "no_ball"},
+            "over_number": (score_legal_before // 6) + 1,
+            "ball_number": (score_legal_before % 6) + 1,
+            "_score_legal_before": score_legal_before,
             "blueprint": suggest_blueprint(
                 bowler_level=context.bowler_level,
                 batsman_level=context.batsman_level,
@@ -6048,7 +6066,14 @@ class MatchEngine:
                 bowler_is_pace_or_spin=context.bowler_is_pace_or_spin,
             ),
         }
-        session.history.append(result)
+        try:
+            from services.match_analysis.collector import append_legacy_ball
+            append_legacy_ball(
+                session, result, batter_before=batter_before, bowler_before=bowler_before,
+            )
+        except Exception as exc:
+            print(f"[match_analysis] legacy telemetry hook failed: {exc!r}")
+            session.history.append(result)
         session.commentary.append(result["commentary"])
         return result
 

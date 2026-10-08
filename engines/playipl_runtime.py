@@ -473,6 +473,11 @@ def _confidence_delta(outcome_name: str, current_confidence: float, streak_befor
 def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     context = _ball_context(session, strategy)
     outcome = resolve_strategy(strategy, context)
+    try:
+        from services.match_analysis.collector import record_runtime_ball
+        record_runtime_ball(session, context, outcome)
+    except Exception as exc:
+        print(f"[match_analysis] runtime telemetry hook failed: {exc!r}")
     striker_before = session.innings.striker
     if striker_before is not None:
         streak_before = int(striker_before.boundary_streak or 0)
@@ -589,7 +594,7 @@ def snapshot_innings(session: PlaySession) -> dict[str, Any]:
     before the session gets reset/flipped for the next innings."""
     score = session.innings.score
     batters = [
-        {"player_id": b.player_id, "name": b.name, "runs": int(b.runs or 0), "balls": int(b.balls or 0), "fours": int(getattr(b, "fours", 0) or 0), "sixes": int(getattr(b, "sixes", 0) or 0), "dismissed": bool(b.dismissed)}
+        {"player_id": b.player_id, "name": b.name, "runs": int(b.runs or 0), "balls": int(b.balls or 0), "fours": int(getattr(b, "fours", 0) or 0), "sixes": int(getattr(b, "sixes", 0) or 0), "dismissed": bool(b.dismissed), "dismissal_text": getattr(b, "dismissal_text", None), "role": getattr(b, "role", None)}
         for b in session.innings.batting_order
     ]
     bowlers = [
