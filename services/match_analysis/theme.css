@@ -39,11 +39,21 @@ body{margin:0;padding:26px 14px 56px;background:
 .duo{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .card{padding:14px;border-radius:17px;background:var(--surface);border:1px solid var(--line)}
 .card h3{margin-top:0}
-.scroll{overflow:auto}
-table{width:100%;border-collapse:separate;border-spacing:0;min-width:560px;font-size:.84rem}
-th,td{padding:8px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.scroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:760px;table-layout:fixed;font-size:.84rem}
+th,td{padding:8px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;white-space:nowrap}
 th{color:var(--muted);font-size:.67rem;letter-spacing:.08em;text-transform:uppercase}
-td.num{text-align:right;font-variant-numeric:tabular-nums}
+th.num,td.num{text-align:right;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:0}
+table.phase-table th:nth-child(1){width:25%} table.phase-table th:nth-child(2){width:20%} table.phase-table th:nth-child(n+3){width:13.75%;text-align:right}
+table.scorecard-bat th:nth-child(1){width:22%} table.scorecard-bat th:nth-child(2){width:24%} table.scorecard-bat th:nth-child(n+3){width:10.8%;text-align:right}
+table.scorecard-bowl th:nth-child(1){width:38%} table.scorecard-bowl th:nth-child(n+2){width:12.4%;text-align:right}
+table.duel-table th:nth-child(1){width:9%;text-align:right} table.duel-table th:nth-child(2){width:19%} table.duel-table th:nth-child(3){width:19%} table.duel-table th:nth-child(4){width:8%;text-align:right} table.duel-table th:nth-child(5){width:8%;text-align:right} table.duel-table th:nth-child(6){width:37%}
+table.partnership-table th:nth-child(1){width:25%} table.partnership-table th:nth-child(2){width:9%;text-align:right} table.partnership-table th:nth-child(3){width:27%} table.partnership-table th:nth-child(4){width:11%;text-align:right} table.partnership-table th:nth-child(5){width:11%;text-align:right} table.partnership-table th:nth-child(6){width:17%}
+table.wicket-table th:nth-child(1){width:22%} table.wicket-table th:nth-child(2){width:8%;text-align:right} table.wicket-table th:nth-child(3){width:18%} table.wicket-table th:nth-child(4){width:20%} table.wicket-table th:nth-child(5){width:20%} table.wicket-table th:nth-child(6){width:12%;text-align:right}
+table.extras-table th:nth-child(1){width:28%} table.extras-table th:nth-child(n+2){width:14.4%;text-align:right}
+table.impact-table th:nth-child(1){width:24%} table.impact-table th:nth-child(2){width:22%} table.impact-table th:nth-child(3){width:14%} table.impact-table th:nth-child(4){width:22%;text-align:right} table.impact-table th:nth-child(5){width:18%;text-align:right}
+table.scorecard-bat td:nth-child(n+3), table.scorecard-bowl td:nth-child(n+2), table.duel-table td:nth-child(1), table.duel-table td:nth-child(4), table.duel-table td:nth-child(5), table.partnership-table td:nth-child(2), table.partnership-table td:nth-child(4), table.partnership-table td:nth-child(5), table.wicket-table td:nth-child(2), table.wicket-table td:nth-child(6), table.extras-table td:nth-child(n+2), table.impact-table td:nth-child(4), table.impact-table td:nth-child(5){text-align:right}
+
 tr:last-child td{border-bottom:none}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border-radius:999px;background:var(--surface-3);border:1px solid var(--line);font-size:.68rem;font-weight:800}
 .bar-chart{display:flex;align-items:flex-end;gap:6px;height:220px;padding:10px 3px 25px;border-bottom:1px solid var(--line)}
