@@ -9,6 +9,7 @@ from buttons.playso_buttons import length_keyboard, delivery_keyboard, line_keyb
 from database.playso_repo import get_match, set_state, set_basic
 from engines.playso_probability import deliveries_for_family, shots_for
 from engines.playso_engine import resolve_ball
+from services.match_analysis import collect_playso_match, send_report
 from handlers.playso.common import match_lock, bowling_family, bowling_family_label, role_emoji, mention_html, callback_message_is_current
 
 NO_KEYBOARD = {"inline_keyboard": []}
@@ -184,7 +185,37 @@ async def playso_shot(callback_query):
         if not bowler or not batter:
             await app.answer_callback_query(callback_query["id"],"Player state is invalid.",show_alert=True); return
         state["shot"]=shot
+        legal_balls_before=int(state.get("legal_balls") or 0)
+        current_non_id=int(state.get("current_non_striker_id") or ((state.get("selected_batters") or [0,0])[1] if len(state.get("selected_batters") or [])>1 else 0))
+        non_striker=_player(state,"batting_xi",current_non_id) if current_non_id else None
         result=resolve_ball(pitch=str(match.get("pitch") or "even"),bowler=bowler,batter=batter,family=bowling_family(bowler),delivery=str(state.get("delivery")),line=str(state.get("line")),length=str(state.get("length")),foot=str(state.get("foot")),intent=str(state.get("intent")),shot=shot)
+        analysis=state.setdefault("analysis_balls",[])
+        analysis.append({
+            "innings_number": int(state.get("innings_no") or match.get("innings_no") or 1),
+            "over": legal_balls_before//6 + 1,
+            "ball": legal_balls_before%6 + 1,
+            "legal": bool(result.legal),
+            "runs": int(result.runs or 0),
+            "bowler_runs": int(result.runs or 0),
+            "wicket": bool(result.wicket),
+            "outcome": str(result.outcome or "dot").lower(),
+            "symbol": "W" if result.wicket else str(result.outcome or result.runs),
+            "extra_type": (str(result.outcome or "").lower() if str(result.outcome or "").upper() in {"WIDE","NO_BALL","LEG_BYE","BYE"} else None),
+            "batter": batter.get("name"), "batter_id": int(batter.get("player_id") or 0) or None,
+            "non_striker": non_striker.get("name") if non_striker else None, "non_striker_id": current_non_id or None,
+            "bowler": bowler.get("name"), "bowler_id": int(bowler.get("player_id") or 0) or None,
+            "batting_approach": str(state.get("intent") or "Balanced"),
+            "bowling_plan": str(bowler.get("role") or bowling_family(bowler) or "Mixed"),
+            "delivery": state.get("delivery"), "line": state.get("line"), "length": state.get("length"),
+            "foot": state.get("foot"), "stroke_type": state.get("intent"), "shot": shot,
+        })
+        if result.wicket:
+            state.setdefault("wickets_fallen",[]).append({
+                "batter": batter.get("name"),
+                "type": "wicket",
+                "fielder": None,
+                "over": f"{legal_balls_before//6}.{legal_balls_before%6 + 1}",
+            })
         state["runs"]=int(state.get("runs") or 0)+result.runs
         if result.legal: state["legal_balls"]=int(state.get("legal_balls") or 0)+1
         state["ball_no"]=int(state.get("ball_no") or 0)+1
@@ -243,7 +274,7 @@ async def playso_shot(callback_query):
 
 async def finish_innings(chat_id:int, match:dict, state:dict):
     innings_no=int(match.get("innings_no") or state.get("innings_no") or 1)
-    snap={"innings_number":innings_no,"batting_team_id":int(state.get("batting_user") or 0),"bowling_team_id":int(state.get("bowling_user") or 0),"batting_team_display": (match.get("challenger_username") if int(state.get("batting_user") or 0)==int(match["challenger_id"]) else match.get("opponent_username")) or (match.get("challenger_name") if int(state.get("batting_user") or 0)==int(match["challenger_id"]) else match.get("opponent_name")), "bowling_team_display": (match.get("challenger_username") if int(state.get("bowling_user") or 0)==int(match["challenger_id"]) else match.get("opponent_username")) or (match.get("challenger_name") if int(state.get("bowling_user") or 0)==int(match["challenger_id"]) else match.get("opponent_name")),"runs":int(state.get("runs") or 0),"wickets":int(state.get("wickets") or 0),"legal_balls":int(state.get("legal_balls") or 0),"over_text":f"{int(state.get('legal_balls') or 0)//6}.{int(state.get('legal_balls') or 0)%6}","batters":list(state.get("batter_stats",{}).values()),"bowlers":list(state.get("bowler_stats",{}).values())}
+    snap={"innings_number":innings_no,"batting_team_id":int(state.get("batting_user") or 0),"bowling_team_id":int(state.get("bowling_user") or 0),"batting_team_display": (match.get("challenger_username") if int(state.get("batting_user") or 0)==int(match["challenger_id"]) else match.get("opponent_username")) or (match.get("challenger_name") if int(state.get("batting_user") or 0)==int(match["challenger_id"]) else match.get("opponent_name")), "bowling_team_display": (match.get("challenger_username") if int(state.get("bowling_user") or 0)==int(match["challenger_id"]) else match.get("opponent_username")) or (match.get("challenger_name") if int(state.get("bowling_user") or 0)==int(match["challenger_id"]) else match.get("opponent_name")),"runs":int(state.get("runs") or 0),"wickets":int(state.get("wickets") or 0),"legal_balls":int(state.get("legal_balls") or 0),"over_text":f"{int(state.get('legal_balls') or 0)//6}.{int(state.get('legal_balls') or 0)%6}","batters":list(state.get("batter_stats",{}).values()),"bowlers":list(state.get("bowler_stats",{}).values()),"extras":dict(state.get("extras") or {}),"wickets_fallen":list(state.get("wickets_fallen") or []),"analysis_balls":list(state.get("analysis_balls") or [])}
     history=list(state.get("innings_history") or []); history.append(snap)
     if innings_no==1:
         target=int(state.get("runs") or 0)+1
@@ -261,6 +292,8 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
     history_first=history[0]; second=snap
     first_runs=int(history_first["runs"]); second_runs=int(second["runs"])
     if second_runs==first_runs:
+        rounds=list(state.get("super_over_rounds") or [])
+        rounds.append({"round": len(rounds)+1, "innings": history})
         previous_bowlers={
             str(int(history_first["bowling_team_id"])): int((state.get("first_bowler_id") or 0)),
             str(int(second["bowling_team_id"])): int(state.get("selected_bowler") or 0),
@@ -271,12 +304,13 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
             "next_super_over_batting_user": int(second["batting_team_id"]),
             "next_super_over_bowling_user": int(second["bowling_team_id"]),
             "is_repeat_super_over": True,
+            "super_over_rounds": rounds,
         }, "innings_break")
         await app.send_message(chat_id,"<b>⚖️ PLAYSO TIED\n\nBoth sides finished level.\n\n⚡ The second Super Over starts in 5 seconds.</b>",parse_mode="HTML")
         await asyncio.sleep(5)
         fresh=await get_match(int(match["match_id"]))
         # Keep the teams in the same roles they had in the last innings; next over starts with last innings' batting team.
-        st=dict(fresh.get("state") or {}); st["previous_bowlers"]=state.get("previous_bowlers") or {}; st["innings_history"]=[]; st["ball_no"]=0
+        st=dict(fresh.get("state") or {}); st["previous_bowlers"]=state.get("previous_bowlers") or {}; st["innings_history"]=[]; st["analysis_balls"]=[]; st["ball_no"]=0
         st["next_super_over_batting_user"]=int(second["batting_team_id"]); st["next_super_over_bowling_user"]=int(second["bowling_team_id"])
         await set_state(int(match["match_id"]),st,status="lineup"); await set_basic(int(match["match_id"]),innings_no=1)
         stmatch=await get_match(int(match["match_id"]))
@@ -316,4 +350,13 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
     try:
         await send_match_summary(app,chat_id,[history_first,second],winner=winner_display,margin=margin,potm=potm,caption="<b>⚡ PLAYSO • SUPER OVER SUMMARY</b>")
     except Exception as exc: print(f"[playso] summary card failed: {exc!r}")
+    try:
+        await send_report(
+            app,
+            collect_playso_match(
+                dict(match), {**state, "innings_history": history},
+                termination="completed", winner_id=winner, loser_id=loser_id,
+            ),
+        )
+    except Exception as exc: print(f"[match_analysis] PLAYSO completion report failed: {exc!r}")
     await set_state(int(match["match_id"]),{**state,"innings_history":history,"winner_id":winner},"completed")
