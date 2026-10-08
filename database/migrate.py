@@ -394,6 +394,27 @@ TABLES = {
             created_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "match_analysis_counter": """
+        CREATE TABLE IF NOT EXISTS match_analysis_counter(
+            counter_id SMALLINT PRIMARY KEY,
+            last_number BIGINT NOT NULL DEFAULT 0
+        );
+    """,
+    "match_analysis_reports": """
+        CREATE TABLE IF NOT EXISTS match_analysis_reports(
+            report_id BIGSERIAL PRIMARY KEY,
+            engine TEXT NOT NULL,
+            source_match_id BIGINT NOT NULL,
+            match_number BIGINT NOT NULL UNIQUE,
+            filename TEXT NOT NULL,
+            termination TEXT NOT NULL,
+            sent BOOLEAN NOT NULL DEFAULT FALSE,
+            telegram_message_id BIGINT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            sent_at TIMESTAMPTZ,
+            UNIQUE(engine, source_match_id)
+        );
+    """,
     "game_session_snapshots": """
         CREATE TABLE IF NOT EXISTS game_session_snapshots(
             engine TEXT NOT NULL,
@@ -529,6 +550,7 @@ async def migrate():
         print(f"[migrate] Table '{table_name}' OK.")
 
     print("[migrate] Ensuring runtime match indexes...")
+    await execute("CREATE INDEX IF NOT EXISTS idx_match_analysis_reports_engine ON match_analysis_reports(engine,source_match_id);")
     await execute("CREATE INDEX IF NOT EXISTS idx_playso_matches_chat_status ON playso_matches(chat_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_playso_matches_user_status ON playso_matches(challenger_id,opponent_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_playipl_matches_chat_status ON playipl_matches(chat_id,status);")
