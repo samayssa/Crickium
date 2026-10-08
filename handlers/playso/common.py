@@ -16,6 +16,7 @@ from utils.temperature import random_weather
 from database.stadium_images_repo import get_stadium_image, save_stadium_image
 from services.search import find_stadium_image_url
 from engines.play_engine import pitch_label
+from services.card_identity import display_card_name
 
 NO_KEYBOARD = {"inline_keyboard": []}
 _LOCKS: dict[int, asyncio.Lock] = {}
@@ -85,8 +86,8 @@ def player_line(player: dict[str, Any], *, bowler: bool = False, locked: bool = 
     role = str(player.get("role") or "")
     emoji = role_emoji(role)
     if bowler:
-        return f"{emoji} <b>{html.escape(str(player.get('name') or 'Player'))}</b> • OVR {int(player.get('bowl_level') or 0)}"
-    return f"{emoji} <b>{html.escape(str(player.get('name') or 'Player'))}</b> • OVR {int(player.get('bat_level') or 0)}"
+        return f"{emoji} <b>{html.escape(display_card_name(player))}</b> • OVR {int(player.get('bowl_level') or 0)}"
+    return f"{emoji} <b>{html.escape(display_card_name(player))}</b> • OVR {int(player.get('bat_level') or 0)}"
 
 
 async def current_xi(user_id: int) -> list[dict[str, Any]]:
@@ -97,14 +98,15 @@ async def active_external_match(chat_id: int, user_id: int) -> tuple[bool, str]:
     from database.play_repo import get_active_match_in_chat as play_chat, get_active_match_for_user as play_user
     from database.playint_repo import get_active_match_in_chat as int_chat, get_active_match_for_user as int_user
     from database.playipl_repo import get_active_match_in_chat as ipl_chat, get_active_match_for_user as ipl_user
-    checks = [(play_chat, "PLAY"), (int_chat, "PLAYINT"), (ipl_chat, "PLAYIPL")]
+    from database.playwpl_repo import get_active_match_in_chat as wpl_chat, get_active_match_for_user as wpl_user
+    checks = [(play_chat, "PLAY"), (int_chat, "PLAYINT"), (ipl_chat, "PLAYIPL"), (wpl_chat, "PLAYWPL")]
     for fn, name in checks:
         try:
             if await fn(chat_id):
                 return True, name
         except Exception:
             pass
-    for fn, name in [(play_user, "PLAY"), (int_user, "PLAYINT"), (ipl_user, "PLAYIPL")]:
+    for fn, name in [(play_user, "PLAY"), (int_user, "PLAYINT"), (ipl_user, "PLAYIPL"), (wpl_user, "PLAYWPL")]:
         try:
             if await fn(user_id):
                 return True, name
