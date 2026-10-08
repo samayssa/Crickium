@@ -239,6 +239,21 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
         print(f"[super_over_bridge] summary image failed: {exc!r}")
 
     try:
+        from services.match_analysis import collect_runtime_session, send_report
+        if origin_engine in {"PLAY", "PLAYINT", "PLAYIPL"} and session is not None:
+            report = collect_runtime_session(
+                origin_engine, session, termination="completed", winner_id=winner_id, loser_id=loser_id,
+                reason="decided by Super Over",
+            )
+            report["game_name"] = {"PLAY":"Play", "PLAYINT":"PlayInt", "PLAYIPL":"PlayIPL"}.get(origin_engine, origin_engine) + " + Super Over"
+            rounds = list(state.get("super_over_rounds") or [])
+            rounds.append({"round": len(rounds)+1, "innings": so_history})
+            report["super_over_rounds"] = rounds
+            await send_report(app, report)
+    except Exception as exc:
+        print(f"[match_analysis] Super Over origin report failed: {exc!r}")
+
+    try:
         if origin_engine == "PLAY":
             from database.play_repo import update_status
         elif origin_engine == "PLAYINT":
