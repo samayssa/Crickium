@@ -38,6 +38,7 @@ from engines.playipl_runtime import (
 from services.search import find_stadium_image_url
 from services.match_summary import send_match_summary, player_details
 from services.quest_engine import record_match_summary_for_session
+from services.match_analysis import collect_runtime_session, send_report
 from utils.mentions import mention_html
 from utils.PremiumEmoji import ipl_team_emoji_html
 from utils.overseas import MAX_OVERSEAS_PLAYERS, is_overseas_player
@@ -1323,6 +1324,17 @@ async def _finish_over_and_prompt_next(session) -> None:
             await update_status(session.match_id, "completed")
         except Exception as exc:
             print(f"[playipl] Failed to mark match_id={session.match_id} completed: {exc!r}")
+        try:
+            report_loser_id = int(match.get("opponent_id") if int(winner_id) == int(match.get("challenger_id") or 0) else match.get("challenger_id"))
+            await send_report(
+                app,
+                collect_runtime_session(
+                    "PLAYIPL", session, termination="completed",
+                    winner_id=int(winner_id), loser_id=report_loser_id,
+                ),
+            )
+        except Exception as exc:
+            print(f"[match_analysis] PLAYIPL completion report failed: {exc!r}")
         try:
             from services.match_notification import send_match_completion_notification
             await send_match_completion_notification(
