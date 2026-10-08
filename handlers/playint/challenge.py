@@ -5,6 +5,7 @@ from app import app
 from database.query import fetchrow
 from database.play_repo import get_active_match_in_chat as get_play_match_in_chat, get_active_match_for_user as get_play_match_for_user
 from database.playint_repo import create_match,get_match,set_message_id,update_status,get_active_match_in_chat,get_active_match_for_user
+from database.playwpl_repo import get_active_match_in_chat as get_playwpl_match_in_chat, get_active_match_for_user as get_playwpl_match_for_user
 from buttons.playint_buttons import challenge_keyboard
 from utils.mentions import mention, mention_html
 from utils.timers import start_timer, cancel_timer
@@ -35,9 +36,15 @@ async def playint_command(message):
     active=await get_active_match_in_chat(chat_id)
     if active:
         await app.send_message(chat_id,'<b>⚠️ A PlayInt game is already going on in this group.</b>',parse_mode='HTML'); return
+    active_wpl=await get_playwpl_match_in_chat(chat_id)
+    if active_wpl:
+        await app.send_message(chat_id,'<b>⚠️ A PlayWPL game is already going on in this group. Finish it before starting a PlayInt game.</b>',parse_mode='HTML'); return
     active_play=await get_play_match_in_chat(chat_id)
     if active_play:
         await app.send_message(chat_id,'<b>⚠️ A game is already going on in this group. Finish it before starting a PlayInt game.</b>',parse_mode='HTML'); return
+    active_wpl_user=await get_playwpl_match_for_user(challenger_id)
+    if active_wpl_user:
+        await app.send_message(chat_id,"<b>⚠️ You're already in a PlayWPL game. Please finish it first.</b>",parse_mode='HTML'); return
     active=await get_active_match_for_user(challenger_id)
     if active:
         await app.send_message(chat_id,"<b>⚠️ You're already in a game. Please finish it first.</b>",parse_mode='HTML'); return
@@ -63,6 +70,8 @@ async def playint_command(message):
     opponent_id, opponent_username, opponent_name = target
     if opponent_id==challenger_id:
         await app.send_message(chat_id,"<b>⚠️ You can't challenge yourself!</b>",parse_mode='HTML'); return
+    if await get_playwpl_match_for_user(opponent_id):
+        await app.send_message(chat_id,"<b>⚠️ Opponent is already in a PlayWPL game.</b>",parse_mode='HTML'); return
     if await get_active_match_for_user(opponent_id):
         om=mention_html(opponent_id,opponent_username,opponent_name)
         await app.send_message(chat_id,f'<b>⚠️ {om} is already in another game.</b>',parse_mode='HTML'); return
