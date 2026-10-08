@@ -95,6 +95,7 @@ async def reserve_report(
                         UNION ALL SELECT COUNT(*) AS n FROM play_matches WHERE status IN ('completed','ended','timed_out','abandoned')
                         UNION ALL SELECT COUNT(*) AS n FROM playint_matches WHERE status IN ('completed','ended','timed_out','abandoned')
                         UNION ALL SELECT COUNT(*) AS n FROM playipl_matches WHERE status IN ('completed','ended','timed_out','abandoned')
+                        UNION ALL SELECT COUNT(*) AS n FROM wpl_matches WHERE status IN ('completed','ended','timed_out','abandoned')
                         UNION ALL SELECT COUNT(*) AS n FROM playso_matches WHERE status IN ('completed','ended','timed_out','abandoned')
                     ) counts;
                     """
@@ -152,6 +153,7 @@ def _engine_filename(engine: str) -> str:
         "PLAY": "Play",
         "PLAYINT": "PlayInt",
         "PLAYIPL": "PlayIPL",
+        "PLAYWPL": "PlayWPL",
         "PLAYSO": "PlaySO",
         "MATCH": "Match",
     }.get(str(engine).upper(), str(engine).title().replace("_", ""))

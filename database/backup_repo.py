@@ -81,6 +81,7 @@ FULL_BACKUP_TABLES = [
     "play_matches",
     "playso_matches",
     "playipl_matches",
+    "wpl_matches",
     "stadium_images",
     "auction_tournaments",
     "auction_tournament_teams",
