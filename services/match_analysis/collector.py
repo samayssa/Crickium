@@ -544,10 +544,13 @@ def _base_payload(*, engine: str, match: dict[str, Any], innings: list[dict[str,
         "termination": termination,
         "reason": reason or "",
         "toss_winner_id": _safe_int(match.get("toss_winner_id")) or None,
+        "toss_winner_name": match.get("toss_winner_name") or None,
         "decision": match.get("decision") or match.get("toss_result"),
         "innings": innings,
     }
     payload["winner_name"] = next((p["first_name"] for p in payload["players"] if payload["winner_id"] and int(p["id"]) == payload["winner_id"]), None)
+    if payload.get("toss_winner_id"):
+        payload["toss_winner_name"] = next((p["first_name"] for p in payload["players"] if int(p["id"]) == int(payload["toss_winner_id"])), payload.get("toss_winner_name"))
     if not payload["winner_name"]:
         winner_team_id = next((s.get("batting_team_id") for s in innings if s.get("batting_team_id") == winner_id), None) if winner_id else None
         if winner_team_id is not None:

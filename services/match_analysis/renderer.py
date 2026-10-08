@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 from typing import Any
 
@@ -64,55 +65,162 @@ def _phase_rows(payload: dict[str, Any]) -> str:
 
 def _bar_chart(payload: dict[str, Any]) -> str:
     innings = payload.get("innings") or []
-    over_map = {}
+    over_map: dict[int, dict[int, dict[str, int]]] = {}
     max_over = 0
     for idx, snap in enumerate(innings[:2]):
         for row in snap.get("analysis_overs") or []:
             over = int(row.get("over") or 0)
+            if over <= 0:
+                continue
             max_over = max(max_over, over)
-            over_map.setdefault(over, {})[idx] = int(row.get("runs") or 0)
+            over_map.setdefault(over, {})[idx] = {
+                "runs": int(row.get("runs") or 0),
+                "wickets": int(row.get("wickets") or 0),
+            }
     if not over_map:
         return "<div class='note'>No over-by-over telemetry was recorded for this match.</div>"
-    cap = max(6, max((v for d in over_map.values() for v in d.values()), default=6))
+    cap = max(6, max((int(v.get("runs") or 0) for d in over_map.values() for v in d.values()), default=6))
+
+    def wicket_stack(count: int, css_class: str, over: int, innings_label: str) -> str:
+        count = max(0, int(count or 0))
+        if not count:
+            return ""
+        dots = "".join(
+            f"<span class='wicket-dot {css_class}' title='{esc(innings_label)} wicket {i} in over {over}'></span>"
+            for i in range(1, count + 1)
+        )
+        plural = "s" if count != 1 else ""
+        return f"<span class='wicket-stack' aria-label='{esc(innings_label)}: {count} wicket{plural} in over {over}'>{dots}</span>"
+
     cols = []
     for over in range(1, max_over + 1):
         d = over_map.get(over, {})
-        ha = round((d.get(0, 0) / cap) * 100)
-        hb = round((d.get(1, 0) / cap) * 100)
+        a = d.get(0, {})
+        b = d.get(1, {})
+        runs_a, runs_b = int(a.get("runs") or 0), int(b.get("runs") or 0)
+        wickets_a, wickets_b = int(a.get("wickets") or 0), int(b.get("wickets") or 0)
+        ha = round((runs_a / cap) * 100)
+        hb = round((runs_b / cap) * 100)
+        wa = "s" if wickets_a != 1 else ""
+        wb = "s" if wickets_b != 1 else ""
         cols.append(
-            f"<div class='bar-col'><span class='bar a' style='height:{ha}%;' title='Innings 1 over {over}: {d.get(0,0)} runs'></span>"
-            f"<span class='bar b' style='height:{hb}%;' title='Innings 2 over {over}: {d.get(1,0)} runs'></span>"
+            f"<div class='bar-col'><span class='bar a' style='height:{ha}%;' title='Innings 1 over {over}: {runs_a} runs, {wickets_a} wicket{wa}'>"
+            + wicket_stack(wickets_a, "a", over, "Innings 1")
+            + "</span>"
+            f"<span class='bar b' style='height:{hb}%;' title='Innings 2 over {over}: {runs_b} runs, {wickets_b} wicket{wb}'>"
+            + wicket_stack(wickets_b, "b", over, "Innings 2")
+            + "</span>"
             f"<span class='bar-label'>{over}</span></div>"
         )
-    return "<div class='bar-chart'>" + "".join(cols) + "</div>"
+    return "<div class='bar-chart' role='img' aria-label='Runs by over with wicket dots above the relevant innings bars'>" + "".join(cols) + "</div>"
 
 
-def _line_svg(series: list[dict[str, Any]], *, value_key: str, y_min: float, y_max: float, team_mode: bool = True) -> str:
+def _worm_wicket_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    events = []
+    for idx, snap in enumerate(payload.get("innings") or [], start=1):
+        innings_number = _safe_int(snap.get("innings_number") or idx)
+        team = snap.get("batting_team_display") or f"Innings {idx}"
+        inning_events = []
+        for ball in snap.get("analysis_balls") or []:
+            if not ball.get("wicket"):
+                continue
+            over = _safe_int(ball.get("over"))
+            ball_no = _safe_int(ball.get("ball"))
+            if over <= 0:
+                continue
+            inning_events.append({
+                "innings_number": innings_number,
+                "team": team,
+                "over": over,
+                "ball": max(1, min(6, ball_no or 1)),
+                "batter": ball.get("batter") or "Batter",
+            })
+
+        # Some legacy/early-exit reports retain only fall-of-wicket records.
+        # Use their recorded over value as a fallback without inventing a ball
+        # number when detailed ball telemetry is unavailable.
+        if not inning_events:
+            for wicket in snap.get("wickets_fallen") or []:
+                over_text = str(wicket.get("over") or "")
+                match = re.match(r"^(\d+)\.(\d+)$", over_text.strip())
+                if not match:
+                    continue
+                over = int(match.group(1)) or 1
+                ball_no = max(1, min(6, int(match.group(2))))
+                inning_events.append({
+                    "innings_number": innings_number,
+                    "team": team,
+                    "over": over,
+                    "ball": ball_no,
+                    "batter": wicket.get("batter") or "Batter",
+                })
+        events.extend(inning_events)
+    return events
+
+
+def _line_svg(series: list[dict[str, Any]], *, value_key: str, y_min: float, y_max: float, team_mode: bool = True, wicket_events: list[dict[str, Any]] | None = None) -> str:
     if not series:
         return "<div class='note'>No chart data available.</div>"
     width, height, left, right, top, bottom = 760, 250, 48, 22, 18, 28
     plot_w, plot_h = width - left - right, height - top - bottom
     max_x = max(int(x.get("over") or 1) for x in series)
-    def x_pos(over: int) -> float:
-        return left + (max_x and (over - 1) / max(1, max_x - 1) or 0) * plot_w
+
+    def x_pos(over_position: float) -> float:
+        return left + ((over_position - 1) / max(1, max_x - 1)) * plot_w if max_x > 1 else left + plot_w / 2
+
     def y_pos(value: float) -> float:
         ratio = (value - y_min) / max(1e-9, y_max - y_min)
         return top + (1 - ratio) * plot_h
-    by_team = {}
+
+    by_team: dict[str, list[dict[str, Any]]] = {}
+    by_innings: dict[int, list[dict[str, Any]]] = {}
     for row in series:
         by_team.setdefault(str(row.get("team") or "Series"), []).append(row)
+        by_innings.setdefault(_safe_int(row.get("innings_number")) or 1, []).append(row)
+    for rows in by_team.values():
+        rows.sort(key=lambda r: _safe_int(r.get("over")))
+    for rows in by_innings.values():
+        rows.sort(key=lambda r: _safe_int(r.get("over")))
+
     paths = []
     colors = ["line-a", "line-b"]
     for idx, (team, rows) in enumerate(list(by_team.items())[:2]):
-        pts = " ".join(f"{x_pos(int(r.get('over') or 1)):.1f},{y_pos(float(r.get(value_key) or 0)):.1f}" for r in rows)
+        pts = " ".join(f"{x_pos(float(_safe_int(r.get('over') or 1))):.1f},{y_pos(float(r.get(value_key) or 0)):.1f}" for r in rows)
         paths.append(f"<polyline class='{colors[idx]}' points='{pts}'><title>{esc(team)}</title></polyline>")
+
+    markers = []
+    for event in wicket_events or []:
+        innings_number = _safe_int(event.get("innings_number")) or 1
+        rows = by_innings.get(innings_number) or []
+        if not rows:
+            continue
+        over = _safe_int(event.get("over"))
+        ball_no = max(1, min(6, _safe_int(event.get("ball")) or 1))
+        current = next((r for r in rows if _safe_int(r.get("over")) == over), None)
+        if current is None:
+            continue
+        previous = None
+        for row in rows:
+            if _safe_int(row.get("over")) < over:
+                previous = row
+            else:
+                break
+        start_value = float(previous.get(value_key) or 0) if previous else y_min
+        end_value = float(current.get(value_key) or 0)
+        fraction = ball_no / 6.0
+        marker_value = start_value + (end_value - start_value) * fraction
+        x = x_pos((over - 1) + fraction)
+        y = y_pos(marker_value)
+        css_class = "wicket-point-a" if innings_number == 1 else "wicket-point-b"
+        label = f"{event.get('batter') or 'Batter'} out • over {over}.{ball_no}"
+        markers.append(f"<circle class='{css_class}' cx='{x:.1f}' cy='{y:.1f}' r='4'><title>{esc(label)}</title></circle>")
+
     grid = []
     for i in range(5):
         val = y_min + (y_max - y_min) * i / 4
         y = y_pos(val)
         grid.append(f"<line class='gridline' x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}'/><text class='axis' x='{left-8}' y='{y+4:.1f}' text-anchor='end'>{esc(num(val,1))}</text>")
-    return f"<svg class='chart' viewBox='0 0 {width} {height}' role='img'>{''.join(grid)}{''.join(paths)}</svg>"
-
+    return f"<svg class='chart' viewBox='0 0 {width} {height}' role='img' aria-label='Cumulative score path with wicket markers'>{''.join(grid)}{''.join(paths)}{''.join(markers)}</svg>"
 
 def _prob_svg(series: list[dict[str, Any]]) -> str:
     return _single_svg(series, key="probability", y_min=0, y_max=100, line_class="line-b", title="Chasing-side report model win probability")
@@ -315,7 +423,7 @@ def render_report(payload: dict[str, Any]) -> str:
         f"<div class='meta'><span class='k'>Ground</span><span class='v'>{esc(payload.get('stadium'))}</span></div>"
         f"<div class='meta'><span class='k'>Pitch</span><span class='v'>{esc(payload.get('pitch'))}</span></div>"
         f"<div class='meta'><span class='k'>Weather</span><span class='v'>{esc(payload.get('weather'))}</span></div>"
-        f"<div class='meta'><span class='k'>Toss</span><span class='v'>{esc(payload.get('toss_winner_id') or 'Not recorded')}</span></div>"
+        f"<div class='meta'><span class='k'>Toss</span><span class='v'>{esc(payload.get('toss_winner_name') or 'Not recorded')}</span></div>"
         f"<div class='meta'><span class='k'>Decision</span><span class='v'>{esc(payload.get('decision') or 'Not recorded')}</span></div>"
         f"<div class='meta'><span class='k'>Player of Match</span><span class='v'>{esc((payload.get('potm') or {}).get('name') or '—')}</span></div>"
         f"<div class='meta'><span class='k'>Report status</span><span class='v'>{esc(status)}</span></div>"
@@ -333,7 +441,7 @@ def render_report(payload: dict[str, Any]) -> str:
     )
     body.append("<section class='section'><h2>Phase readout</h2><div class='scroll'><table class='report-table phase-table'><thead><tr><th>Team</th><th>Phase</th><th class='num'>Runs</th><th class='num'>Wickets</th><th class='num'>Overs</th><th class='num'>Rate</th></tr></thead><tbody>"+_phase_rows(payload)+"</tbody></table></div></section>")
     body.append("<section class='section'><h2>Runs by over</h2>"+_bar_chart(payload)+"<div class='legend'><span><i class='dot a'></i>Innings 1</span><span><i class='dot b'></i>Innings 2</span></div><p class='note'>Bars are the recorded over totals. No simulation values are recreated or changed for the report.</p></section>")
-    body.append("<section class='section'><h2>The worm</h2>"+_line_svg(analytics.get('innings_series') or [], value_key='cumulative_runs', y_min=0, y_max=max([int(x.get('cumulative_runs') or 0) for x in analytics.get('innings_series') or []] or [10]))+"<div class='legend'><span><i class='dot a'></i>Innings 1</span><span><i class='dot b'></i>Innings 2</span></div><p class='note'>Cumulative score path by over, retained from recorded match events.</p></section>")
+    body.append("<section class='section'><h2>The worm</h2>"+_line_svg(analytics.get('innings_series') or [], value_key='cumulative_runs', y_min=0, y_max=max([int(x.get('cumulative_runs') or 0) for x in analytics.get('innings_series') or []] or [10]), wicket_events=_worm_wicket_events(payload))+"<div class='legend'><span><i class='dot a'></i>Innings 1</span><span><i class='dot b'></i>Innings 2</span></div><p class='note'>Cumulative score path by over, retained from recorded match events.</p></section>")
     body.append("<section class='section'><h2>Momentum &amp; pressure</h2>"+_momentum_svg(payload)+"<div class='legend'><span><i class='dot a'></i>Momentum</span><span><i class='dot c'></i>Chase pressure</span></div><p class='note'>Momentum is a report-derived ±2 indicator. Pressure rises as the chase model becomes more demanding.</p></section>")
     body.append("<section class='section'><h2>Win probability model</h2>"+_prob_svg(analytics.get('win_series') or [])+"<div class='highlight'>This is an analytical estimate generated from the recorded score, wickets, balls remaining and required run rate. It is not the engine's decision probability.</div></section>")
     body.append("<section class='section'><h2>Scorecards</h2>"+"".join(f"<h3>{esc(s.get('batting_team_display'))} — {score_text(s)} ({esc(s.get('over_text') or '0.0')})</h3>"+_scorecard(s) for s in innings[:2])+"</section>")
