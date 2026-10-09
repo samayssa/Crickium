@@ -355,7 +355,7 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
             app,
             collect_playso_match(
                 dict(match), {**state, "innings_history": history},
-                termination="completed", winner_id=winner, loser_id=loser_id,
+                termination="completed", winner_id=winner, loser_id=loser,
             ),
         )
     except Exception as exc: print(f"[match_analysis] PLAYSO completion report failed: {exc!r}")
