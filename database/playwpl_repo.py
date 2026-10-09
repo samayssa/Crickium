@@ -20,7 +20,7 @@ _SCHEMA_READY = False
 
 
 async def ensure_schema() -> None:
-    """Compatibility no-op. PLAYWPL schema is created by database.migrate()."""
+    """Compatibility no-op. PLAYWPL uses the shared wpl_matches table from database.migrate()."""
     return None
 
 
@@ -51,7 +51,7 @@ async def create_match(chat_id, challenger_id, challenger_username, challenger_n
     await ensure_schema()
     return await fetchrow(
         '''
-        INSERT INTO playwpl_matches
+        INSERT INTO wpl_matches
         (chat_id, challenger_id, challenger_username, challenger_name,
          opponent_id, opponent_username, opponent_name, status)
         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')
@@ -64,17 +64,17 @@ async def create_match(chat_id, challenger_id, challenger_username, challenger_n
 
 async def get_match(match_id):
     await ensure_schema()
-    return await fetchrow('SELECT * FROM playwpl_matches WHERE match_id=$1;', match_id)
+    return await fetchrow('SELECT * FROM wpl_matches WHERE match_id=$1;', match_id)
 
 
 async def update_status(match_id, status):
     await ensure_schema()
-    await execute('UPDATE playwpl_matches SET status=$1 WHERE match_id=$2;', status, match_id)
+    await execute('UPDATE wpl_matches SET status=$1 WHERE match_id=$2;', status, match_id)
 
 
 async def set_message_id(match_id, message_id):
     await ensure_schema()
-    await execute('UPDATE playwpl_matches SET message_id=$1 WHERE match_id=$2;', message_id, match_id)
+    await execute('UPDATE wpl_matches SET message_id=$1 WHERE match_id=$2;', message_id, match_id)
 
 
 async def set_team(match_id, user_id, team_code, team_name):
@@ -83,12 +83,12 @@ async def set_team(match_id, user_id, team_code, team_name):
         return
     if int(user_id) == int(row['challenger_id']):
         await execute(
-            "UPDATE playwpl_matches SET challenger_team_code=$1, challenger_team_name=$2, status='team_selection' WHERE match_id=$3;",
+            "UPDATE wpl_matches SET challenger_team_code=$1, challenger_team_name=$2, status='team_selection' WHERE match_id=$3;",
             team_code, team_name, match_id,
         )
     elif int(user_id) == int(row['opponent_id']):
         await execute(
-            "UPDATE playwpl_matches SET opponent_team_code=$1, opponent_team_name=$2, status='team_selection' WHERE match_id=$3;",
+            "UPDATE wpl_matches SET opponent_team_code=$1, opponent_team_name=$2, status='team_selection' WHERE match_id=$3;",
             team_code, team_name, match_id,
         )
 
@@ -101,7 +101,7 @@ async def set_xi(match_id, user_id, player_ids, is_challenger: bool | None = Non
     if is_challenger is None:
         is_challenger = int(user_id) == int(row['challenger_id'])
     field = 'challenger_xi' if is_challenger else 'opponent_xi'
-    await execute(f'UPDATE playwpl_matches SET {field}=$1::jsonb WHERE match_id=$2;', json.dumps(list(player_ids)), match_id)
+    await execute(f'UPDATE wpl_matches SET {field}=$1::jsonb WHERE match_id=$2;', json.dumps(list(player_ids)), match_id)
 
 
 async def set_xi_confirmed(match_id, user_id):
@@ -109,7 +109,7 @@ async def set_xi_confirmed(match_id, user_id):
     if not row:
         return
     field = 'challenger_xi_confirmed' if int(user_id) == int(row['challenger_id']) else 'opponent_xi_confirmed'
-    await execute(f'UPDATE playwpl_matches SET {field}=TRUE WHERE match_id=$1;', match_id)
+    await execute(f'UPDATE wpl_matches SET {field}=TRUE WHERE match_id=$1;', match_id)
 
 
 async def get_recent_playing_xi(user_id: int, team_code: str):
@@ -122,26 +122,26 @@ async def save_recent_playing_xi(user_id: int, team_code: str, player_ids):
 
 async def set_pitch(match_id, pitch):
     await ensure_schema()
-    await execute("UPDATE playwpl_matches SET pitch=$1, status='pitch_selected' WHERE match_id=$2;", pitch, match_id)
+    await execute("UPDATE wpl_matches SET pitch=$1, status='pitch_selected' WHERE match_id=$2;", pitch, match_id)
 
 
 async def set_toss(match_id, winner_id, call, result):
     await ensure_schema()
     await execute(
-        "UPDATE playwpl_matches SET toss_winner_id=$1, toss_call=$2, toss_result=$3, status='toss_done' WHERE match_id=$4;",
+        "UPDATE wpl_matches SET toss_winner_id=$1, toss_call=$2, toss_result=$3, status='toss_done' WHERE match_id=$4;",
         winner_id, call, result, match_id,
     )
 
 
 async def set_decision(match_id, decision):
     await ensure_schema()
-    await execute("UPDATE playwpl_matches SET decision=$1, status='lineup' WHERE match_id=$2;", decision, match_id)
+    await execute("UPDATE wpl_matches SET decision=$1, status='lineup' WHERE match_id=$2;", decision, match_id)
 
 
 async def get_active_match_in_chat(chat_id):
     await ensure_schema()
     return await fetchrow(
-        """SELECT * FROM playwpl_matches WHERE chat_id=$1 AND status IN
+        """SELECT * FROM wpl_matches WHERE chat_id=$1 AND status IN
         ('pending','accepted','team_selection','pitch_selected','toss_done','lineup','live')
         ORDER BY match_id DESC LIMIT 1;""",
         chat_id,
@@ -151,7 +151,7 @@ async def get_active_match_in_chat(chat_id):
 async def get_active_match_for_user(user_id):
     await ensure_schema()
     return await fetchrow(
-        """SELECT * FROM playwpl_matches WHERE (challenger_id=$1 OR opponent_id=$1) AND status IN
+        """SELECT * FROM wpl_matches WHERE (challenger_id=$1 OR opponent_id=$1) AND status IN
         ('pending','accepted','team_selection','pitch_selected','toss_done','lineup','live')
         ORDER BY match_id DESC LIMIT 1;""",
         user_id,
