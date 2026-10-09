@@ -599,7 +599,7 @@ async def on_play_impact_confirm_batpos(callback_query):
     try:
         if uid == int(session.batting_team_id):
             from services.live_runtime_controls import move_batting_player_to_position
-            move_batting_player_to_position(session, uid, int(st["position"]))
+            move_batting_player_to_position(session, int(st["in_id"]), int(st["position"]))
             st["stage"]="batrole"
             await app.answer_callback_query(callback_query["id"], "Batting position confirmed!")
             await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, uid), parse_mode="HTML", reply_markup=impact_batting_role_keyboard("play", session.match_id))
