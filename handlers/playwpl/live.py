@@ -543,7 +543,7 @@ def _impact_markup(session: Any, *, team_id: int | None = None, context: str = '
     for uid in ids:
         st = ensure_impact_state(session, uid)
         if st.get('stage') == 'in':
-            rows.extend(impact_player_keyboard('playwpl', session.match_id, uid, impact_in_candidates(session, uid), st.get('in_id'), stage='in').inline_keyboard)
+            rows.extend(impact_player_keyboard('playwpl', session.match_id, uid, impact_in_candidates(session, uid), st.get('in_id'), stage='in', show_back=True).inline_keyboard)
         elif st.get('stage') == 'batpos':
             rows.extend(impact_batting_position_keyboard('playwpl', session.match_id, future_batting_candidates(session, uid), st.get('position')).inline_keyboard)
         elif st.get('stage') == 'batrole':
@@ -761,6 +761,38 @@ async def on_playwpl_impact_confirm_out(callback_query):
         await app.edit_message_text(session.chat_id, target_mid, text, parse_mode='HTML', reply_markup=markup)
 
 
+@register_callback('playwpl_impact_back')
+async def on_playwpl_impact_back(callback_query):
+    """From the Impact IN list go back to the Impact OUT list (keeps the OUT pick)."""
+    parts = callback_query['data'].split(':')
+    if len(parts) != 3:
+        return
+    _, mid_s, code = parts
+    session = get_playwpl_session(int(mid_s))
+    if session is None:
+        return
+    owner, _ = _team_owner(session, code)
+    if int(callback_query['from']['id']) != owner:
+        await app.answer_callback_query(callback_query['id'], 'These are not your Impact Player options.', show_alert=True)
+        return
+    st = ensure_impact_state(session, owner)
+    if st.get('used') or st.get('stage') != 'in':
+        await app.answer_callback_query(callback_query['id'], 'This Impact Player step is no longer active.', show_alert=True)
+        return
+    st['stage'] = 'out'
+    st['in_id'] = None
+    await app.answer_callback_query(callback_query['id'], 'Back to Impact OUT selection.')
+    target_mid = _impact_message_id(session, owner)
+    if target_mid:
+        if st.get('context') == 'innings_break':
+            text = _impact_break_text(session, owner)
+            markup = _impact_markup(session, team_id=owner, context='innings_break')
+        else:
+            text = _impact_text(session, team_id=owner, context='runtime')
+            markup = _impact_markup(session, team_id=owner, context='runtime')
+        await app.edit_message_text(session.chat_id, target_mid, text, parse_mode='HTML', reply_markup=markup)
+
+
 @register_callback('playwpl_impact_in')
 async def on_playwpl_impact_in(callback_query):
     parts = callback_query['data'].split(':')
@@ -967,7 +999,7 @@ async def on_playwpl_impact_confirm_batpos(callback_query):
     try:
         if uid == int(session.batting_team_id):
             from services.live_runtime_controls import move_batting_player_to_position
-            move_batting_player_to_position(session, uid, int(st['position']))
+            move_batting_player_to_position(session, int(st['in_id']), int(st['position']))
             st['stage'] = 'batrole'
             await app.answer_callback_query(callback_query['id'], 'Batting position confirmed!')
             await app.edit_message_text(session.chat_id, session.live_message_id, _impact_text(session, team_id=uid, context='runtime'), parse_mode='HTML', reply_markup=impact_batting_role_keyboard('playwpl', session.match_id))
