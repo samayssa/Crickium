@@ -205,7 +205,7 @@ def schedule_batsman_keyboard(match_id, players, selected_ids=None):
     return InlineKeyboardMarkup(rows)
 
 
-def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None, stage='out', show_cancel=False):
+def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None, stage='out', show_cancel=False, show_back=False):
     rows = []
     pair = []
     action = 'impact_out' if stage == 'out' else 'impact_in'
@@ -235,6 +235,8 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
         rows.append([_b(label, f'{prefix}_{cb}:{match_id}:{int(team_id)}', 'danger')])
     if stage == 'out' and show_cancel:
         rows.append([_b('❌ CANCEL IMPACT', f'{prefix}_cancel_impact:{match_id}:{int(team_id)}', 'danger')])
+    if stage == 'in' and show_back:
+        rows.append([_b('⬅️ BACK', f'{prefix}_impact_back:{match_id}:{int(team_id)}', 'primary')])
     return InlineKeyboardMarkup(rows)
 
 
