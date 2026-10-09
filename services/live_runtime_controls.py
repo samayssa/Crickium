@@ -10,12 +10,15 @@ MAX_BOWLER_OVERS = 4
 
 
 def impact_batting_position_allowed(session: Any, team_id: int) -> bool:
-    """Return whether the selected Impact IN player needs batting positioning.
+    """Return whether the selected Impact IN player needs a batting-position step.
 
-    Positioning is determined by the incoming player's role, not by which side
-    is currently batting or bowling. Batsman/AllRounder/Wicketkeeper Impact players
-    receive the batting-position step. Bowlers and other roles return directly
-    to the normal runtime stage.
+    Rules:
+      * Only Batsman / AllRounder / Wicketkeeper Impact players are positioned.
+      * Batting side (live innings): the IN player must still be a *future* batter
+        (not at the crease, not already dismissed). If the IN player simply took
+        over the place of a batter who is at the crease there is nothing to order.
+      * Bowling side: only while a later innings exists (innings one, or the
+        innings break). In innings two the bowling side never bats again.
     """
     team_id = int(team_id)
     state = ensure_impact_state(session, team_id)
@@ -24,7 +27,21 @@ def impact_batting_position_allowed(session: Any, team_id: int) -> bool:
         return False
     player = find_player(session, team_id, in_id) or {}
     role = str(player.get("role") or "").strip().lower().replace(" ", "").replace("-", "")
-    return role in {"batsman", "allrounder", "wicketkeeper", "wicketkeeperbatsman", "wk"}
+    if role not in {"batsman", "allrounder", "wicketkeeper", "wicketkeeperbatsman", "wk"}:
+        return False
+
+    innings = session.innings
+    if team_id == int(session.batting_team_id):
+        if bool(getattr(innings, "completed", False)):
+            return False
+        start = int(innings.next_batter_index or 0)
+        for idx, slot in enumerate(innings.batting_order):
+            if int(slot.player_id or 0) == in_id:
+                return idx >= start and not bool(slot.dismissed)
+        return False
+
+    # Bowling side.
+    return int(getattr(innings, "innings_number", 1) or 1) < 2 or bool(getattr(innings, "completed", False))
 
 
 def impact_player_name_html(session: Any, player_id: int, name: str) -> str:
@@ -203,22 +220,28 @@ def apply_impact_replacement(
             replaced.append(dict(player))
     set_current_xi(session, team_id, replaced)
 
-    # If this team is currently batting, keep the batting-order slot so the
-    # new Impact Player can be repositioned through the dedicated batting
-    # position step. If the removed player is currently at the crease, the
-    # active slot itself is replaced immediately, then the position selector
-    # may move that player later.
-    if team_id == int(session.batting_team_id):
+    # Batting side, innings in progress:
+    #   * out player already dismissed  -> his scorecard entry stays untouched and
+    #     the Impact player is appended as a brand-new *future* batter (so the
+    #     position selector can place him anywhere in the remaining order).
+    #   * out player at the crease / still to bat -> the Impact player takes that
+    #     slot in place (future batters can then be repositioned).
+    # After the innings has completed (innings break) the finished batting order
+    # is history and must not be edited at all.
+    if team_id == int(session.batting_team_id) and not bool(getattr(session.innings, "completed", False)):
         order = session.innings.batting_order
         for idx, slot in enumerate(order):
             if int(slot.player_id or 0) != out_id:
                 continue
             replacement = _slot_from_player(in_player)
-            order[idx] = replacement
-            if session.innings.striker is slot:
-                session.innings.striker = replacement
-            if session.innings.non_striker is slot:
-                session.innings.non_striker = replacement
+            if bool(slot.dismissed):
+                order.append(replacement)
+            else:
+                order[idx] = replacement
+                if session.innings.striker is slot:
+                    session.innings.striker = replacement
+                if session.innings.non_striker is slot:
+                    session.innings.non_striker = replacement
             break
 
     # Keep the auto plans valid after an Impact replacement. A removed player
@@ -306,37 +329,6 @@ def future_batting_candidates(session: Any, team_id: int | None = None) -> list[
             }
         )
 
-    # During Impact Player batting-position selection, the incoming card may
-    # have replaced a player whose original batting slot is already before the
-    # normal next-batter cursor. Keep that card visible once so the user can
-    # explicitly reposition it instead of getting an empty/partial selector.
-    batting_key = _key(session.batting_team_id)
-    for state_key, state in getattr(session, "impact_state", {}).items():
-        if str(state_key) != batting_key:
-            continue
-        if state.get("stage") != "batpos" or state.get("in_id") is None:
-            continue
-        in_id = int(state.get("in_id"))
-        if any(int(item.get("player_id") or 0) == in_id for item in result):
-            continue
-        for index, slot in enumerate(order):
-            if int(slot.player_id or 0) != in_id:
-                continue
-            if in_id in dismissed:
-                continue
-            if index >= len(order):
-                break
-            result.append(
-                {
-                    "player_id": in_id,
-                    "name": slot.name,
-                    "position": index + 1,
-                    "bat_level": int(slot.bat_level or 0),
-                    "bowl_level": int(slot.bowl_level or 0),
-                    "role": slot.role,
-                }
-            )
-            break
     result.sort(key=lambda item: int(item.get("position") or 0))
     return result
 
@@ -535,30 +527,32 @@ def ordinal(number: int) -> str:
 
 
 def move_batting_player_to_position(session: Any, player_id: int, target_position: int) -> None:
+    """Move a *future* batter (the Impact IN player) to ``target_position``.
+
+    ``player_id`` is the player's card id (NOT the Telegram user id). Positions are
+    1-based indexes into the innings batting order. Only the not-yet-batted part
+    of the order (from ``next_batter_index`` on) can be edited.
+    """
     player_id = int(player_id)
     target_position = int(target_position)
     order = session.innings.batting_order
     start = int(session.innings.next_batter_index or 0)
 
-    # An Impact IN may already have replaced an active/current batter whose
-    # original slot is before the normal next-batter cursor. The old lookup
-    # searched only order[start:], which caused the false "not available"
-    # exception even though the player was present in batting_order. Locate the
-    # player in the full order, then clamp the requested destination to the
-    # editable portion of the innings order.
     source_index = next(
         (idx for idx, slot in enumerate(order) if int(slot.player_id or 0) == player_id),
         None,
     )
     if source_index is None:
-        raise ValueError("Impact Player is not available in the batting order.")
+        raise ValueError("Impact Player is not in the batting order any more.")
+    if source_index < start or bool(order[source_index].dismissed):
+        raise ValueError("This Impact Player is already at the crease or has batted, so the batting position cannot be changed.")
 
-    if target_position <= start:
-        target_position = start + 1
+    target_position = min(max(target_position, start + 1), len(order))
     slot = order.pop(source_index)
-    insert_index = min(max(start, target_position - 1), len(order))
-    order.insert(insert_index, slot)
-    session.impact_state[str(int(session.batting_team_id))]["position"] = target_position
+    order.insert(target_position - 1, slot)
+    state = session.impact_state.get(str(int(session.batting_team_id)))
+    if state is not None:
+        state["position"] = target_position
 
 
 def apply_entry_role_after_wicket(session: Any) -> None:
