@@ -1,1 +1,188 @@
-xx
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crickium Mini App | Product & Technical Blueprint</title>
+<style>
+@page { size: A4; margin: 17mm 17mm 18mm; @bottom-right { content: "CRICKIUM  /  MINI APP BLUEPRINT   •   " counter(page); color:#778277; font:8pt Arial; } }
+* { box-sizing:border-box; }
+body { margin:0; color:#1c2a22; font:10pt/1.48 Arial, sans-serif; }
+h1,h2,h3,p { margin-top:0; } h1 { font-size:29pt; line-height:1.04; margin-bottom:12px; letter-spacing:-.7pt; } h2 { font-size:19pt; margin:0 0 10px; color:#1d3327; } h3 { font-size:11pt; margin:0 0 5px; color:#273d2c; }
+p { margin-bottom:9px; } .cover { height:245mm; padding:34mm 19mm; color:#f4f6ef; background:linear-gradient(145deg,#10221a,#263a25 58%,#59683b); position:relative; }
+.cover .kicker { color:#cfec72; font-weight:bold; letter-spacing:3pt; font-size:9pt; } .cover h1 { margin-top:38mm; font-size:38pt; max-width:135mm; } .cover p { color:#d9e2d8; max-width:130mm; font-size:13pt; }
+.badge { display:inline-block; margin-top:12px; border:1px solid #a6bb70; border-radius:20px; padding:6px 11px; color:#e7f1cc; font-size:8pt; letter-spacing:1pt; }
+.cover-foot { position:absolute; left:19mm; bottom:20mm; color:#bac7b3; font-size:8pt; letter-spacing:1pt; }
+.page { page-break-before:always; } .lead { color:#57665b; font-size:12pt; max-width:165mm; margin-bottom:18px; }
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:12px 0; } .card { padding:12px; border:1px solid #dce4d9; background:#f7f9f5; border-radius:8px; } .card strong { color:#779c31; }
+.callout { margin:12px 0; padding:11px 13px; background:#edf4dd; border-left:3px solid #92b849; color:#37472d; }
+table { width:100%; border-collapse:collapse; margin:10px 0 16px; font-size:8.5pt; } th { color:#fff; background:#263b2c; text-align:left; } th,td { padding:7px 8px; vertical-align:top; border:1px solid #d8e0d5; } tr:nth-child(even) td { background:#f5f7f2; }
+.flow { display:flex; align-items:center; gap:7px; margin:16px 0; } .node { flex:1; min-height:48px; padding:10px 8px; text-align:center; border-radius:8px; background:#eef3e6; border:1px solid #b9c99e; font-weight:bold; font-size:8pt; } .arrow { color:#7da440; font-size:16pt; font-weight:bold; }
+.nav { display:flex; gap:7px; margin:11px 0; } .nav span { flex:1; text-align:center; background:#172920; color:#e7f4d2; padding:10px 4px; border-radius:7px; font-weight:bold; }
+.pill { display:inline-block; padding:3px 7px; border-radius:12px; background:#edf4dd; color:#55752b; font-size:8pt; font-weight:bold; }
+.small { color:#647267; font-size:8.5pt; } .two-col { columns:2; column-gap:18px; } .two-col li { break-inside:avoid; margin-bottom:5px; }
+.check { color:#6b9437; font-weight:bold; } .warn { color:#a15b34; font-weight:bold; }
+.screen { margin-bottom:6px; padding:7px 9px; border:1px solid #dce4d9; border-radius:7px; break-inside:avoid; page-break-inside:avoid; } .screen h3 { display:inline-block; margin-right:7px; } .screen p { margin-bottom:3px; }
+.footer-note { margin-top:15px; padding-top:8px; border-top:1px solid #d8e0d5; color:#778277; font-size:8pt; }
+code { font:8.5pt ui-monospace,monospace; background:#eef1ec; padding:1px 4px; }
+</style>
+</head>
+<body>
+<section class="cover">
+  <div class="kicker">PRODUCT & ENGINEERING BLUEPRINT</div>
+  <h1>Crickium<br>Telegram Mini App</h1>
+  <p>A mobile-first club experience over the bot's real player, squad, match, wallet and reward data.</p>
+  <span class="badge">CURRENT ZIP BASELINE · IMPLEMENTATION MAP</span>
+  <div class="cover-foot">SCOUT · COLLECT · COMPETE<br>Product blueprint and technical notes</div>
+</section>
+
+<section class="page">
+  <h2>01 / Product overview</h2>
+  <p class="lead">Crickium's Mini App is a signed, authenticated web surface for managing the parts of the game the repository already persists. It complements the Telegram bot instead of replacing its commands or match engines.</p>
+  <div class="grid">
+    <div class="card"><h3>Product goal</h3><p>Make a player's club status, cards, live/open matches and rewards easy to inspect from a polished mobile interface.</p></div>
+    <div class="card"><h3>Design principle</h3><p>Show the actual database value, clearly mark unknowns, and route mutating actions through server-side validation.</p></div>
+    <div class="card"><h3>Audience</h3><p>Crickium Telegram players on iOS and Android, with a responsive browser layout for development.</p></div>
+    <div class="card"><h3>Architecture</h3><p>Static HTML/CSS/JS served by the Python ASGI backend, authenticated with Telegram Mini App initData.</p></div>
+  </div>
+  <div class="callout"><b>Baseline rule:</b> this implementation uses the latest uploaded Crickium repository as its source. It does not merge earlier ZIPs or recreate an unrelated game service.</div>
+  <h3>Repository inspection findings</h3>
+  <p>The project already contains a PostgreSQL data layer, player catalogs (global, special editions and showcases), JSON squad ownership, user currency/progression, match engine setup/state, quest assignments/completions and daily reward records. A Mini App service existed but the previous interface was a demo-style lobby, the root HTML route incorrectly depended on auth before initData could be sent, and its direct player queries were not using the bot's shared connection lifecycle. Those integration gaps were addressed without rewriting the match engines. The source ZIP contained hard-coded private credentials, so the delivered configuration reads those settings from `.env`/host environment instead of retaining the embedded values.</p>
+  <table><tr><th>Area</th><th>Verified source</th><th>Boundary</th></tr>
+  <tr><td>Players / squad</td><td><code>players</code>, special/showcase card tables, <code>team_squads</code></td><td>Squad displayed read-only; purchases use transaction-level checks.</td></tr>
+  <tr><td>Progress / wallet</td><td><code>users</code>, <code>player_stats</code>, quests</td><td>No complete coin/ruby ledger was found.</td></tr>
+  <tr><td>Matches</td><td>PLAY engine tables and per-user quest summaries</td><td>No universal completed match scorecard repository exists.</td></tr>
+  <tr><td>Rewards</td><td>Existing daily reward handler + additive Kit Bag claim table</td><td>Kit Bag is new, backed by real global catalog cards and a server cooldown.</td></tr></table>
+</section>
+
+<section class="page">
+  <h2>02 / Sitemap & navigation</h2>
+  <p class="lead">Five one-tap destinations stay on the bottom bar. Account tools and supporting screens live behind the club menu.</p>
+  <div class="nav"><span>⌂ Home</span><span>⌕ Search</span><span>▤ Matches</span><span>♙ Market</span><span>♛ Rank</span></div>
+  <div class="flow"><div class="node">Home<br>identity · XP · stats</div><div class="arrow">→</div><div class="node">Search<br>card scout</div><div class="arrow">→</div><div class="node">Player report<br>actual stored stats</div></div>
+  <div class="flow"><div class="node">Market<br>filter catalog</div><div class="arrow">→</div><div class="node">Confirm purchase<br>server transaction</div><div class="arrow">→</div><div class="node">Squad / collection<br>real owned cards</div></div>
+  <div class="grid">
+    <div class="card"><h3>Menu: your club</h3><p>Profile · Squad management · Player collection · Crickium Quest · Daily rewards & Kit Bag · Coins & transactions.</p></div>
+    <div class="card"><h3>Menu: support</h3><p>Settings · Help & support · About Crickium. These are honest informational views; there is no fabricated preference or support-ticket backend.</p></div>
+  </div>
+  <h3>Main user journeys</h3>
+  <ol>
+    <li><b>Check in:</b> open Home → verify level, XP, coins, rubies, current rank, squad count, recent records, open matches, daily streak.</li>
+    <li><b>Scout:</b> type a player name → results update while typing → select a card → inspect available batting/bowling performance rows.</li>
+    <li><b>Buy:</b> open Market → filter role / country / OVR / price → confirm displayed coin cost → server validates ownership, balance and squad capacity → card is added to the caller's own squad.</li>
+    <li><b>Claim:</b> open Rewards → check server eligibility → claim the current daily reward or hourly Kit Bag → backend writes wallet/card and claim time.</li>
+    <li><b>Review:</b> Matches shows actual active setup/quest summaries and refreshes while open; Rank uses stored level/XP with match aggregates.</li>
+  </ol>
+  <div class="footer-note">The app intentionally does not introduce squad editing or in-app trade/sell actions because those authoritative operations are not exposed by the uploaded backend.</div>
+</section>
+
+<section class="page">
+  <h2>03 / Screen design</h2>
+  <p class="lead">Deep evergreen surfaces, lime accents, warm gold reward details, tactile cards, compact score rows and soft motion are tuned for Telegram's narrow viewport and safe areas.</p>
+  <div class="screen"><h3>Home</h3><span class="pill">IMPLEMENTED</span><p>Signed-in identity/profile photo proxy, account ID, level and XP progress, wallet, wins and match stats, current rank, squad capacity, seven-day streak preview, Kit Bag entry, recent and active match cards.</p></div>
+  <div class="screen"><h3>Search & detail</h3><span class="pill">IMPLEMENTED</span><p>Debounced search covers global, special edition and active showcase card sources. Detail reports include OVR, role, country, edition, owned state, and only the authenticated player's values recorded in <code>player_user_match_stats</code>.</p></div>
+  <div class="screen"><h3>Matches</h3><span class="pill">IMPLEMENTED WITH DATA LIMITS</span><p>Open match and challenge setups plus per-user recent summaries. Full scorecard JSON renders only if the quest summary actually has it; PLAYSO detail can display its persisted state.</p></div>
+  <div class="screen"><h3>Market</h3><span class="pill">IMPLEMENTED</span><p>Role tabs; text, country, OVR and price bounds; rating/name/price/batting/bowling sorts; owned cards disabled; exact cost confirmation; purchase response from the server.</p></div>
+  <div class="screen"><h3>Rank</h3><span class="pill">IMPLEMENTED</span><p>Global ordered user list; highlights the current account; rank is based on level, then XP, then stable user ID order. The source does not store Telegram profile photo IDs for leaderboard rows.</p></div>
+  <div class="screen"><h3>Profile, squad & collection</h3><span class="pill">IMPLEMENTED · READ-ONLY</span><p>Account identity and stats link into actual squad cards. Both squad and collection currently read the same authoritative <code>team_squads</code> JSON array; they are not separate inventories.</p></div>
+  <div class="screen"><h3>Crickium Quest</h3><span class="pill">IMPLEMENTED</span><p>Daily quest preview on Home and a dedicated daily/weekly/monthly board backed by the existing quest engine. It reports assigned tasks, completion state, and actual configured reward values.</p></div>
+  <div class="screen"><h3>Rewards & wallet</h3><span class="pill">IMPLEMENTED</span><p>Existing seven-day streak schedule/debut rule, new hourly catalog-backed Kit Bag, quest listing and available quest-reward history. No complete unified wallet ledger or persistent achievement-unlock catalog exists.</p></div>
+  <div class="callout"><b>Unknowns shown as unknown:</b> fours, sixes, full scorecards, partnerships, fall of wickets, player-specific teams/custom emoji IDs, and several live ball-by-ball fields are not returned unless supported by a real persisted source.</div>
+</section>
+
+<section class="page">
+  <h2>04 / Data paths & backend</h2>
+  <p class="lead">The ASGI service validates the Telegram identity once per protected request, derives the user only from signed initData, and reads/writes through the bot's shared database connection module.</p>
+  <div class="flow"><div class="node">Telegram Mini App<br>signed initData</div><div class="arrow">→</div><div class="node">ASGI router<br>auth · limits · JSON</div><div class="arrow">→</div><div class="node">API/services<br>read & validate</div><div class="arrow">→</div><div class="node">Crickium DB<br>real rows</div></div>
+  <table>
+    <tr><th>API area</th><th>Sources / action</th><th>Access</th></tr>
+    <tr><td>Home / Profile</td><td><code>users</code>, <code>player_stats</code>, <code>team_squads</code>, daily rewards and quest summaries</td><td>Signed account only</td></tr>
+    <tr><td>Players / Market</td><td>Global, special edition and active showcase catalogs; <code>utils.price_chart</code></td><td>Signed account; ownership compared to caller squad</td></tr>
+    <tr><td>Purchase</td><td>Lock caller's user/squad, verify balance, ownership, 25-card capacity, then debit and upsert same caller's squad in one transaction</td><td>POST, per-user rate-limited</td></tr>
+    <tr><td>Reward claim</td><td>Server-selected daily reward / exact-85 real global player; locks caller account and squad; writes claim or daily record</td><td>POST, cooldown and cap enforced server-side</td></tr>
+    <tr><td>Match / Rank / Quests</td><td>Existing match setup tables, quest summaries, player stats and quest engine</td><td>Signed account; per-user rows scoped to caller</td></tr>
+    <tr><td>Image proxy</td><td>Resolve Telegram file IDs server-side; fetch photo with bot token; browser URL contains no token</td><td>Signed account</td></tr>
+  </table>
+  <h3>Security controls</h3>
+  <ul class="two-col">
+    <li>Telegram HMAC signature verification with constant-time compare.</li><li>Reject duplicate initData keys and invalid/future/older-than-six-hour auth dates.</li>
+    <li>Ignore client-asserted account IDs; viewer is parsed from signed Telegram user JSON.</li><li>Separate opt-in `MINIAPP_DEBUG_AUTH`, disabled unless explicitly enabled.</li>
+    <li>Per-user GET/POST request throttles.</li><li>Request JSON size cap, method allowlist, static path traversal check.</li>
+    <li>Balance, ownership, squad cap and reward cooldown checked on the server.</li><li>Database transactions serialize same-account purchases and claims.</li>
+  </ul>
+  <div class="callout"><b>Deployment secret rule:</b> provide the existing bot token and database URL from environment/host secrets. This package documentation never prints secret values. Set `MINIAPP_DEBUG_AUTH` off in production.</div>
+</section>
+
+<section class="page">
+  <h2>05 / Real data, reused behavior & additions</h2>
+  <table>
+    <tr><th>Classification</th><th>Items</th><th>Notes</th></tr>
+    <tr><td><span class="pill">EXISTING</span></td><td>Game engines; bot commands; player catalog; squad; wallet fields; player performance rows; match setup/state; quests; daily streak rules</td><td>Kept authoritative in the bot. No match simulation was copied.</td></tr>
+    <tr><td><span class="pill">REUSED</span></td><td>Provider-aware database connection; price chart; card identity helpers; rarity; level progression; quest engine; daily reward schedule/debut gate</td><td>Shared bot services used where supported.</td></tr>
+    <tr><td><span class="pill">NEW</span></td><td>Responsive Mini App UI; signed protected API; user-scoped purchase endpoint; Kit Bag claim table and endpoint; Telegram image proxy</td><td>New web surface, server-owned checks, no fake catalog data.</td></tr>
+    <tr><td><span class="pill">PROPOSED / NOT CLAIMED</span></td><td>Full live scorecards and ball-by-ball, standalone achievements, total wallet ledger, profile photos on rank, support tickets, persistent settings</td><td>Requires bot persistence/schema/API decisions beyond this UI build.</td></tr>
+  </table>
+  <h3>Market filter implementation</h3>
+  <p>Queries the real card sources with a bounded catalog window, calculates buy prices via the repo's current OVR chart, applies role/country/overall/bat/bowl/price filters, then sorts by the selected field. A truncation notice appears if the bounded scan reaches its cap, and users can narrow by name.</p>
+  <h3>Kit Bag rule</h3>
+  <p>Eligibility is computed on the server. The app chooses a non-owned global player whose real stored OVR equals 85, checks 25-card capacity, inserts that player into the signed-in user's squad and stores the claim timestamp atomically. If the exact rating is absent or all candidates are owned, the claim safely fails rather than fabricating a player.</p>
+  <h3>Known data gaps</h3>
+  <ul>
+    <li>Most engine tables persist setup/status but not completed scorecards. Quest match summary rows are per user, not a universal public match ledger.</li>
+    <li><code>player_user_match_stats</code> is scoped to the authenticated player and does not record fours/sixes. Highest runs and best wickets are maxima of that player's recorded match rows, not guaranteed career records.</li>
+    <li>Coin/ruby movements are not all written to a unified transaction table; wallet history therefore shows recorded quest reward credits only.</li>
+    <li>No separate achievement-unlock table was found; current assigned quests are exposed instead.</li>
+  </ul>
+</section>
+
+<section class="page">
+  <h2>06 / Cloudflare & deployment</h2>
+  <p class="lead">The ZIP includes the genuine Cloudflare Tunnel release for Linux x86-64. The binary was downloaded from Cloudflare's official release page, SHA-256 checked against the official release API digest, marked executable and version-checked.</p>
+  <table>
+    <tr><th>Build</th><td>cloudflared 2026.10.0 · linux-amd64</td></tr>
+    <tr><th>Official source</th><td>Cloudflare cloudflared GitHub release assets</td></tr>
+    <tr><th>SHA-256</th><td><code>d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db</code></td></tr>
+    <tr><th>Other OS/CPU</th><td>Use the official Cloudflare release appropriate to your host and set <code>CLOUDFLARED_BIN</code> or install it on PATH.</td></tr>
+  </table>
+  <h3>Local smoke run</h3>
+  <ol>
+    <li>Install packages: <code>python -m pip install -r miniapp_backend/requirements.txt</code>.</li>
+    <li>Set <code>DATABASE_URL</code> and <code>BOT_TOKEN</code> through a private secret manager.</li>
+    <li>Start <code>python launcher.py</code>. The backend listens on localhost:8000 by default, and cloudflared creates a temporary public HTTPS URL.</li>
+    <li>Configure that URL in the bot's Mini App settings or `MINIAPP_URL`; use a named tunnel for production stability.</li>
+    <li>Open from Telegram and test the real signed user flow; never deploy with `MINIAPP_DEBUG_AUTH=1`.</li>
+  </ol>
+  <div class="callout"><b>Do not ship tunnel credentials.</b> The bundled binary is an executable, not an account credential. Quick tunnels need no local secret, but a stable named tunnel must use credentials stored outside this repository.</div>
+  <h3>Production checklist</h3>
+  <ul class="two-col">
+    <li>HTTPS origin set in Telegram.</li><li>Debug auth disabled.</li><li>Secrets supplied by host runtime.</li>
+    <li>Database migration completed and backup verified.</li><li>Check logs, DB quotas, request limits.</li><li>Use fixed domain and named tunnel / managed ingress.</li>
+    <li>Test from a Telegram account with real initData.</li><li>Validate purchase and claim effects in DB before public rollout.</li>
+  </ul>
+</section>
+
+<section class="page">
+  <h2>07 / Verification plan & results</h2>
+  <p class="lead">Static analysis and isolated ASGI/auth checks can run in this workspace. Real purchase/reward writes require the owner's live database and a valid Telegram session; those production-side effects were not run from this environment.</p>
+  <table>
+    <tr><th>Check</th><th>How to verify</th><th>Current status</th></tr>
+    <tr><td>Python syntax</td><td><code>python -m compileall -q miniapp_backend</code></td><td><span class="check">✓</span> Local check</td></tr>
+    <tr><td>Browser JS syntax</td><td><code>node --check miniapp_backend/static/app_v2.js</code></td><td><span class="check">✓</span> Local check</td></tr>
+    <tr><td>Telegram initData</td><td>Valid signature accepted; expired/duplicate/tampered data rejected</td><td><span class="check">✓</span> Isolated unit check</td></tr>
+    <tr><td>Static shell/health/auth</td><td>ASGI route tests: root public, health, protected route rejects missing auth</td><td><span class="check">✓</span> Isolated route check</td></tr>
+    <tr><td>Market filters & purchase</td><td>Test against staging DB: category, ownership, low balance, duplicate, squad-full, success path</td><td><span class="warn">○</span> Requires owner DB</td></tr>
+    <tr><td>Daily / Kit Bag</td><td>Test debut gate, cooldown, 25 cards, exact-85 pool, concurrency / same-account duplicate calls</td><td><span class="warn">○</span> Requires owner DB</td></tr>
+    <tr><td>Image proxy and match data</td><td>Open Telegram Mini App with real bot token/data and verify recorded sources</td><td><span class="warn">○</span> Requires owner Telegram/DB</td></tr>
+    <tr><td>Cloudflare binary</td><td>Official asset digest, executable mode, `--version`</td><td><span class="check">✓</span> Verified Linux x86-64 binary</td></tr>
+  </table>
+  <h3>Recommended staged release</h3>
+  <ol>
+    <li>Deploy to a staging database; verify additive migration and read-only screens.</li>
+    <li>Exercise all purchase and claim boundary cases using a disposable Telegram test account.</li>
+    <li>Check squad JSON, balances, quest events and cooldown timestamps after each mutation.</li>
+    <li>Deploy behind the existing Telegram Mini App entry point and watch database usage/errors.</li>
+    <li>Only then consider extra bot schema for full scorecards, achievements and ledger history.</li>
+  </ol>
+  <div class="footer-note">This blueprint describes the repository and implementation, not a claim of live production execution. Verify data-dependent mutation flows against staging before launch.</div>
+</section>
+</body>
+</html>
