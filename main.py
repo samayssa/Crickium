@@ -56,12 +56,28 @@ def _pyro_user_to_dict(user: Any | None) -> dict:
     }
 
 
+def _normalize_chat_type(value: Any) -> str:
+    """Return a stable lower-case Telegram chat type string.
+
+    Kurigram/Pyrogram may stringify enum values as ``ChatType.PRIVATE``
+    instead of ``private``. Handlers compare these values to Telegram's
+    lower-case names, so normalize the enum before creating the payload.
+    """
+    enum_name = getattr(value, "name", None)
+    enum_value = getattr(value, "value", None)
+    candidate = enum_name or enum_value or value or ""
+    text = str(candidate).strip().lower()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text
+
+
 def _pyro_chat_to_dict(chat: Any | None) -> dict:
     if chat is None:
         return {}
     return {
         "id": int(getattr(chat, "id", 0) or 0),
-        "type": str(getattr(chat, "type", "")),
+        "type": _normalize_chat_type(getattr(chat, "type", "")),
         "title": getattr(chat, "title", None),
         "first_name": getattr(chat, "first_name", None),
         "username": getattr(chat, "username", None),

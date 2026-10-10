@@ -54,7 +54,7 @@ DEBUG = True
 
 # Public HTTPS URL of the Telegram Mini App.
 # Set this to your deployed frontend URL before going live.
-MINIAPP_URL = os.getenv("MINIAPP_URL", "").strip()
+MINIAPP_URL = os.getenv("MINIAPP_URL", "https://crickium-production.up.railway.app").strip()
 
 # Optional backend URL if you host the API separately from the static app.
 BACKEND_URL = os.getenv("BACKEND_URL", "").strip()
