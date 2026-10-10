@@ -48,9 +48,13 @@ def pick_cloudflared() -> str:
     if shutil.which("cloudflared"):
         return "cloudflared"
 
-    local = Path(__file__).resolve().parent / "cloudflared"
-    if local.exists():
-        return str(local)
+    project_dir = Path(__file__).resolve().parent
+    for local in (
+        project_dir / "tools" / "cloudflared-linux-amd64",
+        project_dir / "cloudflared",
+    ):
+        if local.is_file():
+            return str(local)
 
     raise FileNotFoundError(
         "cloudflared was not found. Copy the binary to ~/cloudflared or set CLOUDFLARED_BIN."
