@@ -258,7 +258,7 @@ class CrickiumMiniApp:
         await _send_json(send, {"detail": "Not found"}, status=404)
 
 
-app = CrickiumMiniApp()
+from miniapp_backend.server import app
 
 
 if __name__ == "__main__":

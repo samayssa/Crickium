@@ -5,29 +5,21 @@ from typing import Any, AsyncIterator
 
 import asyncpg
 
-from database.connection import get_asyncpg_connect_kwargs
+from database.connection import connect as connect_bot_database
+from database.connection import disconnect as disconnect_bot_database
+from database.connection import get_pool
 
-_pool: asyncpg.Pool | None = None
-
-
-async def connect() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(**await get_asyncpg_connect_kwargs(), min_size=0, max_size=3, max_inactive_connection_lifetime=300.0)
-    return _pool
+async def connect():
+    """Use the bot's provider-aware PostgreSQL pool for every Mini App query."""
+    return await connect_bot_database()
 
 
 async def disconnect() -> None:
-    global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+    await disconnect_bot_database()
 
 
-def pool() -> asyncpg.Pool:
-    if _pool is None:
-        raise RuntimeError("Database pool not initialized")
-    return _pool
+def pool():
+    return get_pool()
 
 
 @asynccontextmanager

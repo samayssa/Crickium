@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import parse_qsl
@@ -24,7 +25,10 @@ class TelegramViewer:
 
 
 def _verify_init_data(init_data: str) -> dict[str, Any]:
-    params = dict(parse_qsl(init_data, keep_blank_values=True, strict_parsing=False))
+    pairs = parse_qsl(init_data, keep_blank_values=True, strict_parsing=False)
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ValueError("Duplicate init data fields")
+    params = dict(pairs)
     received_hash = params.pop("hash", None)
     if not received_hash:
         raise ValueError("Missing hash")
@@ -35,6 +39,14 @@ def _verify_init_data(init_data: str) -> dict[str, Any]:
 
     if not hmac.compare_digest(computed_hash, received_hash):
         raise ValueError("Bad hash")
+
+    try:
+        auth_date = int(params.get("auth_date") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid auth_date") from exc
+    now = int(time.time())
+    if auth_date <= 0 or auth_date > now + 60 or now - auth_date > 6 * 60 * 60:
+        raise ValueError("Telegram init data has expired")
 
     return params
 

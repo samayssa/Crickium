@@ -97,3 +97,17 @@ async def migrate() -> None:
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS rubies BIGINT DEFAULT 0;")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_spent BIGINT DEFAULT 0;")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();")
+    await execute(
+        """
+        CREATE TABLE IF NOT EXISTS miniapp_kitbag_claims(
+            claim_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            player_id BIGINT NOT NULL,
+            player_kind TEXT NOT NULL DEFAULT 'global',
+            opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+    await execute(
+        "CREATE INDEX IF NOT EXISTS idx_miniapp_kitbag_claims_user_time ON miniapp_kitbag_claims(user_id, opened_at DESC);"
+    )
