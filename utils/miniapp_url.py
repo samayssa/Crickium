@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MINIAPP_URL = "https://crickium-production.up.railway.app"
 
 MINIAPP_URL_FILES = (
     Path(os.getenv("MINIAPP_URL_FILE", PROJECT_ROOT / "miniapp_url.txt")),
@@ -45,21 +47,34 @@ def _read_file(path: Path) -> str:
     return ""
 
 
-def resolve_miniapp_url() -> str:
-    """Resolve the latest Mini App URL from the newest available source.
+def _is_stale_tunnel_url(url: str | None) -> bool:
+    """Reject temporary trycloudflare tunnel URLs for the Railway deployment."""
+    try:
+        hostname = (urlsplit(_clean_url(url)).hostname or "").lower()
+    except Exception:
+        return True
+    return hostname == "trycloudflare.com" or hostname.endswith(".trycloudflare.com")
 
+
+def resolve_miniapp_url() -> str:
+    """Resolve the Mini App URL, preferring configured permanent URLs.
+
+    Old deployments wrote a temporary ``api.trycloudflare.com`` address to
+    several runtime files. Ignore those stale values so they cannot override
+    the Railway domain configured for this repository.
     Priority:
-    1) MINIAPP_URL environment variable
-    2) runtime URL files written by a tunnel/bootstrap script
-    3) fallback MINIAPP_URL value from config.py (if set)
+    1) MINIAPP_URL environment variable, when it is not a temporary tunnel
+    2) URL files, when they contain a non-temporary HTTPS URL
+    3) MINIAPP_URL in root config.py, when it is not a temporary tunnel
+    4) This project's known Railway HTTPS domain
     """
     env_url = _clean_url(os.getenv("MINIAPP_URL"))
-    if is_valid_webapp_url(env_url):
+    if is_valid_webapp_url(env_url) and not _is_stale_tunnel_url(env_url):
         return env_url
 
     for path in MINIAPP_URL_FILES:
         value = _read_file(path)
-        if is_valid_webapp_url(value):
+        if is_valid_webapp_url(value) and not _is_stale_tunnel_url(value):
             return value
 
     try:
@@ -67,10 +82,10 @@ def resolve_miniapp_url() -> str:
     except Exception:
         CONFIG_MINIAPP_URL = ""
     config_url = _clean_url(CONFIG_MINIAPP_URL)
-    if is_valid_webapp_url(config_url):
+    if is_valid_webapp_url(config_url) and not _is_stale_tunnel_url(config_url):
         return config_url
 
-    return ""
+    return DEFAULT_MINIAPP_URL
 
 
 def sync_miniapp_url(url: str | None) -> str:
