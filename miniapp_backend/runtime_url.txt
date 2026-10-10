@@ -1,1 +1,1 @@
-https://api.trycloudflare.com
+https://crickium-production.up.railway.app
