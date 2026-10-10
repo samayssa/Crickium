@@ -5,8 +5,19 @@ from app import app
 from utils.miniapp_url import get_launch_keyboard, resolve_miniapp_url
 
 
+def _normalize_chat_type(value) -> str:
+    """Accept both ``private`` and enum-style ``ChatType.PRIVATE`` values."""
+    enum_name = getattr(value, "name", None)
+    enum_value = getattr(value, "value", None)
+    candidate = enum_name or enum_value or value or ""
+    normalized = str(candidate).strip().lower()
+    if "." in normalized:
+        normalized = normalized.rsplit(".", 1)[-1]
+    return normalized
+
+
 def _miniapp_keyboard(chat_type: str | None = None) -> dict | None:
-    if chat_type != "private":
+    if _normalize_chat_type(chat_type) != "private":
         return None
 
     return get_launch_keyboard(resolve_miniapp_url())
