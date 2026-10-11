@@ -17,6 +17,18 @@
     matchTimer: null,
     searchSeq: 0,
     marketSeq: 0,
+    matchesSeq: 0,
+    matchRequestSeq: 0,
+    matchRequestBusy: false,
+    currentMatch: null,
+    currentMatchData: null,
+    matchTab: "live",
+    matchInnings: null,
+    matchesFilter: "ongoing",
+    packData: null,
+    packHistory: [],
+    packOpening: null,
+    tgBackBound: false,
   };
 
   const primary = [
@@ -33,6 +45,7 @@
     ["quests", "Crickium Quest", "✦"],
     ["rewards", "Daily rewards & Kit Bag", "🎁"],
     ["wallet", "Coins & transactions", "◈"],
+    ["packs", "Pack Shop", "▣"],
     ["settings", "Settings", "⚙"],
     ["help", "Help & support", "?"],
     ["about", "About Crickium", "ⓘ"],
@@ -89,16 +102,22 @@
       if (!url || node.dataset.loading === "1") continue;
       node.dataset.loading = "1";
       try {
-        let objectUrl = imageCache.get(url);
-        if (!objectUrl) {
+        let cached = imageCache.get(url);
+        if (!cached) {
           const response = await fetch(url, { headers: { "X-Telegram-Init-Data": initData }, cache: "force-cache" });
           if (!response.ok) throw new Error("image unavailable");
-          objectUrl = URL.createObjectURL(await response.blob());
-          imageCache.set(url, objectUrl);
+          const kind = response.headers.get("x-crickium-card-type") || "custom";
+          cached = { url: URL.createObjectURL(await response.blob()), kind };
+          imageCache.set(url, cached);
         }
-        node.src = objectUrl;
+        node.src = cached.url || cached;
         node.classList.add("loaded");
+        const art = node.closest(".player-art");
+        if (art && cached.kind === "template") art.classList.add("has-default-template");
+        else if (art) art.classList.add("has-custom-image");
       } catch (_) {
+        const art = node.closest(".player-art");
+        if (art) art.classList.add("has-default-template");
         node.remove();
       }
     }
@@ -118,7 +137,7 @@
 
   function bottomNav() {
     return `<nav class="bottom-nav" aria-label="Main navigation">${primary.map(([key, label, icon]) => `
-      <button class="nav-item ${state.page === key ? "active" : ""}" data-page="${key}">
+      <button class="nav-item ${state.page === key || (key === "matches" && state.page === "match-detail") ? "active" : ""}" data-page="${key}">
         <span class="nav-icon">${icon}</span><span>${label}</span>
       </button>`).join("")}</nav>`;
   }
@@ -150,6 +169,7 @@
       </main>${bottomNav()}${drawer()}<div id="toast" class="toast" role="status"></div></div>`;
     hideLoader();
     hydrateImages();
+    syncTelegramBackButton();
   }
 
   function avatarMarkup(profile, size = "") {
@@ -163,6 +183,7 @@
     return `<article class="player-card ${compact ? "compact" : ""}" data-player-kind="${kind}" data-player-id="${id}">
       <div class="player-art">
         ${image(player.card_image_url, player.name, "player-image")}
+        <div class="default-card-overlay"><b>${esc(player.name || "Player")}</b><span>${esc(player.country || "")}${player.role ? ` · ${esc(player.role)}` : ""}</span><small>BAT ${number(player.bat_level)} · BOWL ${number(player.bowl_level)}</small></div>
         <div class="rating">${rating}<small>OVR</small></div>
         <span class="role-mark">${esc(player.role_icon || "🏏")}</span>
       </div>
@@ -177,12 +198,18 @@
 
   function matchCard(match, active = false) {
     const won = match.won === true;
-    const label = active ? (match.is_live ? "LIVE NOW" : String(match.status || "IN PROGRESS").replaceAll("_", " ")) : (won ? "WON" : match.won === false ? "LOST" : "COMPLETED");
+    const statusRaw = String(match.status || (active ? "in_progress" : "completed")).toLowerCase();
+    const isLive = Boolean(match.is_live) || ["live", "playing", "innings_break", "chase", "in_progress"].includes(statusRaw);
+    const label = active ? (isLive ? "LIVE NOW" : statusRaw.replaceAll("_", " ").toUpperCase()) : (won ? "WON" : match.won === false ? "LOST" : statusRaw.toUpperCase());
     const engine = esc(match.engine || "MATCH");
-    return `<button class="match-card ${active ? "is-active" : ""}" data-match-engine="${engine}" data-match-id="${Number(match.match_id || 0)}">
-      <div class="match-top"><span class="match-type">${engine} · ${esc(match.match_type || "Cricket")}</span><span class="match-status ${active && match.is_live ? "live" : won ? "won" : ""}">${esc(label)}</span></div>
-      <div class="match-scoreline"><b>${active ? esc(match.challenger_name || "Player 1") : `Match #${number(match.match_id)}`}</b><span>${active ? "vs" : match.runs != null ? `${number(match.runs)} runs · ${number(match.wickets)} wkts` : "Record"}</span></div>
-      <div class="match-bottom"><span>${esc(match.pitch || match.target ? [match.pitch, match.target ? `Target ${number(match.target)}` : ""].filter(Boolean).join(" · ") : "Score summary")}</span><time>${esc(dateText(match.played_at || match.created_at))}</time></div>
+    const teamA = esc(match.team_a_name || match.challenger_team_name || match.challenger_name || "Your match");
+    const teamB = esc(match.team_b_name || match.opponent_team_name || match.opponent_name || "Opponent");
+    const score = match.current_score || (match.runs != null ? `${number(match.runs)} runs · ${number(match.wickets)} wickets` : "Score not stored");
+    return `<button class="match-card ${active ? "is-active" : ""}" data-match-engine="${engine}" data-match-id="${Number(match.match_id || 0)}" aria-label="Open ${teamA} versus ${teamB}">
+      <div class="match-top"><span class="match-type">${engine} · ${esc(match.match_type || "Cricket")}</span><span class="match-status ${isLive ? "live" : won ? "won" : ""}">${esc(label)}</span></div>
+      <div class="match-versus"><div class="match-team"><b>${teamA}</b><small>${esc(match.challenger_username ? `@${match.challenger_username}` : "")}</small></div><span class="match-vs">VS</span><div class="match-team right"><b>${teamB}</b><small>${esc(match.opponent_username ? `@${match.opponent_username}` : "")}</small></div></div>
+      <div class="match-card-score"><b>${esc(score)}</b>${match.over_text ? `<span>${esc(match.over_text)} overs</span>` : ""}</div>
+      <div class="match-bottom"><span>${esc(match.batting_team ? `${match.batting_team} batting` : match.pitch || (match.target ? `Target ${number(match.target)}` : "Open match"))}</span><time>${esc(dateText(match.played_at || match.created_at))} ›</time></div>
     </button>`;
   }
 
@@ -368,24 +395,169 @@
     }
   }
 
-  async function loadMatches() {
-    shell(`<div id="matches-body"><div class="loading-line">Loading your match records…</div></div>`, "Matches", "FIXTURES & RESULTS");
+  async function loadMatches(options = {}) {
+    state.page = "matches";
+    const seq = ++state.matchesSeq;
+    const previousScroll = Number(window.scrollY || 0);
+    if (!options.silent) shell(`<div id="matches-body"><div class="loading-line">Loading your match records…</div></div>`, "Matches", "FIXTURES & RESULTS");
     try {
       const data = await api("/api/matches");
+      if (seq !== state.matchesSeq || state.page !== "matches") return;
       const active = data.active || [];
       const recent = data.recent || [];
       const body = document.getElementById("matches-body");
       if (!body) return;
-      body.innerHTML = `${sectionTitle("In progress", `<button class="text-button" data-action="refresh">Refresh ↻</button>`)}
-        ${active.length ? `<div class="stack">${active.map((item) => matchCard(item, true)).join("")}</div>` : emptyState("No active games", "Matches involving your account will appear here when they start.")}
-        ${sectionTitle("Your recent results")}
-        ${recent.length ? `<div class="stack">${recent.map((item) => matchCard(item)).join("")}</div>` : emptyState("No recorded results yet", "Match history is shown when Crickium stores a result for your account.")}
-        <p class="notice">${esc(data.note || "")}</p>`;
+      const inProgress = active.filter((item) => !item.is_completed);
+      const filteredActive = state.matchesFilter === "recent" ? [] : inProgress;
+      const filteredRecent = state.matchesFilter === "ongoing" ? [] : recent;
+      body.innerHTML = `<div class="match-filter-row" role="tablist" aria-label="Match filters">
+          <button class="filter-chip ${state.matchesFilter === "ongoing" ? "selected" : ""}" data-action="match-filter" data-filter="ongoing">In progress · ${number(inProgress.length)}</button>
+          <button class="filter-chip ${state.matchesFilter === "recent" ? "selected" : ""}" data-action="match-filter" data-filter="recent">Recent results</button>
+          <button class="filter-chip ${state.matchesFilter === "all" ? "selected" : ""}" data-action="match-filter" data-filter="all">All matches</button>
+        </div>
+        ${filteredActive.length ? `${sectionTitle("Live for you", `<button class="text-button" data-action="refresh">Refresh ↻</button>`)}<div class="stack">${filteredActive.map((item) => matchCard(item, true)).join("")}</div>` : state.matchesFilter !== "recent" ? emptyState("No active games", "Matches involving your account appear when Crickium has a current match record.") : ""}
+        ${filteredRecent.length ? `${sectionTitle("Recent results", `<span class="muted-inline">${number(filteredRecent.length)} stored</span>`)}<div class="stack">${filteredRecent.map((item) => matchCard(item, false)).join("")}</div>` : state.matchesFilter !== "ongoing" ? emptyState("No recorded results yet", "Completed match summaries appear after the bot stores a result for your account.") : ""}
+        <p class="notice">${esc(data.note || "Only matches and statistics stored by Crickium are shown. Missing scores are not invented.")}</p>`;
+      if (options.silent && previousScroll) window.scrollTo({ top: previousScroll, behavior: "auto" });
     } catch (error) {
+      if (seq !== state.matchesSeq || state.page !== "matches") return;
+      if (options.silent) return;
       const body = document.getElementById("matches-body");
       if (body) body.innerHTML = errorState(error, "matches");
     }
   }
+
+  function newRequestId() {
+    try { if (window.crypto?.randomUUID) return window.crypto.randomUUID(); } catch (_) {}
+    return `crickium-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function persistedRequestId(kind, packKey) {
+    const key = `crickium:${kind}:${String(packKey || "").toLowerCase()}`;
+    try {
+      const existing = window.sessionStorage?.getItem(key);
+      if (existing) return existing;
+      const created = newRequestId();
+      window.sessionStorage?.setItem(key, created);
+      return created;
+    } catch (_) { return newRequestId(); }
+  }
+
+  function clearPersistedRequestId(kind, packKey) {
+    try { window.sessionStorage?.removeItem(`crickium:${kind}:${String(packKey || "").toLowerCase()}`); } catch (_) {}
+  }
+
+  function renderPackOpening(opening) {
+    if (!opening) return "";
+    const cards = opening.cards || [];
+    return `<section class="panel pack-reveal-panel"><div class="panel-heading"><div><span class="eyebrow">PACK OPENED</span><h2>${esc(String(opening.pack_key || "pack").toUpperCase())} REVEAL</h2></div><button class="close-button" data-action="close-pack-reveal" aria-label="Close reveal">×</button></div>
+      <div class="pack-reward-strip"><span>🪙 ${number(opening.coins)} coins awarded</span><span>◆ ${number(opening.rubies)} rubies awarded</span></div>
+      ${cards.length ? `<div class="player-grid">${cards.map((card) => `<div class="pack-reveal-card"><span class="pack-card-kind">${esc(String(card.kind || "card").toUpperCase())}</span>${card.player ? playerCard(card.player, true) : `<div class="empty-state"><b>Player details unavailable</b><p>The saved reveal could not provide card details.</p></div>`}<small class="muted-copy">${number(card.ovr)} OVR · ${esc(card.rarity || "Rarity unavailable")}</small></div>`).join("")}</div>` : emptyState("No cards returned", "The server did not return persisted cards for this opening.")}
+      <p class="notice">This reveal is loaded from the saved opening record. Reopening history shows the same cards and rewards.</p></section>`;
+  }
+
+  function renderPackShop(data = state.packData) {
+    if (!data) return;
+    state.packData = data;
+    const wallet = data.wallet || {};
+    const packs = data.packs || [];
+    const history = state.packHistory || [];
+    const packMarkup = packs.map((pack) => {
+      const enough = Number(wallet.sigils || 0) >= Number(pack.price_sigils || 0);
+      const owned = Number(pack.quantity || 0);
+      return `<article class="pack-store-card panel"><div class="pack-store-head"><span class="pack-emblem ${esc(pack.key)}">${esc(pack.key.slice(0, 1).toUpperCase())}</span><div><h2>${esc(pack.name)}</h2><p>${esc(pack.description || "Pack details provided by Crickium catalogue.")}</p></div><span class="pack-price">${number(pack.price_sigils)} SG</span></div>
+        <div class="pack-spec-grid"><div><small>CARDS</small><b>${number(pack.cards)}</b></div><div><small>CORE OVR</small><b>${number(pack.core_ovr?.[0])}–${number(pack.core_ovr?.[1])}</b></div><div><small>BONUS OVR</small><b>${number(pack.bonus_ovr?.[0])}–${number(pack.bonus_ovr?.[1])}</b></div></div>
+        <div class="pack-rewards-line"><span>🪙 ${number(pack.coins_reward)} coins</span><span>◆ ${number(pack.rubies_reward)} rubies</span><b>Owned · ${number(owned)}</b></div>
+        <div class="pack-actions"><button class="button primary" data-action="buy-pack" data-pack-key="${esc(pack.key)}" ${!pack.enabled || !enough ? "disabled" : ""}>${!pack.enabled ? "Unavailable" : !enough ? "Insufficient Sigils" : "Buy pack"}</button><button class="button secondary" data-action="open-pack" data-pack-key="${esc(pack.key)}" ${owned < 1 ? "disabled" : ""}>Open${owned ? ` · ${number(owned)}` : ""}</button></div>
+        ${!enough ? `<small class="pack-help">Need ${number(Number(pack.price_sigils || 0) - Number(wallet.sigils || 0))} more Sigils to buy this pack.</small>` : ""}
+      </article>`;
+    }).join("");
+    const historyMarkup = history.length ? `<div class="stack">${history.map((item) => `<button class="pack-history-row" data-action="open-history" data-opening-id="${esc(item.opening_id)}"><span class="pack-history-badge">▣</span><span><b>${esc(String(item.pack_key || "pack").toUpperCase())} Pack</b><small>${esc(dateText(item.opened_at))} · ${(item.cards || []).length} cards</small></span><strong>🪙 ${number(item.coins)} <small>◆ ${number(item.rubies)}</small></strong><b>›</b></button>`).join("")}</div>` : emptyState("No pack openings yet", "Your saved pack reveals will appear here after your first successful opening.");
+    shell(`<section class="pack-wallet-panel panel"><div><span class="eyebrow">YOUR PACK WALLET</span><h2>${number(wallet.sigils)} <small>Sigils</small></h2><p>Coins ${number(wallet.coins)} · Rubies ${number(wallet.rubies)}</p></div><button class="button secondary" data-action="refresh">Refresh</button></section>
+      ${sectionTitle("Pack catalogue", `<span class="muted-inline">Server prices · SG</span>`)}
+      <div class="pack-shop-list">${packMarkup || emptyState("No packs available", "The server catalogue has no enabled packs right now.")}</div>
+      ${sectionTitle("Recent openings", `<button class="text-button" data-action="refresh">Refresh ↻</button>`)}${historyMarkup}
+      ${renderPackOpening(state.packOpening)}
+      <p class="notice">Purchases, inventory, card selection and rewards are confirmed by Crickium's server-side pack service. A shown price or card reveal is never controlled by the client.</p>`, "Pack Shop", "CARD PACKS");
+    hydrateImages();
+  }
+
+  async function loadPacks(options = {}) {
+    if (options.opening !== undefined) state.packOpening = options.opening;
+    shell(`<div class="loading-line">Loading the server pack catalogue and inventory…</div>`, "Pack Shop", "CARD PACKS");
+    try {
+      const [data, history] = await Promise.all([
+        api("/api/packs"),
+        api("/api/packs/openings?limit=10").catch(() => ({ openings: [] })),
+      ]);
+      state.packData = data;
+      state.packHistory = history.openings || [];
+      renderPackShop(data);
+    } catch (error) {
+      shell(errorState(error, "packs"), "Pack Shop", "CARD PACKS");
+    }
+  }
+
+  async function buyPack(packKey) {
+    if (state.packBusy) return;
+    state.packBusy = true;
+    state.purchaseRequestIds = state.purchaseRequestIds || {};
+    const requestKey = state.purchaseRequestIds[packKey] || (state.purchaseRequestIds[packKey] = persistedRequestId("pack-purchase", packKey));
+    let requestId = null;
+    try {
+      const request = await api("/api/packs/purchase-request", { method: "POST", body: JSON.stringify({ pack_key: packKey, client_request_id: requestKey }) });
+      requestId = request.request_id;
+      const confirmed = await api("/api/packs/purchase-confirm", { method: "POST", body: JSON.stringify({ request_id: requestId }) });
+      if (confirmed.status !== "success") throw Object.assign(new Error(confirmed.detail || confirmed.status || "Purchase failed"), { payload: confirmed, status: 409 });
+      delete state.purchaseRequestIds[packKey];
+      clearPersistedRequestId("pack-purchase", packKey);
+      ping("medium");
+      toast(`${confirmed.pack_key || packKey} pack purchased successfully.`);
+      await loadPacks({ opening: null });
+    } catch (error) {
+      if (requestId && [400, 403, 404, 409].includes(Number(error.status))) {
+        try { await api("/api/packs/purchase-cancel", { method: "POST", body: JSON.stringify({ request_id: requestId }) }); } catch (_) {}
+        delete state.purchaseRequestIds[packKey];
+        clearPersistedRequestId("pack-purchase", packKey);
+      }
+      toast(error.message || "Purchase could not be confirmed. Refresh before trying again.", true);
+      await loadPacks();
+    } finally { state.packBusy = false; }
+  }
+
+  async function openPack(packKey) {
+    if (state.packBusy) return;
+    state.packBusy = true;
+    state.openingRequestIds = state.openingRequestIds || {};
+    const requestKey = state.openingRequestIds[packKey] || (state.openingRequestIds[packKey] = persistedRequestId("pack-opening", packKey));
+    try {
+      const opening = await api("/api/packs/open", { method: "POST", body: JSON.stringify({ pack_key: packKey, client_request_id: requestKey }) });
+      if (opening.status !== "success") throw Object.assign(new Error(opening.detail || opening.status || "Pack opening failed"), { payload: opening, status: 409 });
+      delete state.openingRequestIds[packKey];
+      clearPersistedRequestId("pack-opening", packKey);
+      state.packOpening = opening;
+      ping("heavy");
+      toast(opening.replayed ? "Loaded your saved pack reveal." : "Pack opened. Your cards and rewards are saved.");
+      await loadPacks({ opening });
+    } catch (error) {
+      if ([400, 401, 403, 404, 409].includes(Number(error.status))) {
+        delete state.openingRequestIds[packKey];
+        clearPersistedRequestId("pack-opening", packKey);
+      }
+      toast(error.message || "Opening result uncertain. Retry to recover the same saved reveal.", true);
+      await loadPacks();
+    } finally { state.packBusy = false; }
+  }
+
+  async function openPackHistory(openingId) {
+    if (!openingId) return;
+    try {
+      const opening = await api(`/api/packs/openings/${encodeURIComponent(openingId)}`);
+      state.packOpening = opening;
+      renderPackShop(state.packData);
+    } catch (error) { toast(error.message || "Could not load this saved opening.", true); }
+  }
+
 
   async function loadRank() {
     shell(`<div id="rank-list"><div class="loading-line">Loading global standings…</div></div>`, "Leaderboard", "GLOBAL RANK");
@@ -455,9 +627,15 @@
     shell(`<div id="collection-list"><div class="loading-line">Loading your collection…</div></div>`, "Collection", "YOUR PLAYER CARDS");
     try {
       const data = await api("/api/collection");
-      document.getElementById("collection-list").innerHTML = data.players?.length
-        ? `<p class="muted-copy">All ${number(data.count)} player card${data.count === 1 ? "" : "s"} currently in your squad.</p><div class="player-grid">${data.players.map((item) => playerCard(item, true)).join("")}</div>`
-        : emptyState("No player cards yet", "Your owned cards will be collected here.");
+      const squadPlayers = data.players || [];
+      const packCards = data.pack_cards || [];
+      const squadSection = squadPlayers.length
+        ? `<section class="collection-group">${sectionTitle(`Squad cards · ${number(data.count)}`)}<div class="player-grid">${squadPlayers.map((item) => playerCard(item, true)).join("")}</div></section>`
+        : `<section class="collection-group">${emptyState("Your squad is empty", "Player cards currently assigned to your active squad appear here.")}</section>`;
+      const packSection = packCards.length
+        ? `<section class="collection-group">${sectionTitle(`Pack collection · ${number(packCards.length)}`)}<p class="muted-copy">Cards saved from your pack openings. They are kept separate from your active squad.</p><div class="player-grid">${packCards.map((item) => `<div class="collection-pack-card">${playerCard(item, true)}<small>${esc(String(item.pack_key || "pack").toUpperCase())} · ${esc(String(item.pack_slot || "bonus").toUpperCase())} · ${number(item.card_ovr)} OVR</small></div>`).join("")}</div></section>`
+        : `<section class="collection-group">${emptyState("No pack cards yet", "Cards you open from packs will be saved here without being added to your active squad automatically.")}</section>`;
+      document.getElementById("collection-list").innerHTML = squadSection + packSection;
       hydrateImages();
     } catch (error) {
       document.getElementById("collection-list").innerHTML = errorState(error, "collection");
@@ -542,17 +720,217 @@
     shell(`<section class="panel info-page"><div class="info-emblem">${page === "settings" ? "⚙" : page === "help" ? "?" : "C"}</div><span class="eyebrow">${esc(copy[1])}</span><h2>${esc(copy[0])}</h2><p>${esc(copy[2])}</p>${page === "about" ? `<p class="notice">Some screens are limited to records the existing bot persists. The Mini App does not run or simulate cricket matches.</p>` : ""}</section>`, copy[0], "CLUB HOUSE");
   }
 
-  async function loadMatchDetail(engine, id) {
-    shell(`<div class="loading-line">Loading match record…</div>`, `Match #${id}`, "MATCH REPORT");
+  function matchRouteSnapshot(page = state.page, match = state.currentMatch, tab = state.matchTab, innings = state.matchInnings) {
+    return { crickium: true, page, currentMatch: match ? { engine: match.engine, id: match.id } : null, matchTab: tab || "live", matchInnings: innings == null ? null : Number(innings), index: Number(window.history?.state?.index || 0) };
+  }
+
+  function pushRoute(next) {
+    try {
+      if (!window.history || !window.history.pushState) return;
+      const existing = window.history.state;
+      const current = matchRouteSnapshot();
+      if (!existing || !existing.crickium) window.history.replaceState({ ...current, index: 0 }, "", window.location.href);
+      const index = Number(window.history.state?.index || 0) + 1;
+      const currentMatch = Object.prototype.hasOwnProperty.call(next, "currentMatch") ? next.currentMatch : state.currentMatch;
+      const matchTab = Object.prototype.hasOwnProperty.call(next, "matchTab") ? next.matchTab : state.matchTab;
+      const matchInnings = Object.prototype.hasOwnProperty.call(next, "matchInnings") ? next.matchInnings : state.matchInnings;
+      window.history.pushState({ ...matchRouteSnapshot(next.page, currentMatch, matchTab, matchInnings), ...next, crickium: true, index }, "", window.location.href);
+    } catch (_) {}
+  }
+
+  function syncTelegramBackButton() {
+    if (!tg?.BackButton) return;
+    try {
+      if (!state.tgBackBound) {
+        tg.BackButton.onClick(backInApp);
+        state.tgBackBound = true;
+      }
+      if (state.page === "match-detail") tg.BackButton.show();
+      else tg.BackButton.hide();
+    } catch (_) {}
+  }
+
+  function backInApp() {
+    const current = window.history?.state;
+    if (current?.crickium && Number(current.index || 0) > 0 && window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    state.currentMatch = null;
+    state.currentMatchData = null;
+    navigate("matches", { history: false });
+  }
+
+  function matchOverText(innings = {}) {
+    if (innings.over_text != null && String(innings.over_text) !== "") return String(innings.over_text);
+    const balls = Number(innings.legal_balls || 0);
+    return `${Math.floor(balls / 6)}.${balls % 6}`;
+  }
+
+  function cricketBallLabel(ball) {
+    if (typeof ball === "string" || typeof ball === "number") return String(ball || "•");
+    if (!ball || typeof ball !== "object") return "•";
+    if (ball.wicket || ball.outcome === "wicket") return "W";
+    const kind = String(ball.extra_type || ball.outcome || "").toLowerCase();
+    if (kind.includes("wide")) return "WD";
+    if (kind.includes("no_ball") || kind === "noball") return "NB";
+    const runs = Number(ball.runs || 0);
+    if (runs) return String(runs);
+    return "•";
+  }
+
+  function scoreValue(value) { return value == null || value === "" ? "—" : esc(value); }
+
+  function renderBatterTable(innings) {
+    const batters = Array.isArray(innings.batters) ? innings.batters : [];
+    if (!batters.length) return emptyState("Batting details unavailable", "The source has not stored a batting lineup for this innings.");
+    const currentNames = (state.currentMatchData?.current_batting_pair || []).map((item) => item.name);
+    const rows = batters.map((batter) => {
+      const status = currentNames.includes(batter.name) ? (state.currentMatchData?.current_batting_pair?.find((x) => x.name === batter.name)?.status || "at crease") : (batter.dismissed ? "out" : batter.status || (Number(batter.balls || 0) || Number(batter.runs || 0) ? "not out" : "yet to bat"));
+      const statusText = batter.dismissal_text || status;
+      return `<tr class="${currentNames.includes(batter.name) ? "current-player" : ""}"><td><b>${esc(batter.name || "Player")}</b><small>${esc(statusText)}</small></td><td>${number(batter.runs)}</td><td>${number(batter.balls)}</td><td>${number(batter.fours)}</td><td>${number(batter.sixes)}</td><td>${batter.strike_rate != null ? Number(batter.strike_rate).toFixed(1) : "—"}</td></tr>`;
+    }).join("");
+    const extras = innings.extras && typeof innings.extras === "object" ? Object.values(innings.extras).reduce((sum, value) => sum + (Number(value) || 0), 0) : null;
+    return `<div class="score-table-wrap"><table class="score-table"><thead><tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead><tbody>${rows}</tbody></table><div class="score-table-total"><span>Extras ${extras == null ? "—" : number(extras)}</span><b>Total ${number(innings.runs)}/${number(innings.wickets)} · ${esc(matchOverText(innings))} ov</b></div></div>`;
+  }
+
+  function renderBowlerTable(innings) {
+    const bowlers = Array.isArray(innings.bowlers) ? innings.bowlers : [];
+    if (!bowlers.length) return emptyState("Bowling details unavailable", "No bowling figures were stored for this innings.");
+    const currentName = state.currentMatchData?.current_bowler?.name;
+    return `<div class="score-table-wrap"><table class="score-table bowling-table"><thead><tr><th>Bowler</th><th>O</th><th>M</th><th>R</th><th>W</th><th>Econ</th></tr></thead><tbody>${bowlers.map((bowler) => {
+      const balls = Number(bowler.balls || 0); const overs = bowler.overs || `${Math.floor(balls / 6)}.${balls % 6}`;
+      const econ = bowler.economy == null ? (balls ? (Number(bowler.runs || 0) * 6 / balls).toFixed(2) : "—") : Number(bowler.economy).toFixed(2);
+      const isCurrent = Boolean(bowler.is_current || (currentName && currentName === bowler.name));
+      return `<tr class="${isCurrent ? "current-player" : ""}"><td><b>${esc(bowler.name || "Bowler")}</b>${isCurrent ? "<small>currently bowling</small>" : ""}</td><td>${esc(overs)}</td><td>${number(bowler.maidens)}</td><td>${number(bowler.runs)}</td><td>${number(bowler.wickets)}</td><td>${esc(econ)}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+  }
+
+  function inningsForDetail(data) {
+    const innings = Array.isArray(data.innings) ? data.innings : [];
+    if (!innings.length) return null;
+    const preferred = Number(state.matchInnings || data.current_innings_number || innings[innings.length - 1].innings_number || 1);
+    return innings.find((item) => Number(item.innings_number || 1) === preferred) || innings[innings.length - 1];
+  }
+
+  function renderMatchDetail(data) {
+    state.currentMatchData = data;
+    const innings = Array.isArray(data.innings) ? data.innings : [];
+    const current = inningsForDetail(data) || {};
+    const currentNo = Number(current.innings_number || data.current_innings_number || 1);
+    const battingPair = data.current_batting_pair || current.current_batting_pair || [];
+    const bowler = data.current_bowler || null;
+    const partnership = data.partnership || current.partnership || null;
+    const live = Boolean(data.is_live) && !data.is_completed;
+    const completed = Boolean(data.is_completed) || ["completed", "ended", "finished", "complete", "abandoned", "cancelled"].includes(String(data.status || "").toLowerCase());
+    const title = completed ? "Match summary" : "Match Centre";
+    const matchStatus = live ? "LIVE" : completed ? "COMPLETED" : String(data.status || "MATCH DETAILS").replaceAll("_", " ").toUpperCase();
+    const teamA = data.team_a_name || data.challenger_name || "Team A";
+    const teamB = data.team_b_name || data.opponent_name || "Team B";
+    const score = current.runs == null && current.wickets == null ? null : `${number(current.runs)}/${number(current.wickets)}`;
+    const scoreHeader = data.scorecard_available && score ? `<section class="match-score-hero panel"><div class="match-meta-line"><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span><span>${esc(data.match_type || data.engine || "Cricket")} · ${esc(matchOverText(current))} overs</span></div><div class="match-hero-teams"><div><b>${esc(current.batting_team_display || teamA)}</b><small>Batting</small></div><div class="match-hero-score"><strong>${esc(score)}</strong><span>${esc(matchOverText(current))} overs</span><small>${currentNo === 1 ? "1st" : currentNo === 2 ? "2nd" : `${currentNo}th`} Innings</small></div><div class="team-away"><b>${esc(current.bowling_team_display || teamB)}</b><small>Bowling</small></div></div><div class="score-context"><span>CRR <b>${Number(current.legal_balls || 0) ? (Number(current.runs || 0) * 6 / Number(current.legal_balls)).toFixed(2) : "—"}</b></span><span>Target <b>${current.target == null ? "—" : number(current.target)}</b></span><span>Status <b>${esc(matchStatus)}</b></span></div></section>` : `<section class="match-score-hero panel"><div class="match-meta-line"><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span><span>${esc(data.match_type || data.engine || "Cricket")}</span></div><div class="match-hero-teams"><div><b>${esc(teamA)}</b></div><div class="match-hero-score"><strong>—</strong><span>Score not stored</span></div><div class="team-away"><b>${esc(teamB)}</b></div></div><p class="muted-copy">${esc(data.note || "Crickium has not stored enough data to display a live scorecard for this record.")}</p></section>`;
+
+    const tabNames = [["live", "Live"], ["scorecard", "Scorecard"], ["commentary", "Commentary"], ["stats", "Stats"]];
+    const tabs = `<div class="match-tabs" role="tablist">${tabNames.map(([key,label]) => `<button class="match-tab ${state.matchTab === key ? "selected" : ""}" role="tab" aria-selected="${state.matchTab === key}" data-action="match-tab" data-tab="${key}">${label}</button>`).join("")}</div>`;
+    const innSwitch = innings.length > 1 ? `<div class="innings-switch">${innings.map((item) => `<button class="filter-chip ${Number(item.innings_number) === currentNo ? "selected" : ""}" data-action="match-innings" data-innings="${Number(item.innings_number || 1)}">${Number(item.innings_number) === 1 ? "1st" : Number(item.innings_number) === 2 ? "2nd" : `${Number(item.innings_number)}th`} Innings · ${esc(item.batting_team_display || "Team")} ${number(item.runs)}/${number(item.wickets)}</button>`).join("")}</div>` : "";
+
+    const pairHtml = battingPair.length ? `<section class="panel"><div class="panel-heading"><h2>Current batting pair</h2><span class="muted-inline">${currentNo === 1 ? "1ST INNINGS" : `${currentNo}ND INNINGS`}</span></div><div class="batting-pair-grid">${battingPair.slice(0,2).map((batter, index) => `<div class="batting-pair-player"><span>${index === 0 ? "On strike" : "Non-striker"}</span><b>${esc(batter.name || "Batter")}</b><strong>${number(batter.runs)} <small>(${number(batter.balls)})</small></strong><small>4s ${number(batter.fours)} · 6s ${number(batter.sixes)} · SR ${batter.strike_rate == null ? "—" : Number(batter.strike_rate).toFixed(1)}</small></div>`).join("")}${partnership ? `<div class="partnership-tile"><span>Partnership</span><b>${number(partnership.runs)} <small>(${number(partnership.balls)} balls)</small></b></div>` : ""}</div></section>` : "";
+    const currentOver = data.this_over || current.this_over || [];
+    const bowlerHtml = bowler ? `<section class="panel"><div class="panel-heading"><h2>Current bowler</h2><span class="muted-inline">CURRENT</span></div><div class="current-bowler-line"><div><b>${esc(bowler.name || "Bowler")}</b><small>${esc(bowler.overs || (Number(bowler.balls || 0) ? `${Math.floor(Number(bowler.balls) / 6)}.${Number(bowler.balls) % 6}` : "0.0"))} overs · ${number(bowler.runs)} runs · ${number(bowler.wickets)} wickets</small></div><strong>${esc(bowler.overs || "0.0")} · ${number(bowler.runs)} · ${number(bowler.wickets)}</strong></div>${currentOver.length ? `<div class="current-over-line"><b>This over</b><div class="ball-strip">${currentOver.slice(-6).map((ball) => `<span class="ball-token ${cricketBallLabel(ball) === "W" ? "wicket" : ["4","6"].includes(cricketBallLabel(ball)) ? "boundary" : ""}">${esc(cricketBallLabel(ball))}</span>`).join("")}</div></div>` : ""}</section>` : "";
+
+    const overRows = current.analysis_overs || [];
+    const recentOvers = overRows.slice(-6).reverse();
+    const overHtml = recentOvers.length ? `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2><button class="text-button" data-action="match-tab" data-tab="commentary">Full commentary ›</button></div><div class="recent-over-list">${recentOvers.map((row) => `<div class="recent-over-row"><b>${Number(row.over) || "—"}</b><div class="ball-strip">${(row.balls || []).map((ball) => `<span class="ball-token ${ball.wicket ? "wicket" : [4,6].includes(Number(ball.runs)) ? "boundary" : ""}">${esc(cricketBallLabel(ball))}</span>`).join("")}</div><strong>${number(row.runs)} runs${row.wickets ? ` · ${number(row.wickets)} W` : ""}</strong></div>`).join("")}</div></section>` : `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2></div><p class="muted-copy">No over-by-over delivery log is stored for this match record.</p></section>`;
+
+    const balls = (Array.isArray(current.analysis_balls) ? current.analysis_balls : []).slice().sort((a,b) => Number(a.over || 0) - Number(b.over || 0) || Number(a.ball || 0) - Number(b.ball || 0));
+    const commentary = balls.length ? `<div class="commentary-list">${balls.map((ball) => {
+      const ballLabel = cricketBallLabel(ball);
+      const comment = ball.commentary || ball.text || ball.description || `${ball.bowler || "Bowler"} to ${ball.batter || "batter"}, ${ballLabel === "W" ? "wicket" : `${number(ball.runs)} run${Number(ball.runs || 0) === 1 ? "" : "s"}`}.`;
+      return `<div class="commentary-row"><span class="commentary-over">${Number(ball.over) || "—"}.${Number(ball.ball) || "—"}</span><span class="ball-token ${ball.wicket ? "wicket" : ["4","6"].includes(ballLabel) ? "boundary" : ""}">${esc(ballLabel)}</span><div><b>${esc(ball.bowler || "Bowler")} to ${esc(ball.batter || "Batter")}</b><p>${esc(comment)}</p>${ball.score_after ? `<small>${esc(ball.score_after)}</small>` : ""}</div></div>`;
+    }).join("")}</div>` : `<p class="muted-copy">Ball-by-ball commentary is not stored for this match record. No commentary has been fabricated.</p>`;
+
+    const resultSummary = `<section class="panel match-result-panel"><div class="panel-heading"><h2>${completed ? "Match summary" : "Match details"}</h2><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span></div>${data.result_text ? `<h3>${esc(data.result_text)}</h3>` : completed ? `<p class="muted-copy">${esc(data.note || "The final result was not recorded in a displayable format.")}</p>` : `<p class="muted-copy">${esc(data.note || "Match details are derived from the stored game session.")}</p>`}${data.potm?.name && data.potm.name !== "—" && completed ? `<div class="potm-row"><span>Player of the Match</span><b>${esc(data.potm.name)}</b><small>${number(data.potm.runs)} runs · ${number(data.potm.wickets)} wickets</small></div>` : ""}${innings.length ? `<div class="innings-summary-list">${innings.map((item) => `<div><span>${Number(item.innings_number) === 1 ? "1st" : Number(item.innings_number) === 2 ? "2nd" : `${Number(item.innings_number)}th`} innings · ${esc(item.batting_team_display || "Team")}</span><b>${number(item.runs)}/${number(item.wickets)}</b><small>${esc(matchOverText(item))} overs${item.target ? ` · target ${number(item.target)}` : ""}</small></div>`).join("")}</div>` : ""}</section>`;
+
+    let tabContent = "";
+    if (state.matchTab === "live") {
+      tabContent = `${resultSummary}${live ? pairHtml : ""}${live ? bowlerHtml : ""}${overHtml}<section class="panel"><div class="panel-heading"><h2>Latest commentary</h2><button class="text-button" data-action="match-tab" data-tab="commentary">View all ›</button></div>${commentary}</section>`;
+    } else if (state.matchTab === "scorecard") {
+      tabContent = `${innSwitch}<section class="panel"><div class="panel-heading"><h2>Batting · ${esc(current.batting_team_display || teamA)}</h2><b class="rating-mini">${number(current.runs)}/${number(current.wickets)}</b></div>${renderBatterTable(current)}</section><section class="panel"><div class="panel-heading"><h2>Bowling · ${esc(current.bowling_team_display || teamB)}</h2></div>${renderBowlerTable(current)}</section>`;
+    } else if (state.matchTab === "commentary") {
+      tabContent = `${innSwitch}<section class="panel"><div class="panel-heading"><h2>Ball-by-ball commentary</h2><span class="muted-inline">${number(balls.length)} stored deliveries</span></div>${commentary}</section>`;
+    } else {
+      const crr = Number(current.legal_balls || 0) ? Number(current.runs || 0) * 6 / Number(current.legal_balls) : null;
+      const target = current.target == null ? null : Number(current.target);
+      const need = target == null ? null : Math.max(0, target - Number(current.runs || 0));
+      const remaining = Math.max(0, Number(data.overs_limit || 20) * 6 - Number(current.legal_balls || 0));
+      const rrr = need != null && remaining ? need * 6 / remaining : null;
+      const allBatters = innings.flatMap((item) => item.batters || []);
+      const allBowlers = innings.flatMap((item) => item.bowlers || []);
+      const topBatter = allBatters.slice().sort((a,b) => Number(b.runs||0)-Number(a.runs||0))[0];
+      const topBowler = allBowlers.slice().sort((a,b) => Number(b.wickets||0)-Number(a.wickets||0))[0];
+      tabContent = `<div class="match-stat-grid"><div><span>Runs</span><b>${number(current.runs)}</b></div><div><span>Wickets</span><b>${number(current.wickets)}</b></div><div><span>Overs</span><b>${esc(matchOverText(current))}</b></div><div><span>Current run rate</span><b>${crr == null ? "—" : crr.toFixed(2)}</b></div><div><span>Target</span><b>${target == null ? "—" : number(target)}</b></div><div><span>Required run rate</span><b>${rrr == null ? "—" : rrr.toFixed(2)}</b></div></div><section class="panel"><div class="panel-heading"><h2>Key performances</h2><span class="muted-inline">Stored match data</span></div>${topBatter ? `<div class="performance-row"><span><b>${esc(topBatter.name)}</b><small>Top recorded batter</small></span><strong>${number(topBatter.runs)} (${number(topBatter.balls)})</strong></div>` : ""}${topBowler ? `<div class="performance-row"><span><b>${esc(topBowler.name)}</b><small>Top recorded bowler</small></span><strong>${number(topBowler.wickets)}/${number(topBowler.runs)}</strong></div>` : ""}${!topBatter && !topBowler ? `<p class="muted-copy">No individual player statistics are stored.</p>` : ""}</section>${resultSummary}`;
+    }
+
+    shell(`<button class="back-link" data-action="match-back">‹ Back</button>${scoreHeader}${tabs}<div class="match-detail-body">${tabContent}</div>${!data.scorecard_available ? `<p class="notice">This record does not contain a full persisted scorecard. The page shows the available match metadata rather than invented scores.</p>` : ""}`, title, `${esc(data.engine || "MATCH")} · ${esc(data.match_type || "CRICKET")}`);
+  }
+
+  async function loadMatchDetail(engine, id, options = {}) {
+    if (options.silent && state.matchRequestBusy) return;
+    if (!options.skipRoute && (!state.currentMatch || state.currentMatch.engine !== engine || String(state.currentMatch.id) !== String(id))) {
+      const nextMatch = { engine: String(engine || "MATCH").toUpperCase(), id: Number(id) };
+      pushRoute({ page: "match-detail", currentMatch: nextMatch, matchTab: "live", matchInnings: null });
+      state.currentMatch = nextMatch; state.matchTab = "live"; state.matchInnings = null;
+    }
+    state.page = "match-detail";
+    const seq = ++state.matchRequestSeq;
+    state.matchRequestBusy = true;
+    const scrollTop = Number(window.scrollY || 0);
+    const selected = { engine: String(engine).toUpperCase(), id: String(id) };
+    if (!options.silent) shell(`<button class="back-link" data-action="match-back">‹ Back</button><div class="loading-line">Loading stored match events…</div>`, `Match #${id}`, "MATCH REPORT");
     try {
       const data = await api(`/api/matches/${encodeURIComponent(engine)}/${encodeURIComponent(id)}`);
-      const scorecard = data.scorecard_available
-        ? `<section class="panel"><div class="panel-heading"><h2>Available scorecard</h2></div><pre class="json-view">${esc(JSON.stringify({ batting: data.batting, bowling: data.bowling, over_history: data.over_history }, null, 2))}</pre></section>`
-        : `<p class="notice">A full scorecard is not stored for this record. Only the information shown below is available from the source.</p>`;
-      const summary = data.runs != null || data.wickets != null ? `${number(data.runs)} runs · ${number(data.wickets)} wickets` : data.status || "Match setup";
-      shell(`<button class="back-link" data-page="matches">‹ Back to matches</button><section class="detail-hero match-report"><div class="live-mark">${data.is_live ? "LIVE" : esc(String(data.status || "RESULT").toUpperCase())}</div><div><span class="eyebrow">${esc(data.engine || engine)} · ${esc(data.match_type || "CRICKET")}</span><h2>${esc(data.challenger_name || "Match")} ${data.opponent_name ? `vs ${esc(data.opponent_name)}` : ""}</h2><p>${esc(summary)}</p><span class="detail-role">${esc(data.pitch || "Pitch not recorded")} · ${esc(dateText(data.played_at || data.created_at))}</span></div></section>${scorecard}`, `Match #${id}`, "MATCH REPORT");
+      if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id) return;
+      renderMatchDetail(data);
+      if (options.silent) window.scrollTo({ top: scrollTop, behavior: "auto" });
+      if (state.matchTimer) clearInterval(state.matchTimer);
+      state.matchTimer = null;
+      if (data.is_live) state.matchTimer = setInterval(() => {
+        if (state.page === "match-detail" && state.currentMatch && state.currentMatch.engine === selected.engine && String(state.currentMatch.id) === selected.id) {
+          loadMatchDetail(engine, id, { skipRoute: true, silent: true });
+        }
+      }, 12000);
     } catch (error) {
-      shell(errorState(error, "matches"), `Match #${id}`, "MATCH REPORT");
+      if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id) return;
+      if (options.silent) return;
+      shell(`<button class="back-link" data-action="match-back">‹ Back</button>${errorState(error, "matches")}`, `Match #${id}`, "MATCH REPORT");
+    } finally {
+      if (seq === state.matchRequestSeq) state.matchRequestBusy = false;
+    }
+  }
+
+  function openMatch(engine, id) {
+    if (!engine || !Number(id)) return;
+    clearInterval(state.matchTimer);
+    const match = { engine: String(engine).toUpperCase(), id: Number(id) };
+    pushRoute({ page: "match-detail", currentMatch: match, matchTab: "live", matchInnings: null });
+    state.currentMatch = match; state.currentMatchData = null; state.matchTab = "live"; state.matchInnings = null;
+    state.page = "match-detail";
+    loadMatchDetail(match.engine, match.id, { skipRoute: true });
+  }
+
+  async function restoreRoute(route) {
+    clearInterval(state.matchTimer);
+    const value = route && route.crickium ? route : { page: "matches", crickium: true, index: 0 };
+    state.currentMatch = value.currentMatch || null;
+    state.matchTab = value.matchTab || "live";
+    state.matchInnings = value.matchInnings == null ? null : Number(value.matchInnings);
+    if (value.page === "match-detail" && state.currentMatch) {
+      state.page = "match-detail";
+      await loadMatchDetail(state.currentMatch.engine, state.currentMatch.id, { skipRoute: true });
+    } else {
+      state.currentMatch = null;
+      state.currentMatchData = null;
+      await navigate(value.page || "matches", { history: false });
     }
   }
 
@@ -630,18 +1008,28 @@
     }
   }
 
-  async function navigate(page) {
+  async function navigate(page, options = {}) {
+    if (!page) return;
+    if (page !== state.page && options.history !== false) pushRoute({ page, currentMatch: null, matchTab: "live", matchInnings: null });
+    if (page !== "match-detail") {
+      state.currentMatch = null;
+      state.currentMatchData = null;
+    }
     state.page = page;
     state.drawer = false;
     clearInterval(state.matchTimer);
+    document.querySelector(".drawer-scrim")?.remove();
     ping();
     switch (page) {
       case "home": return loadHome();
       case "search": return loadSearch("");
       case "matches":
         await loadMatches();
-        state.matchTimer = setInterval(() => { if (state.page === "matches") loadMatches(); }, 30000);
+        state.matchTimer = setInterval(() => { if (state.page === "matches") loadMatches({ silent: true }); }, 30000);
         return;
+      case "match-detail":
+        if (state.currentMatch) return loadMatchDetail(state.currentMatch.engine, state.currentMatch.id, { skipRoute: true });
+        return navigate("matches", { history: false });
       case "market": return loadMarket();
       case "rank": return loadRank();
       case "profile": return loadProfile();
@@ -650,6 +1038,7 @@
       case "quests": return loadQuests();
       case "rewards": return loadRewards();
       case "wallet": return loadWallet();
+      case "packs": return loadPacks();
       default: return staticPage(page);
     }
   }
@@ -662,19 +1051,44 @@
       const action = actionButton.dataset.action;
       if (action === "drawer") { state.drawer = true; document.querySelector(".app-frame")?.insertAdjacentHTML("beforeend", drawer()); hydrateImages(); }
       if (action === "close-drawer") { state.drawer = false; document.querySelector(".drawer-scrim")?.remove(); }
-      if (action === "refresh") navigate(state.page);
+      if (action === "refresh") {
+        if (state.page === "match-detail" && state.currentMatch) loadMatchDetail(state.currentMatch.engine, state.currentMatch.id, { skipRoute: true });
+        else navigate(state.page, { history: false });
+      }
       if (action === "daily-claim") performClaim("daily");
       if (action === "kitbag-claim") performClaim("kitbag");
+      if (action === "match-filter") { state.matchesFilter = actionButton.dataset.filter || "ongoing"; loadMatches(); }
+      if (action === "match-back") backInApp();
+      if (action === "match-tab") {
+        state.matchTab = actionButton.dataset.tab || "live";
+        if (state.currentMatchData) renderMatchDetail(state.currentMatchData);
+      }
+      if (action === "match-innings") {
+        state.matchInnings = Number(actionButton.dataset.innings || 1);
+        if (state.currentMatchData) renderMatchDetail(state.currentMatchData);
+      }
       if (action === "buy-player") {
         const { kind, id } = actionButton.dataset;
         showConfirm(`Buy ${actionButton.dataset.name} for ${number(actionButton.dataset.price)} coins? The server will verify your balance and add the card to your squad.`, "Buy player", () => buyPlayer(kind, id, actionButton));
       }
+      if (action === "buy-pack") {
+        const pack = state.packData?.packs?.find((item) => item.key === actionButton.dataset.packKey);
+        if (pack) showConfirm(`Buy ${pack.name} for ${number(pack.price_sigils)} Sigils? Your balance is ${number(state.packData?.wallet?.sigils)} SG. The server will verify the price and deduct Sigils exactly once.`, "Confirm purchase", () => buyPack(pack.key));
+      }
+      if (action === "open-pack") {
+        const pack = state.packData?.packs?.find((item) => item.key === actionButton.dataset.packKey);
+        if (pack) showConfirm(`Open one ${pack.name}? You own ${number(pack.quantity)} unopened. The opening will consume one pack and persist ${number(pack.cards)} card${pack.cards === 1 ? "" : "s"} plus its configured rewards.`, "Open pack", () => openPack(pack.key));
+      }
+      if (action === "open-history") openPackHistory(actionButton.dataset.openingId);
+      if (action === "close-pack-reveal") { state.packOpening = null; renderPackShop(state.packData); }
     }
     const card = event.target.closest("[data-player-kind]");
-    if (card && !event.target.closest("button")) loadPlayer(card.dataset.playerKind, card.dataset.playerId);
+    if (card && !event.target.closest("button") && !event.target.closest("[data-action]")) loadPlayer(card.dataset.playerKind, card.dataset.playerId);
     const match = event.target.closest("[data-match-engine]");
-    if (match) loadMatchDetail(match.dataset.matchEngine, match.dataset.matchId);
+    if (match) openMatch(match.dataset.matchEngine, match.dataset.matchId);
   });
+
+  window.addEventListener("popstate", (event) => { restoreRoute(event.state).catch(() => navigate("matches", { history: false })); });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.drawer) { state.drawer = false; document.querySelector(".drawer-scrim")?.remove(); }
@@ -683,5 +1097,6 @@
   if (tg) {
     try { tg.ready(); tg.expand(); tg.setHeaderColor?.("#071310"); tg.setBackgroundColor?.("#071310"); } catch (_) {}
   }
+  try { if (window.history && !window.history.state?.crickium) window.history.replaceState({ crickium: true, page: "home", currentMatch: null, matchTab: "live", matchInnings: null, index: 0 }, "", window.location.href); } catch (_) {}
   loadHome();
 })();
