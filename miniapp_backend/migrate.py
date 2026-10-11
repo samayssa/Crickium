@@ -177,3 +177,16 @@ async def migrate() -> None:
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_kitbag_claims_user_time ON miniapp_kitbag_claims(user_id, opened_at DESC);"
     )
+    # Shared news storage; image file IDs stay server-side and are proxied to clients.
+    await execute("""
+        CREATE TABLE IF NOT EXISTS miniapp_news_articles(
+            article_id BIGSERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            image_file_id TEXT NOT NULL,
+            created_by BIGINT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            is_published BOOLEAN NOT NULL DEFAULT TRUE
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_news_articles_published ON miniapp_news_articles(is_published, created_at DESC);")

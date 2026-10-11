@@ -926,6 +926,76 @@ async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
     }
 
 
+async def build_news_list_response(viewer: TelegramViewer, limit: int = 30) -> dict[str, Any]:
+    """Return recently published club news for the authenticated Mini App viewer."""
+    del viewer  # Access control is enforced by the ASGI router; articles are club-wide.
+    bounded_limit = max(1, min(int(limit or 30), 50))
+    rows = await fetch(
+        """
+        SELECT article_id,title,description,created_at
+        FROM miniapp_news_articles WHERE is_published=TRUE
+        ORDER BY created_at DESC, article_id DESC LIMIT $1;
+        """,
+        bounded_limit,
+    )
+    articles = []
+    for row in rows:
+        description = str(row.get("description") or "")
+        excerpt = re.sub(r"\s+", " ", description).strip()
+        if len(excerpt) > 190:
+            excerpt = excerpt[:187].rstrip() + "…"
+        article_id = int(row.get("article_id") or 0)
+        articles.append({
+            "article_id": article_id,
+            "title": str(row.get("title") or "News update"),
+            "excerpt": excerpt,
+            "created_at": _iso(row.get("created_at")),
+            "image_url": f"/api/image/news?id={article_id}",
+        })
+    return {"articles": articles, "count": len(articles)}
+
+
+async def build_news_detail_response(viewer: TelegramViewer, article_id: int) -> dict[str, Any] | None:
+    """Return one published article, excluding its private Telegram file ID."""
+    del viewer
+    try:
+        article_id = int(article_id)
+    except (TypeError, ValueError):
+        return None
+    if article_id <= 0:
+        return None
+    row = await fetchrow(
+        """
+        SELECT article_id,title,description,created_at
+        FROM miniapp_news_articles WHERE article_id=$1 AND is_published=TRUE;
+        """,
+        article_id,
+    )
+    if not row:
+        return None
+    article_id = int(row.get("article_id") or 0)
+    return {
+        "article_id": article_id,
+        "title": str(row.get("title") or "News update"),
+        "description": str(row.get("description") or ""),
+        "created_at": _iso(row.get("created_at")),
+        "image_url": f"/api/image/news?id={article_id}",
+    }
+
+
+async def news_image_bytes(article_id: int) -> tuple[bytes, str] | None:
+    """Resolve an admin-published article's Telegram file ID and proxy its image."""
+    if not BOT_TOKEN:
+        return None
+    row = await fetchrow(
+        "SELECT image_file_id FROM miniapp_news_articles WHERE article_id=$1 AND is_published=TRUE;",
+        int(article_id),
+    )
+    if not row or not row.get("image_file_id"):
+        return None
+    return await _download_telegram_image(str(row["image_file_id"]))
+
+
 async def swap_playing_xi_players(viewer: TelegramViewer, playing_player_id: int, substitute_player_id: int) -> dict[str, Any]:
     """Swap a squad member with a substitute in the persisted bot lineup."""
     playing_player_id = int(playing_player_id)
@@ -972,6 +1042,121 @@ async def swap_playing_xi_players(viewer: TelegramViewer, playing_player_id: int
     except Exception as exc:
         print(f"[miniapp_backend] lineup quest event failed: {type(exc).__name__}")
     return {"status": "success", "lineup_player_ids": lineup_ids}
+
+
+async def update_playing_xi_order(viewer: TelegramViewer, player_ids: list[Any]) -> dict[str, Any]:
+    """Persist an XI reorder without changing which eleven players are selected."""
+    try:
+        requested = [int(value) for value in player_ids]
+    except (TypeError, ValueError):
+        return {"status": "invalid_order"}
+    if len(requested) != 11 or len(set(requested)) != 11 or any(value == 0 for value in requested):
+        return {"status": "invalid_order"}
+
+    async with acquire() as conn:
+        async with conn.transaction():
+            user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            if not user:
+                return {"status": "user_missing"}
+            squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            squad = _squad(squad_row["squad"] if squad_row else None)
+            squad_ids = _player_id_set(squad)
+            if len(squad_ids) < 11 or not set(requested).issubset(squad_ids):
+                return {"status": "player_not_owned"}
+            lineup_row = await conn.fetchrow("SELECT player_ids FROM team_lineups WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            current = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
+            if len(current) != 11 or set(current) != set(requested):
+                return {"status": "lineup_changed", "lineup_player_ids": current}
+            # Keep the bot's existing squad numbering/order aligned with the XI:
+            # first eleven cards are now in the saved Playing XI order, followed
+            # by substitutes in their previous relative order.
+            requested_set = set(requested)
+            squad_by_id = {int(item.get("player_id") or 0): dict(item) for item in squad}
+            ordered_xi = [squad_by_id[player_id] for player_id in requested]
+            substitutes = [dict(item) for item in squad if int(item.get("player_id") or 0) not in requested_set]
+            await conn.execute(
+                "UPDATE team_squads SET squad=$2::jsonb,updated_at=NOW() WHERE user_id=$1;",
+                int(viewer.id), json.dumps(ordered_xi + substitutes, default=str),
+            )
+            await _save_lineup_ids_conn(conn, int(viewer.id), requested)
+    try:
+        from services.quest_engine import record_quest_event
+        await record_quest_event(int(viewer.id), "PLAYING_XI_ORDER_UPDATED", metadata={"source": "miniapp", "player_ids": requested})
+    except Exception as exc:
+        print(f"[miniapp_backend] lineup-order quest event failed: {type(exc).__name__}")
+    return {"status": "success", "lineup_player_ids": requested}
+
+
+async def sell_squad_players(viewer: TelegramViewer, player_ids: list[Any]) -> dict[str, Any]:
+    """Atomically sell selected substitutes at the bot's resale prices."""
+    try:
+        selected_ids = [int(value) for value in player_ids]
+    except (TypeError, ValueError):
+        return {"status": "invalid_selection"}
+    if not selected_ids or any(value == 0 for value in selected_ids) or len(set(selected_ids)) != len(selected_ids):
+        return {"status": "invalid_selection"}
+
+    sold_players: list[dict[str, Any]] = []
+    total_sell_price = 0
+    remaining_count = 0
+    balance = 0
+    async with acquire() as conn:
+        async with conn.transaction():
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            if not user:
+                return {"status": "user_missing"}
+            squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            squad = _squad(squad_row["squad"] if squad_row else None)
+            by_id = {int(item.get("player_id") or 0): item for item in squad if int(item.get("player_id") or 0)}
+            if any(player_id not in by_id for player_id in selected_ids):
+                return {"status": "player_not_owned"}
+            lineup_row = await conn.fetchrow("SELECT player_ids FROM team_lineups WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            lineup_ids = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
+            if any(player_id in lineup_ids for player_id in selected_ids):
+                return {"status": "playing_xi_player_selected"}
+            if len(squad) - len(selected_ids) < 11:
+                return {"status": "minimum_squad_size", "count": len(squad), "minimum": 11}
+
+            for player_id in selected_ids:
+                player = dict(by_id[player_id])
+                overall = max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
+                sale_price = int(get_price(overall)[1])
+                total_sell_price += sale_price
+                sold_players.append({"player_id": player_id, "name": str(player.get("name") or "Player"), "sell_price": sale_price})
+
+            selected_set = set(selected_ids)
+            remaining_squad = [dict(item) for item in squad if int(item.get("player_id") or 0) not in selected_set]
+            # The UI only presents substitutes for bulk-sale, so the XI remains unchanged.
+            await conn.execute(
+                "UPDATE team_squads SET squad=$2::jsonb,updated_at=NOW() WHERE user_id=$1;",
+                int(viewer.id), json.dumps(remaining_squad, default=str),
+            )
+            await conn.execute(
+                "UPDATE users SET balance=COALESCE(balance,0)+$1,last_seen_at=NOW() WHERE user_id=$2;",
+                total_sell_price, int(viewer.id),
+            )
+            remaining_count = len(remaining_squad)
+            balance = int(user.get("balance") or 0) + total_sell_price
+
+    for player_id in selected_ids:
+        try:
+            from database.player_user_stats_repo import reset_player_user_stats
+            await reset_player_user_stats(int(viewer.id), int(player_id))
+        except Exception as exc:
+            print(f"[miniapp_backend] sold-player stats reset failed: {type(exc).__name__}")
+        try:
+            from services.quest_engine import record_quest_event
+            await record_quest_event(int(viewer.id), "PLAYER_SOLD", metadata={"player_id": int(player_id), "source": "miniapp_bulk"})
+        except Exception as exc:
+            print(f"[miniapp_backend] bulk-sale quest event failed: {type(exc).__name__}")
+    return {
+        "status": "success",
+        "sold_players": sold_players,
+        "sold_count": len(sold_players),
+        "total_sell_price": total_sell_price,
+        "balance": balance,
+        "count": remaining_count,
+    }
 
 
 async def sell_squad_player(viewer: TelegramViewer, player_id: int) -> dict[str, Any]:

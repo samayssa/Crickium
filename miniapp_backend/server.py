@@ -232,6 +232,24 @@ class CrickiumMiniApp:
                     return
                 await _send_json(send, result)
                 return
+            if path == "/api/news":
+                try:
+                    news_limit = max(1, min(int(query.get("limit") or 30), 50))
+                except ValueError:
+                    news_limit = 30
+                await _send_json(send, await api.build_news_list_response(viewer, news_limit))
+                return
+            if path.startswith("/api/news/"):
+                try:
+                    article_id = int(path.rsplit("/", 1)[-1])
+                except ValueError:
+                    article_id = 0
+                article = await api.build_news_detail_response(viewer, article_id)
+                if article is None:
+                    await _send_json(send, {"detail": "News article not found"}, 404)
+                else:
+                    await _send_json(send, article)
+                return
             if path == "/api/home" or path == "/api/profile":
                 await _send_json(send, await api.build_home_response(viewer))
                 return
@@ -300,6 +318,17 @@ class CrickiumMiniApp:
                 return
             if path == "/api/wallet/transactions":
                 await _send_json(send, await api.build_transaction_history(viewer))
+                return
+            if path == "/api/image/news":
+                try:
+                    article_id = int(query.get("id") or 0)
+                except ValueError:
+                    article_id = 0
+                image = await api.news_image_bytes(article_id) if article_id > 0 else None
+                if not image:
+                    await _send_json(send, {"detail": "News image not available"}, 404)
+                    return
+                await _send_bytes(send, image[0], image[1])
                 return
             if path == "/api/image/profile":
                 image = await api.profile_image_bytes(viewer.id)
@@ -404,6 +433,24 @@ class CrickiumMiniApp:
             opening["status"] = "success"
             opening["replayed"] = bool(result.get("replayed"))
             await _send_json(send, opening)
+            return
+        if path == "/api/squad/lineup/order":
+            raw_ids = payload.get("player_ids")
+            if not isinstance(raw_ids, list):
+                await _send_json(send, {"status": "invalid_order", "detail": "Provide the ordered Playing XI player IDs."}, 400)
+                return
+            result = await api.update_playing_xi_order(viewer, raw_ids)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"invalid_order", "player_not_owned", "lineup_changed"} else 404 if result.get("status") == "user_missing" else 400
+            await _send_json(send, result, status)
+            return
+        if path == "/api/squad/sell-multiple":
+            raw_ids = payload.get("player_ids")
+            if not isinstance(raw_ids, list):
+                await _send_json(send, {"status": "invalid_selection", "detail": "Select one or more substitute players."}, 400)
+                return
+            result = await api.sell_squad_players(viewer, raw_ids)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"invalid_selection", "player_not_owned", "playing_xi_player_selected", "minimum_squad_size"} else 404 if result.get("status") == "user_missing" else 400
+            await _send_json(send, result, status)
             return
         if path == "/api/squad/lineup/swap":
             try:
