@@ -28,6 +28,12 @@
     packData: null,
     packHistory: [],
     packOpening: null,
+    squadData: null,
+    currentPlayerRef: null,
+    playerReturnPage: "search",
+    lineupSwap: null,
+    pendingKitbag: null,
+    pendingKitbagClaimId: null,
     tgBackBound: false,
   };
 
@@ -113,7 +119,8 @@
         node.src = cached.url || cached;
         node.classList.add("loaded");
         const art = node.closest(".player-art");
-        if (art && cached.kind === "template") art.classList.add("has-default-template");
+        if (art && cached.kind === "template-fallback") art.classList.add("has-default-template");
+        else if (art && cached.kind === "rendered-template") art.classList.add("has-rendered-template");
         else if (art) art.classList.add("has-custom-image");
       } catch (_) {
         const art = node.closest(".player-art");
@@ -160,9 +167,15 @@
   }
 
   function shell(content, title, eyebrow = "CLUB HOUSE") {
+    // Telegram supplies its own native BackButton inside Mini Apps. Use the
+    // in-page arrow only in browser previews so users never see duplicate arrows.
+    const hasBackRoute = Number(window.history?.state?.index || 0) > 0;
+    const back = hasBackRoute && !tg
+      ? `<button class="back-page-button" data-action="back-page" aria-label="Go back">‹</button>`
+      : "";
     root.innerHTML = `<div class="app-frame">${topbar()}
       <main class="page-content">
-        <div class="page-heading"><div><span class="eyebrow">${esc(eyebrow)}</span><h1>${esc(title)}</h1></div>
+        <div class="page-heading"><div class="page-heading-main">${back}<div><span class="eyebrow">${esc(eyebrow)}</span><h1>${esc(title)}</h1></div></div>
           <button class="icon-action" data-action="refresh" aria-label="Refresh">↻</button>
         </div>
         ${content}
@@ -576,14 +589,23 @@
     }
   }
 
-  async function loadPlayer(kind, id) {
+  async function loadPlayer(kind, id, options = {}) {
+    const playerRef = { kind: String(kind || "global"), id: Number(id) };
+    if (!options.skipRoute) {
+      state.playerReturnPage = state.page === "player-detail" ? (state.playerReturnPage || "search") : state.page;
+      pushRoute({ page: "player-detail", currentPlayer: playerRef, returnPage: state.playerReturnPage });
+    } else if (options.returnPage) {
+      state.playerReturnPage = options.returnPage;
+    }
+    state.currentPlayerRef = playerRef;
+    state.page = "player-detail";
     shell(`<div class="loading-line">Loading player profile…</div>`, "Player profile", "SCOUT REPORT");
     try {
-      const player = await api(`/api/player?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
+      const player = await api(`/api/player?kind=${encodeURIComponent(playerRef.kind)}&id=${encodeURIComponent(playerRef.id)}`);
       state.currentPlayer = player;
       renderPlayerDetail(player);
     } catch (error) {
-      shell(errorState(error, "search"), "Player profile", "SCOUT REPORT");
+      shell(errorState(error, state.playerReturnPage || "search"), "Player profile", "SCOUT REPORT");
     }
   }
 
@@ -595,8 +617,7 @@
     const bat = p.batting_stats || {};
     const bowl = p.bowling_stats || {};
     const h = p.match_history || [];
-    const content = `<button class="back-link" data-page="search">‹ Back to players</button>
-      <section class="detail-hero">${image(p.card_image_url, p.name, "detail-image")}<div class="rating detail-rating">${number(p.overall)}<small>OVR</small></div>
+    const content = `<section class="detail-hero">${image(p.card_image_url, p.name, "detail-image")}<div class="rating detail-rating">${number(p.overall)}<small>OVR</small></div>
         <div><span class="eyebrow">${esc(p.rarity || "PLAYER CARD")}</span><h2>${esc(p.name)}</h2><p>${esc(p.description || p.role || "Crickium player")}</p><span class="detail-role">${esc(p.role_icon || "🏏")} ${esc(p.role)}</span></div>
       </section>
       <div class="detail-grid"><section class="panel"><div class="panel-heading"><h2>Batting</h2><b class="rating-mini">${number(p.bat_level)}</b></div>
@@ -610,35 +631,216 @@
     hydrateImages();
   }
 
+  function managedPlayerCard(player, squadCount) {
+    const squadPlayerId = Number(player.squad_player_id ?? player.player_id ?? 0);
+    const inXi = Boolean(player.in_playing_xi);
+    const disabledXI = Number(squadCount) < 12;
+    const disabledSell = Number(squadCount) <= 11;
+    return `<div class="managed-player-card">
+      ${playerCard(player, true)}
+      <div class="managed-player-state ${inXi ? "active-xi" : "bench-player"}">${inXi ? "✓ PLAYING XI" : "SUBSTITUTE"}</div>
+      <div class="managed-actions">
+        <button class="button secondary full" data-action="lineup-swap-start" data-player-id="${squadPlayerId}" data-mode="${inXi ? "remove" : "add"}" ${disabledXI ? "disabled" : ""}>${inXi ? "Move to substitutes" : "Add to Playing XI"}</button>
+        <button class="button sell-button full" data-action="sell-squad-player" data-player-id="${squadPlayerId}" data-name="${esc(player.name || "player")}" data-sell-price="${Number(player.sell_price || 0)}" ${disabledSell ? "disabled" : ""}>Sell · ${number(player.sell_price)} coins</button>
+      </div>
+    </div>`;
+  }
+
+  function renderSquadList(data, hostId = "squad-list") {
+    state.squadData = data;
+    const host = document.getElementById(hostId);
+    if (!host) return;
+    const players = data.players || [];
+    const xi = players.filter((player) => player.in_playing_xi);
+    const bench = players.filter((player) => !player.in_playing_xi);
+    host.innerHTML = `<div class="squad-capacity"><span>SQUAD CAPACITY</span><b>${number(data.count)} / ${number(data.capacity)}</b><i style="width:${Math.min(100, data.count / Math.max(1, data.capacity) * 100)}%"></i></div>
+      <section class="managed-roster-section">${sectionTitle(`Playing XI · ${number(xi.length)}/11`)}
+        ${xi.length ? `<div class="player-grid">${xi.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : emptyState("Playing XI not set", "Add at least eleven players to manage your team lineup.")}</section>
+      <section class="managed-roster-section">${sectionTitle(`Substitutes · ${number(bench.length)}`)}
+        ${bench.length ? `<div class="player-grid">${bench.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : emptyState("No substitutes yet", "Own more than eleven players to add substitutes to your Playing XI.")}</section>
+      <p class="notice">Lineup changes are saved to Crickium’s existing Playing XI record, so bot match flows use the same selected players. Squad sales use the bot price chart and require at least eleven players to remain.</p>`;
+    hydrateImages(host);
+  }
+
   async function loadSquad() {
-    shell(`<div id="squad-list"><div class="loading-line">Loading squad cards…</div></div>`, "Your squad", "PLAYER ROSTER");
+    shell(`<div id="squad-list"><div class="loading-line">Loading squad cards…</div></div>`, "Squad management", "PLAYER ROSTER");
     try {
       const data = await api("/api/squad");
-      document.getElementById("squad-list").innerHTML = `<div class="squad-capacity"><span>COLLECTION CAPACITY</span><b>${number(data.count)} / ${number(data.capacity)}</b><i style="width:${Math.min(100, data.count / Math.max(1, data.capacity) * 100)}%"></i></div>
-        ${data.players?.length ? `<div class="player-grid">${data.players.map((item) => playerCard(item, true)).join("")}</div>` : emptyState("Your squad is empty", "Player cards you own appear here.")}
-        <p class="notice">Squad changes are handled by Crickium's existing bot commands. This view is read-only.</p>`;
-      hydrateImages();
+      renderSquadList(data, "squad-list");
     } catch (error) {
       document.getElementById("squad-list").innerHTML = errorState(error, "squad");
     }
   }
 
   async function loadCollection() {
-    shell(`<div id="collection-list"><div class="loading-line">Loading your collection…</div></div>`, "Collection", "YOUR PLAYER CARDS");
+    shell(`<div id="collection-list"><div class="loading-line">Loading your collection…</div></div>`, "Player collection", "YOUR PLAYER CARDS");
     try {
       const data = await api("/api/collection");
+      state.squadData = data;
       const squadPlayers = data.players || [];
       const packCards = data.pack_cards || [];
+      const xiPlayers = squadPlayers.filter((item) => item.in_playing_xi);
+      const benchPlayers = squadPlayers.filter((item) => !item.in_playing_xi);
       const squadSection = squadPlayers.length
-        ? `<section class="collection-group">${sectionTitle(`Squad cards · ${number(data.count)}`)}<div class="player-grid">${squadPlayers.map((item) => playerCard(item, true)).join("")}</div></section>`
+        ? `<section class="collection-group">${sectionTitle(`Squad cards · ${number(data.count)}`)}<p class="muted-copy">Manage Playing XI selection or sell a player without leaving the collection.</p>
+            ${sectionTitle(`Playing XI · ${number(xiPlayers.length)}/11`)}<div class="player-grid">${xiPlayers.map((item) => managedPlayerCard(item, data.count)).join("")}</div>
+            ${benchPlayers.length ? `${sectionTitle(`Substitutes · ${number(benchPlayers.length)}`)}<div class="player-grid">${benchPlayers.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : ""}</section>`
         : `<section class="collection-group">${emptyState("Your squad is empty", "Player cards currently assigned to your active squad appear here.")}</section>`;
       const packSection = packCards.length
-        ? `<section class="collection-group">${sectionTitle(`Pack collection · ${number(packCards.length)}`)}<p class="muted-copy">Cards saved from your pack openings. They are kept separate from your active squad.</p><div class="player-grid">${packCards.map((item) => `<div class="collection-pack-card">${playerCard(item, true)}<small>${esc(String(item.pack_key || "pack").toUpperCase())} · ${esc(String(item.pack_slot || "bonus").toUpperCase())} · ${number(item.card_ovr)} OVR</small></div>`).join("")}</div></section>`
+        ? `<section class="collection-group">${sectionTitle(`Pack collection · ${number(packCards.length)}`)}<p class="muted-copy">Cards saved from pack openings are separate from your active squad. Sell a card here to return its listed resale value to your coin balance.</p><div class="player-grid">${packCards.map((item) => `<div class="collection-pack-card">${playerCard(item, true)}<small>${esc(String(item.pack_key || "pack").toUpperCase())} · ${esc(String(item.pack_slot || "bonus").toUpperCase())} · ${number(item.card_ovr)} OVR</small><button class="button sell-button full" data-action="sell-pack-card" data-card-id="${Number(item.card_id)}" data-name="${esc(item.name || "player")}" data-sell-price="${Number(item.sell_price || 0)}">Sell · ${number(item.sell_price)} coins</button></div>`).join("")}</div></section>`
         : `<section class="collection-group">${emptyState("No pack cards yet", "Cards you open from packs will be saved here without being added to your active squad automatically.")}</section>`;
-      document.getElementById("collection-list").innerHTML = squadSection + packSection;
+      document.getElementById("collection-list").innerHTML = squadSection + packSection + `<p class="notice">Selling a squad card updates the same squad used by bot commands. Pack-owned cards are sold from their separate collection inventory.</p>`;
       hydrateImages();
     } catch (error) {
       document.getElementById("collection-list").innerHTML = errorState(error, "collection");
+    }
+  }
+
+
+  async function startLineupSwap(playerId, mode) {
+    state.lineupSwap = { player_id: Number(playerId), mode: mode === "add" ? "add" : "remove" };
+    pushRoute({ page: "lineup-swap", lineupSwap: state.lineupSwap });
+    await loadLineupSwap({ skipRoute: true });
+  }
+
+  async function loadLineupSwap(options = {}) {
+    if (!state.lineupSwap?.player_id) {
+      await navigate("squad", { history: false });
+      return;
+    }
+    state.page = "lineup-swap";
+    const choice = state.lineupSwap;
+    const mode = choice.mode === "add" ? "add" : "remove";
+    shell(`<div id="lineup-swap-content"><div class="loading-line">Loading your Playing XI…</div></div>`, mode === "add" ? "Add to Playing XI" : "Change Playing XI", "SQUAD MANAGEMENT");
+    try {
+      const data = await api("/api/squad");
+      state.squadData = data;
+      const players = data.players || [];
+      const target = players.find((item) => Number(item.squad_player_id ?? item.player_id) === Number(choice.player_id));
+      if (!target || players.length < 12) {
+        document.getElementById("lineup-swap-content").innerHTML = `${emptyState("No valid substitute available", "You need at least twelve squad players to swap one into or out of the Playing XI.")}<button class="button secondary full" data-page="squad">Back to squad</button>`;
+        return;
+      }
+      const candidates = mode === "add" ? players.filter((item) => item.in_playing_xi) : players.filter((item) => !item.in_playing_xi);
+      const heading = mode === "add"
+        ? `Choose the Playing XI player to move out for ${esc(target.name)}.`
+        : `Choose a substitute to enter the XI in place of ${esc(target.name)}.`;
+      const choices = candidates.map((item) => {
+        const playingId = mode === "add" ? Number(item.squad_player_id ?? item.player_id) : Number(target.squad_player_id ?? target.player_id);
+        const substituteId = mode === "add" ? Number(target.squad_player_id ?? target.player_id) : Number(item.squad_player_id ?? item.player_id);
+        return `<div class="lineup-choice-card">${playerCard(item, true)}<button class="button secondary full" data-action="confirm-lineup-swap" data-playing-player-id="${playingId}" data-substitute-player-id="${substituteId}" data-name="${esc(item.name)}">${mode === "add" ? "Swap this player out" : "Bring this substitute in"}</button></div>`;
+      }).join("");
+      document.getElementById("lineup-swap-content").innerHTML = `<section class="panel lineup-swap-intro"><span class="eyebrow">YOUR SELECTED PLAYER</span><h2>${esc(target.name)}</h2><p>${heading}</p></section>${sectionTitle(mode === "add" ? "Current Playing XI" : "Available substitutes", `<span class="muted-inline">${number(candidates.length)} players</span>`)}<div class="player-grid">${choices}</div><p class="notice">This swaps the two players in the saved Playing XI. It never changes the 25-card squad size.</p>`;
+      hydrateImages(document.getElementById("lineup-swap-content"));
+    } catch (error) {
+      document.getElementById("lineup-swap-content").innerHTML = errorState(error, "squad");
+    }
+  }
+
+  async function confirmLineupSwap(playingPlayerId, substitutePlayerId, button) {
+    if (button) { button.disabled = true; button.textContent = "Saving XI…"; }
+    try {
+      const result = await api("/api/squad/lineup/swap", {
+        method: "POST",
+        body: JSON.stringify({ playing_player_id: Number(playingPlayerId), substitute_player_id: Number(substitutePlayerId) }),
+      });
+      if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
+      state.lineupSwap = null;
+      state.page = "squad";
+      replaceRoute({ page: "squad", lineupSwap: null, currentPlayer: null, kitbagClaimId: state.pendingKitbagClaimId });
+      await navigate("squad", { history: false });
+      toast("Playing XI updated. The bot will use this saved lineup.");
+      ping("medium");
+    } catch (error) {
+      toast(claimError(error.payload || { status: error.message }), true);
+      if (button) { button.disabled = false; button.textContent = "Try again"; }
+    }
+  }
+
+  async function sellSquadPlayer(playerId, button) {
+    if (button) { button.disabled = true; button.textContent = "Selling…"; }
+    try {
+      const result = await api("/api/squad/sell", { method: "POST", body: JSON.stringify({ player_id: Number(playerId) }) });
+      if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
+      if (state.home?.wallet) state.home.wallet.coins = result.balance;
+      const soldName = result.player?.name || "Player";
+      const page = state.page === "collection" ? "collection" : "squad";
+      await (page === "collection" ? loadCollection() : loadSquad());
+      toast(`${soldName} sold for ${number(result.sell_price)} coins.`);
+      ping("medium");
+    } catch (error) {
+      toast(claimError(error.payload || { status: error.message }), true);
+      if (button) { button.disabled = false; button.textContent = "Sell failed · Retry"; }
+    }
+  }
+
+  async function sellPackCard(cardId, button) {
+    if (button) { button.disabled = true; button.textContent = "Selling…"; }
+    try {
+      const result = await api("/api/collection/sell-pack-card", { method: "POST", body: JSON.stringify({ card_id: Number(cardId) }) });
+      if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
+      if (state.home?.wallet) state.home.wallet.coins = result.balance;
+      await loadCollection();
+      toast(`${result.player?.name || "Player"} sold for ${number(result.sell_price)} coins.`);
+      ping("medium");
+    } catch (error) {
+      toast(claimError(error.payload || { status: error.message }), true);
+      if (button) { button.disabled = false; button.textContent = "Sell failed · Retry"; }
+    }
+  }
+
+  async function startKitbagReplacement(claimId) {
+    state.pendingKitbagClaimId = String(claimId || state.pendingKitbag?.claim_id || "");
+    pushRoute({ page: "kitbag-replace", kitbagClaimId: state.pendingKitbagClaimId });
+    await loadKitbagReplacement(state.pendingKitbagClaimId, { skipRoute: true });
+  }
+
+  async function loadKitbagReplacement(claimId, options = {}) {
+    state.page = "kitbag-replace";
+    state.pendingKitbagClaimId = String(claimId || state.pendingKitbagClaimId || "");
+    shell(`<div id="kitbag-replace-content"><div class="loading-line">Loading saved Kit Bag reward…</div></div>`, "Replace a player", "KIT BAG REWARD");
+    try {
+      if (!state.pendingKitbag || state.pendingKitbag.claim_id !== state.pendingKitbagClaimId) {
+        const rewards = await api("/api/rewards");
+        state.pendingKitbag = rewards.pending_kitbag || null;
+      }
+      const pending = state.pendingKitbag;
+      if (!pending || !pending.player || pending.claim_id !== state.pendingKitbagClaimId) {
+        document.getElementById("kitbag-replace-content").innerHTML = `${emptyState("No pending replacement", "This Kit Bag reward has already been added or resolved.")}<button class="button primary full" data-page="rewards">Return to rewards</button>`;
+        return;
+      }
+      const squad = await api("/api/squad");
+      state.squadData = squad;
+      const choices = (squad.players || []).map((item) => `<div class="replace-choice-card">${playerCard(item, true)}<button class="button secondary full" data-action="replace-kitbag-player" data-claim-id="${esc(pending.claim_id)}" data-replaced-player-id="${Number(item.squad_player_id ?? item.player_id)}" data-name="${esc(item.name)}">Replace this player</button></div>`).join("");
+      document.getElementById("kitbag-replace-content").innerHTML = `<section class="panel kitbag-replacement-preview"><span class="eyebrow">NEW CARD · 85 OVR</span><h2>${esc(pending.player.name)}</h2><p class="muted-copy">This card is saved safely. Choose one current squad player below to swap out for it.</p><div class="pending-reward-card">${playerCard(pending.player, true)}</div></section>${sectionTitle(`Choose a player to replace · ${number(squad.count)} in squad`)}${choices ? `<div class="player-grid">${choices}</div>` : emptyState("No squad players available", "A squad player is required to complete this replacement.")}<p class="notice">The new card takes the selected player's squad slot. If that player is in the Playing XI, the new card takes their XI position too.</p>`;
+      hydrateImages(document.getElementById("kitbag-replace-content"));
+    } catch (error) {
+      document.getElementById("kitbag-replace-content").innerHTML = errorState(error, "rewards");
+    }
+  }
+
+  async function confirmKitbagReplacement(claimId, replacedPlayerId, button) {
+    if (button) { button.disabled = true; button.textContent = "Replacing…"; }
+    try {
+      const result = await api("/api/rewards/kitbag/replace", {
+        method: "POST",
+        body: JSON.stringify({ claim_id: claimId, replaced_player_id: Number(replacedPlayerId) }),
+      });
+      if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
+      const newName = result.player?.name || "New player";
+      const oldName = result.replaced_player?.name || "selected player";
+      state.pendingKitbag = null;
+      state.pendingKitbagClaimId = null;
+      state.page = "squad";
+      replaceRoute({ page: "squad", kitbagClaimId: null, currentPlayer: null, lineupSwap: null });
+      await navigate("squad", { history: false });
+      toast(result.added_without_replacement
+        ? `${newName} added to your squad. The open slot was used.`
+        : `${newName} replaced ${oldName}. Squad updated.`);
+      ping("heavy");
+    } catch (error) {
+      toast(claimError(error.payload || { status: error.message }), true);
+      if (button) { button.disabled = false; button.textContent = "Replace failed · Retry"; }
     }
   }
 
@@ -665,18 +867,24 @@
       const data = await api("/api/rewards");
       const daily = data.daily || {};
       const bag = data.kitbag || {};
+      const pending = data.pending_kitbag || null;
+      state.pendingKitbag = pending;
+      state.pendingKitbagClaimId = pending?.claim_id || null;
       const days = daily.days || [];
-      document.getElementById("rewards-content").innerHTML = `
-        <section class="kitbag-banner large"><div class="kitbag-emblem">✦</div><div><span class="eyebrow">HOURLY DROP · 85 OVR</span><h2>Free Kit Bag</h2><p>One real, unowned OVR 85 player from the global catalog. Claim cooldown is enforced by the server.</p><small>${bag.available ? "READY TO OPEN" : `AVAILABLE IN ${clock(bag.seconds_until_available)}`}</small></div></section>
-        <button class="button gold full" data-action="kitbag-claim" ${bag.available ? "" : "disabled"}>${bag.available ? "Open free Kit Bag" : "Kit Bag cooling down"}</button>
+      const pendingMarkup = pending ? `<section class="panel pending-reward-panel"><span class="eyebrow">REPLACEMENT REQUIRED</span><h2>Your Kit Bag player is waiting</h2><p class="muted-copy">Your squad was full when this card was claimed. Choose one squad player to replace it. The reward is safely saved until you finish.</p><div class="pending-reward-card">${playerCard(pending.player, true)}</div><button class="button primary full" data-action="open-kitbag-replace" data-claim-id="${esc(pending.claim_id)}">Choose player to replace</button></section>` : "";
+      document.getElementById("rewards-content").innerHTML = `${pendingMarkup}
+        <section class="kitbag-banner large"><div class="kitbag-emblem">✦</div><div><span class="eyebrow">HOURLY DROP · 85 OVR</span><h2>Free Kit Bag</h2><p>One real, unowned OVR 85 player from the global catalog. Claim cooldown is enforced by the server.</p><small>${pending ? "FINISH YOUR PENDING REPLACEMENT" : bag.available ? "READY TO OPEN" : `AVAILABLE IN ${clock(bag.seconds_until_available)}`}</small></div></section>
+        <button class="button gold full" data-action="kitbag-claim" ${bag.available ? "" : "disabled"}>${pending ? "Replace pending player first" : bag.available ? "Open free Kit Bag" : "Kit Bag cooling down"}</button>
         <section class="panel reward-panel"><div class="panel-heading"><div><span class="eyebrow">7-DAY STREAK</span><h2>${number(daily.streak)} claimed · ${number(daily.total_claimed)} total claims</h2></div><button class="button primary" data-action="daily-claim" ${daily.available ? "" : "disabled"}>${daily.available ? "Claim" : clock(daily.seconds_until_available)}</button></div>
           <div class="reward-list">${days.map((day) => `<div class="reward-row ${day.status}"><span class="day-mark">${number(day.day)}</span><span><b>Day ${number(day.day)}</b><small>${day.player_range ? `Random player · OVR ${day.player_range[0]}–${day.player_range[1]}` : "Coins"}${day.rubies ? ` + ${number(day.rubies)} rubies` : ""}</small></span><strong>${number(day.coins)} 🪙</strong><i>${day.status === "claimed" ? "✓" : day.status === "available" ? "CLAIM" : "LOCKED"}</i></div>`).join("")}</div>
         </section>
         <section class="panel"><span class="eyebrow">MORE WAYS TO EARN</span><h2>Quests & match rewards</h2><p class="muted-copy">Daily, weekly and monthly quests use the bot's existing reward rules.</p><button class="button secondary full" data-page="quests">View quests</button></section>`;
+      hydrateImages(document.getElementById("rewards-content"));
     } catch (error) {
       document.getElementById("rewards-content").innerHTML = errorState(error, "rewards");
     }
   }
+
 
   async function loadWallet() {
     shell(`<div id="wallet-content"><div class="loading-line">Loading wallet records…</div></div>`, "Wallet", "BALANCE & HISTORY");
@@ -721,7 +929,13 @@
   }
 
   function matchRouteSnapshot(page = state.page, match = state.currentMatch, tab = state.matchTab, innings = state.matchInnings) {
-    return { crickium: true, page, currentMatch: match ? { engine: match.engine, id: match.id } : null, matchTab: tab || "live", matchInnings: innings == null ? null : Number(innings), index: Number(window.history?.state?.index || 0) };
+    return {
+      crickium: true, page, currentMatch: match ? { engine: match.engine, id: match.id } : null,
+      currentPlayer: state.currentPlayerRef, returnPage: state.playerReturnPage || "search",
+      lineupSwap: state.lineupSwap, kitbagClaimId: state.pendingKitbagClaimId,
+      matchTab: tab || "live", matchInnings: innings == null ? null : Number(innings),
+      index: Number(window.history?.state?.index || 0),
+    };
   }
 
   function pushRoute(next) {
@@ -738,6 +952,14 @@
     } catch (_) {}
   }
 
+  function replaceRoute(next) {
+    try {
+      if (!window.history?.replaceState) return;
+      const existing = window.history.state || {};
+      window.history.replaceState({ ...existing, ...matchRouteSnapshot(next.page || state.page), ...next, crickium: true, index: Number(existing.index || 0) }, "", window.location.href);
+    } catch (_) {}
+  }
+
   function syncTelegramBackButton() {
     if (!tg?.BackButton) return;
     try {
@@ -745,12 +967,18 @@
         tg.BackButton.onClick(backInApp);
         state.tgBackBound = true;
       }
-      if (state.page === "match-detail") tg.BackButton.show();
+      const hasBackRoute = Number(window.history?.state?.index || 0) > 0;
+      if (state.page !== "home" || hasBackRoute) tg.BackButton.show();
       else tg.BackButton.hide();
     } catch (_) {}
   }
 
   function backInApp() {
+    if (state.drawer) {
+      state.drawer = false;
+      document.querySelector(".drawer-scrim")?.remove();
+      return;
+    }
     const current = window.history?.state;
     if (current?.crickium && Number(current.index || 0) > 0 && window.history.length > 1) {
       window.history.back();
@@ -758,7 +986,12 @@
     }
     state.currentMatch = null;
     state.currentMatchData = null;
-    navigate("matches", { history: false });
+    const fallback = state.page === "match-detail" ? "matches"
+      : state.page === "player-detail" ? (state.playerReturnPage || "search")
+      : state.page === "lineup-swap" ? "squad"
+      : state.page === "kitbag-replace" || state.page === "kitbag-reveal" ? "rewards"
+      : "home";
+    navigate(fallback, { history: false });
   }
 
   function matchOverText(innings = {}) {
@@ -871,7 +1104,7 @@
       tabContent = `<div class="match-stat-grid"><div><span>Runs</span><b>${number(current.runs)}</b></div><div><span>Wickets</span><b>${number(current.wickets)}</b></div><div><span>Overs</span><b>${esc(matchOverText(current))}</b></div><div><span>Current run rate</span><b>${crr == null ? "—" : crr.toFixed(2)}</b></div><div><span>Target</span><b>${target == null ? "—" : number(target)}</b></div><div><span>Required run rate</span><b>${rrr == null ? "—" : rrr.toFixed(2)}</b></div></div><section class="panel"><div class="panel-heading"><h2>Key performances</h2><span class="muted-inline">Stored match data</span></div>${topBatter ? `<div class="performance-row"><span><b>${esc(topBatter.name)}</b><small>Top recorded batter</small></span><strong>${number(topBatter.runs)} (${number(topBatter.balls)})</strong></div>` : ""}${topBowler ? `<div class="performance-row"><span><b>${esc(topBowler.name)}</b><small>Top recorded bowler</small></span><strong>${number(topBowler.wickets)}/${number(topBowler.runs)}</strong></div>` : ""}${!topBatter && !topBowler ? `<p class="muted-copy">No individual player statistics are stored.</p>` : ""}</section>${resultSummary}`;
     }
 
-    shell(`<button class="back-link" data-action="match-back">‹ Back</button>${scoreHeader}${tabs}<div class="match-detail-body">${tabContent}</div>${!data.scorecard_available ? `<p class="notice">This record does not contain a full persisted scorecard. The page shows the available match metadata rather than invented scores.</p>` : ""}`, title, `${esc(data.engine || "MATCH")} · ${esc(data.match_type || "CRICKET")}`);
+    shell(`${scoreHeader}${tabs}<div class="match-detail-body">${tabContent}</div>${!data.scorecard_available ? `<p class="notice">This record does not contain a full persisted scorecard. The page shows the available match metadata rather than invented scores.</p>` : ""}`, title, `${esc(data.engine || "MATCH")} · ${esc(data.match_type || "CRICKET")}`);
   }
 
   async function loadMatchDetail(engine, id, options = {}) {
@@ -886,7 +1119,7 @@
     state.matchRequestBusy = true;
     const scrollTop = Number(window.scrollY || 0);
     const selected = { engine: String(engine).toUpperCase(), id: String(id) };
-    if (!options.silent) shell(`<button class="back-link" data-action="match-back">‹ Back</button><div class="loading-line">Loading stored match events…</div>`, `Match #${id}`, "MATCH REPORT");
+    if (!options.silent) shell(`<div class="loading-line">Loading stored match events…</div>`, `Match #${id}`, "MATCH REPORT");
     try {
       const data = await api(`/api/matches/${encodeURIComponent(engine)}/${encodeURIComponent(id)}`);
       if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id) return;
@@ -902,7 +1135,7 @@
     } catch (error) {
       if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id) return;
       if (options.silent) return;
-      shell(`<button class="back-link" data-action="match-back">‹ Back</button>${errorState(error, "matches")}`, `Match #${id}`, "MATCH REPORT");
+      shell(`${errorState(error, "matches")}`, `Match #${id}`, "MATCH REPORT");
     } finally {
       if (seq === state.matchRequestSeq) state.matchRequestBusy = false;
     }
@@ -920,19 +1153,32 @@
 
   async function restoreRoute(route) {
     clearInterval(state.matchTimer);
-    const value = route && route.crickium ? route : { page: "matches", crickium: true, index: 0 };
+    const value = route && route.crickium ? route : { page: "home", crickium: true, index: 0 };
     state.currentMatch = value.currentMatch || null;
+    state.currentPlayerRef = value.currentPlayer || null;
+    state.playerReturnPage = value.returnPage || "search";
+    state.lineupSwap = value.lineupSwap || null;
+    state.pendingKitbagClaimId = value.kitbagClaimId || null;
     state.matchTab = value.matchTab || "live";
     state.matchInnings = value.matchInnings == null ? null : Number(value.matchInnings);
     if (value.page === "match-detail" && state.currentMatch) {
       state.page = "match-detail";
       await loadMatchDetail(state.currentMatch.engine, state.currentMatch.id, { skipRoute: true });
+    } else if (value.page === "player-detail" && state.currentPlayerRef) {
+      await loadPlayer(state.currentPlayerRef.kind, state.currentPlayerRef.id, { skipRoute: true, returnPage: state.playerReturnPage });
+    } else if (value.page === "lineup-swap" && state.lineupSwap) {
+      await loadLineupSwap({ skipRoute: true });
+    } else if (value.page === "kitbag-replace") {
+      await loadKitbagReplacement(state.pendingKitbagClaimId, { skipRoute: true });
+    } else if (value.page === "kitbag-reveal") {
+      await restoreKitbagReveal(value.kitbagClaimId || state.pendingKitbagClaimId);
     } else {
       state.currentMatch = null;
       state.currentMatchData = null;
-      await navigate(value.page || "matches", { history: false });
+      await navigate(value.page || "home", { history: false });
     }
   }
+
 
   function toast(message, bad = false) {
     const node = document.getElementById("toast");
@@ -942,6 +1188,31 @@
     node.classList.add("show");
     clearTimeout(state.toastTimer);
     state.toastTimer = setTimeout(() => node.classList.remove("show"), 2800);
+  }
+
+  function renderKitbagReveal(player, claimId, requiresReplacement) {
+    state.page = "kitbag-reveal";
+    state.pendingKitbagClaimId = claimId || null;
+    state.pendingKitbag = requiresReplacement ? { claim_id: claimId, player } : null;
+    const rewardCopy = requiresReplacement
+      ? `<p>Your squad is full at 25 players. This card is saved safely. Choose one player to replace and this card will take their squad slot.</p><button class="button primary full" data-action="open-kitbag-replace" data-claim-id="${esc(claimId)}">Choose player to replace</button>`
+      : `<p>Added to your squad. Come back in an hour for your next free Kit Bag.</p><button class="button primary full" data-page="squad">View squad</button>`;
+    shell(`<section class="reveal-card"><div class="reveal-burst">✦</div><span class="eyebrow">KIT BAG OPENED</span><h2>Your new player</h2>${playerCard(player)}${rewardCopy}</section>`, "Player acquired", "REWARD UNLOCKED");
+    hydrateImages();
+  }
+
+  async function restoreKitbagReveal(claimId) {
+    try {
+      const rewards = await api("/api/rewards");
+      const pending = rewards.pending_kitbag || null;
+      if (pending && pending.claim_id === String(claimId || "")) {
+        renderKitbagReveal(pending.player, pending.claim_id, true);
+        return;
+      }
+      await navigate("rewards", { history: false });
+    } catch (_) {
+      await navigate("rewards", { history: false });
+    }
   }
 
   async function performClaim(kind) {
@@ -954,18 +1225,25 @@
       ping("medium");
       if (kind === "kitbag") {
         const player = result.player;
-        shell(`<section class="reveal-card"><div class="reveal-burst">✦</div><span class="eyebrow">KIT BAG OPENED</span><h2>Your new player</h2>${playerCard(player)}<p>Added to your squad. Come back in an hour for your next free Kit Bag.</p><button class="button primary full" data-page="squad">View squad</button></section>`, "Player acquired", "REWARD UNLOCKED");
-        hydrateImages();
+        state.pendingKitbagClaimId = result.claim_id || null;
+        pushRoute({ page: "kitbag-reveal", kitbagClaimId: state.pendingKitbagClaimId });
+        renderKitbagReveal(player, result.claim_id || null, Boolean(result.requires_replacement));
       } else {
         const reward = result.reward || {};
         toast(`Day ${result.day} claimed · ${number(reward.coins)} coins${reward.rubies ? ` · ${number(reward.rubies)} rubies` : ""}`);
         await loadRewards();
       }
     } catch (error) {
-      toast(claimError(error.payload || { status: error.message }), true);
+      const payload = error.payload || { status: error.message };
+      if (kind === "kitbag" && payload.status === "replacement_pending" && payload.claim_id) {
+        await startKitbagReplacement(payload.claim_id);
+        return;
+      }
+      toast(claimError(payload), true);
       if (button) { button.disabled = false; button.textContent = button.dataset.oldText || "Try again"; }
     }
   }
+
 
   function claimError(payload = {}) {
     const status = typeof payload === "string" ? payload : payload.status || payload.detail || payload.message;
@@ -978,6 +1256,17 @@
       already_owned: "You already own this player.",
       user_missing: "Your Crickium account could not be found. Open the bot and try again.",
       squad_full: "Your squad has reached its 25-player capacity.",
+      replacement_pending: "A Kit Bag player is waiting for you to replace a squad card.",
+      claim_already_resolved: "This Kit Bag replacement has already been completed.",
+      replacement_not_owned: "That player is no longer in your squad. Refresh and choose another card.",
+      reward_already_owned: "This Kit Bag player is already in your squad.",
+      player_not_owned: "That player is no longer in your squad.",
+      player_not_in_xi: "That player is no longer in the Playing XI.",
+      player_already_in_xi: "That substitute is already in the Playing XI.",
+      squad_too_small: "You need at least eleven squad players to manage the Playing XI.",
+      minimum_squad_size: "Keep at least eleven players in your squad for a complete Playing XI.",
+      card_not_owned: "This collection card is no longer available.",
+      card_data_unavailable: "This card’s saved details could not be loaded.",
     })[status] || String(status || "The reward could not be claimed.");
   }
 
@@ -1015,6 +1304,8 @@
       state.currentMatch = null;
       state.currentMatchData = null;
     }
+    if (page !== "player-detail") state.currentPlayerRef = null;
+    if (page !== "lineup-swap") state.lineupSwap = null;
     state.page = page;
     state.drawer = false;
     clearInterval(state.matchTimer);
@@ -1035,6 +1326,8 @@
       case "profile": return loadProfile();
       case "squad": return loadSquad();
       case "collection": return loadCollection();
+      case "lineup-swap": return loadLineupSwap();
+      case "kitbag-replace": return loadKitbagReplacement(state.pendingKitbagClaimId);
       case "quests": return loadQuests();
       case "rewards": return loadRewards();
       case "wallet": return loadWallet();
@@ -1051,6 +1344,7 @@
       const action = actionButton.dataset.action;
       if (action === "drawer") { state.drawer = true; document.querySelector(".app-frame")?.insertAdjacentHTML("beforeend", drawer()); hydrateImages(); }
       if (action === "close-drawer") { state.drawer = false; document.querySelector(".drawer-scrim")?.remove(); }
+      if (action === "back-page") { backInApp(); return; }
       if (action === "refresh") {
         if (state.page === "match-detail" && state.currentMatch) loadMatchDetail(state.currentMatch.engine, state.currentMatch.id, { skipRoute: true });
         else navigate(state.page, { history: false });
@@ -1081,6 +1375,23 @@
       }
       if (action === "open-history") openPackHistory(actionButton.dataset.openingId);
       if (action === "close-pack-reveal") { state.packOpening = null; renderPackShop(state.packData); }
+      if (action === "lineup-swap-start") startLineupSwap(actionButton.dataset.playerId, actionButton.dataset.mode);
+      if (action === "confirm-lineup-swap") confirmLineupSwap(actionButton.dataset.playingPlayerId, actionButton.dataset.substitutePlayerId, actionButton);
+      if (action === "sell-squad-player") {
+        const name = actionButton.dataset.name || "this player";
+        const price = Number(actionButton.dataset.sellPrice || 0);
+        showConfirm(`Sell ${name} for ${number(price)} coins? The card will leave your squad. Keep at least eleven squad players for a complete Playing XI.`, "Sell player", () => sellSquadPlayer(actionButton.dataset.playerId, actionButton));
+      }
+      if (action === "sell-pack-card") {
+        const name = actionButton.dataset.name || "this collection card";
+        const price = Number(actionButton.dataset.sellPrice || 0);
+        showConfirm(`Sell ${name} from your pack collection for ${number(price)} coins? This only removes the saved collection copy and does not change your squad.`, "Sell card", () => sellPackCard(actionButton.dataset.cardId, actionButton));
+      }
+      if (action === "open-kitbag-replace") startKitbagReplacement(actionButton.dataset.claimId || state.pendingKitbagClaimId);
+      if (action === "replace-kitbag-player") {
+        const pending = state.pendingKitbag || {};
+        showConfirm(`Replace ${actionButton.dataset.name || "this player"} with ${pending.player?.name || "the saved Kit Bag player"}? This change is permanent.`, "Replace player", () => confirmKitbagReplacement(actionButton.dataset.claimId, actionButton.dataset.replacedPlayerId, actionButton));
+      }
     }
     const card = event.target.closest("[data-player-kind]");
     if (card && !event.target.closest("button") && !event.target.closest("[data-action]")) loadPlayer(card.dataset.playerKind, card.dataset.playerId);

@@ -40,8 +40,10 @@ button { cursor: pointer; color: inherit; }
 .wallet-pill .coin-icon { font-size: 9px; text-shadow: 0 0 5px var(--gold); }
 .ruby-pill i { color: #e996d1; }
 .page-content { width: min(100%, 650px); margin: 0 auto; padding: 24px 18px 28px; animation: rise .22s ease-out; }
-.page-heading { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 19px; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 4px 0 19px; }
+.page-heading-main { min-width: 0; display: flex; align-items: center; gap: 10px; }
 .page-heading h1 { margin: 3px 0 0; font-size: clamp(25px, 7vw, 33px); line-height: 1.08; letter-spacing: -.04em; }
+.back-page-button { flex: 0 0 auto; width: 39px; height: 39px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); color: var(--lime); font-size: 30px; line-height: 1; padding: 0 0 3px; }
 .eyebrow { display: block; color: var(--lime); font-size: 9px; letter-spacing: .19em; font-weight: 850; }
 .icon-action { width: 39px; height: 39px; border: 1px solid var(--line); color: var(--lime); border-radius: 13px; background: var(--surface); font-size: 22px; }
 .hero-card { position: relative; overflow: hidden; padding: 18px; border: 1px solid #314338; border-radius: 24px; background: linear-gradient(135deg,#1b2a20 0,#111d18 55%,#101713 100%); box-shadow: 0 15px 38px rgba(0,0,0,.22); }
@@ -134,8 +136,10 @@ button { cursor: pointer; color: inherit; }
 .loading-line::before { content: ""; display: block; width: 22px; height: 22px; border: 2px solid #33453a; border-top-color: var(--lime); border-radius: 50%; margin: 0 auto 10px; animation: spin .8s linear infinite; }
 .player-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
 .player-card { position: relative; min-width: 0; overflow: hidden; border-radius: 17px; border: 1px solid #455343; background: linear-gradient(155deg,#39412c 0,#1c261c 40%,#111a16 100%); cursor: pointer; }
-.player-art { height: 116px; position: relative; overflow: hidden; display: grid; place-items: center; background: radial-gradient(ellipse at 50% 100%,#80944470,transparent 61%), linear-gradient(145deg,#2b3a29,#18231c); }
+.player-art { width: 100%; height: auto; aspect-ratio: 1.6 / 1; min-height: 86px; position: relative; overflow: hidden; display: grid; place-items: center; background: radial-gradient(ellipse at 50% 100%,#80944470,transparent 61%), linear-gradient(145deg,#2b3a29,#18231c); }
 .player-image { height: 100%; width: 100%; position: absolute; inset: 0; object-fit: cover; opacity: 0; transition: opacity .2s; }
+.player-art.has-rendered-template .player-image { object-fit: contain; }
+.player-art.has-rendered-template::after,.player-art.has-rendered-template .rating,.player-art.has-rendered-template .role-mark { display: none; }
 .player-image.loaded { opacity: 1; }
 .player-art::after { content: "CRICKIUM"; position: absolute; bottom: 8px; left: 8px; color: #e4efd0; opacity: .45; font-size: 7px; letter-spacing: .2em; }
 .rating { position: absolute; z-index: 1; top: 8px; left: 8px; min-width: 40px; border-radius: 10px; padding: 5px 7px; text-align: center; background: #172117dd; color: var(--lime); font-weight: 950; font-size: 19px; line-height: 1; }
@@ -252,7 +256,7 @@ select.field { color: var(--text); }
 .reveal-card { margin-top: 10px; text-align: center; border: 1px solid #5d7142; border-radius: 23px; padding: 19px; background: radial-gradient(ellipse at 50% 0,#435127,#111b15 65%); overflow: hidden; }
 .reveal-card h2 { margin: 6px 0 14px; }
 .reveal-card .player-card { max-width: 280px; margin: auto; text-align: left; }
-.reveal-card .player-art { height: 190px; }
+.reveal-card .player-art { height: auto; aspect-ratio: 1.6 / 1; }
 .reveal-card p { color: var(--muted); font-size: 10px; line-height: 1.6; }
 .reveal-burst { color: var(--gold); font-size: 34px; animation: pulse 1.5s infinite; }
 .toast { position: fixed; z-index: 80; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translate(-50%,12px); opacity: 0; pointer-events: none; width: max-content; max-width: calc(100vw - 30px); padding: 12px 15px; border: 1px solid #5b7144; border-radius: 13px; background: #1b2a1e; color: var(--lime); font-size: 10px; font-weight: 800; transition: .2s; }
@@ -280,7 +284,7 @@ select.field { color: var(--text); }
   .player-grid { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
   .detail-grid { grid-template-columns: 1fr 1fr; }
   .hero-card { padding: 22px; }
-  .player-art { height: 145px; }
+  .player-art { height: auto; }
 }
 @media (max-width: 370px) {
   .topbar { padding: 0 10px; gap: 8px; }
@@ -294,6 +298,28 @@ select.field { color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
+
+/* Squad management and replacement controls inherit the existing club palette. */
+.managed-roster-section { margin-top: 18px; }
+.managed-player-card,.lineup-choice-card,.replace-choice-card { min-width: 0; }
+.managed-player-state { margin: 5px 3px 0; text-align: center; color: var(--muted); font-size: 7px; font-weight: 900; letter-spacing: .13em; }
+.managed-player-state.active-xi { color: var(--lime); }
+.managed-player-state.bench-player { color: #b5c3b8; }
+.managed-actions { display: grid; gap: 6px; padding: 6px 3px 3px; }
+.managed-actions .button,.lineup-choice-card .button,.replace-choice-card .button,.collection-pack-card .button { min-height: 36px; padding: 8px 5px; font-size: 9px; }
+.button.sell-button { color: #ffc0b6; border-color: #79433d80; background: #2c1c194f; }
+.button.sell-button:active { background: #3b2420; }
+.managed-actions .button:disabled,.button.sell-button:disabled { opacity: .35; }
+.lineup-swap-intro h2,.kitbag-replacement-preview h2 { margin: 5px 0 8px; }
+.lineup-swap-intro p { color: var(--muted); font-size: 10px; line-height: 1.55; }
+.pending-reward-panel { border-color: #647944; background: linear-gradient(155deg,#1e2d1d,#0d1815 80%); }
+.pending-reward-panel h2 { margin: 6px 0; }
+.pending-reward-panel .pending-reward-card,.kitbag-replacement-preview .pending-reward-card { width: min(100%,220px); margin: 12px auto; }
+.pending-reward-panel .button { margin-top: 5px; }
+.kitbag-replacement-preview { text-align: center; border-color: #647944; }
+.kitbag-replacement-preview .pending-reward-card { width: min(100%,235px); }
+.kitbag-replacement-preview .muted-copy { max-width: 390px; margin: 0 auto; }
+.collection-pack-card > .button { margin-top: 8px; }
 
 /* Focused additions for the matches, scorecard, pack shop and fallback-card flows.
    All colors inherit the existing Mini App design tokens. */
