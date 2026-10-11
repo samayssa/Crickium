@@ -1,17 +1,13 @@
-"""
-Bridges three things to produce the final card image for a player:
-1. database/card_images_repo.py  - which file_id (if any) to use
-2. app.py                        - downloading that file from Telegram
-3. services/player_card.py       - rendering stats onto a template
+"""Resolve the canonical player-card type and render bot-compatible card art.
 
-This is what a future player-lookup/search command should call - it
-does not register any Telegram command itself.
+The role resolver is intentionally import-safe for the Mini App, which only
+needs this pure helper and the Pillow renderer. Bot/database imports are lazy
+inside ``get_player_card_bytes`` so importing the resolver does not construct a
+Telegram client in the separate Mini App worker.
 """
 
 from __future__ import annotations
 
-from app import app
-from database.card_images_repo import get_player_card_image, get_special_player_card_image, get_showcase_player_card_image, get_card_template_image
 from services.player_card import render_player_card
 
 
@@ -47,7 +43,14 @@ async def get_player_card_bytes(player: dict) -> tuple[bytes, bool]:
       admin-uploaded one via `/upload_img bat-card` / `/upload_img ball-card`,
       or the matching bundled default), picked by the player's role.
     """
-    from services.card_identity import player_kind, card_entity_id
+    from app import app
+    from database.card_images_repo import (
+        get_card_template_image,
+        get_player_card_image,
+        get_showcase_player_card_image,
+        get_special_player_card_image,
+    )
+    from services.card_identity import card_entity_id, player_kind
 
     kind = player_kind(player)
     if kind == "showcase":
@@ -61,10 +64,8 @@ async def get_player_card_bytes(player: dict) -> tuple[bytes, bool]:
         return image_bytes, True
 
     card_type = resolve_card_type(player)
-
     template_bytes = None
     template = await get_card_template_image(card_type)
     if template and template.get("file_id"):
         template_bytes = await app.download_media(template["file_id"])
-
     return render_player_card(player, template_bytes=template_bytes, card_type=card_type), False
