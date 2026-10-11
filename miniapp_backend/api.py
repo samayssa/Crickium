@@ -48,6 +48,15 @@ MATCH_TABLES = (
     ("wpl_matches", "PLAYWPL"),
     ("match_challenges", "MATCH"),
 )
+MATCH_SOURCE_TABLES = {
+    "PLAY": ("play_matches", "match_id"),
+    "PLAYSO": ("playso_matches", "match_id"),
+    "PLAYINT": ("playint_matches", "match_id"),
+    "PLAYIPL": ("playipl_matches", "match_id"),
+    "PLAYWPL": ("wpl_matches", "match_id"),
+    "MATCH": ("match_challenges", "challenge_id"),
+}
+_TERMINAL_MATCH_STATUSES = {"completed", "ended", "finished", "complete", "declined", "abandoned", "expired", "timed_out", "cancelled"}
 
 _CARD_IMAGES = {
     "global": ("player_card_images", "player_id"),
@@ -179,14 +188,15 @@ async def _ensure_user(viewer: TelegramViewer) -> dict[str, Any]:
     return dict(row) if row else {"user_id": int(viewer.id), "balance": 0, "rubies": 0, "level": 1, "xp": 0}
 
 
-async def _get_player_image_id(kind: str, entity_id: int) -> str | None:
+async def _get_player_image_source(kind: str, entity_id: int) -> tuple[str, str] | None:
+    """Return (Telegram file_id, source kind) without exposing file identifiers to clients."""
     spec = _CARD_IMAGES.get(kind)
     if not spec:
         return None
     table, id_column = spec
     row = await fetchrow(f"SELECT file_id FROM {table} WHERE {id_column}=$1;", int(entity_id))
-    if row:
-        return str(row["file_id"])
+    if row and row.get("file_id"):
+        return str(row["file_id"]), "custom"
     if kind == "global":
         role = await fetchrow("SELECT role,bat_level,bowl_level FROM players WHERE player_id=$1;", int(entity_id))
     elif kind == "special":
@@ -197,14 +207,21 @@ async def _get_player_image_id(kind: str, entity_id: int) -> str | None:
         return None
     card = _card_type(dict(role))
     template = await fetchrow("SELECT file_id FROM template_card_image WHERE card_type=$1;", card)
-    return str(template["file_id"]) if template else None
+    return (str(template["file_id"]), "template") if template and template.get("file_id") else None
 
 
-async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str] | None:
-    """Proxy Telegram images server-side so file URLs never expose the bot token."""
-    file_id = await _get_player_image_id(kind, entity_id)
-    if not file_id or not BOT_TOKEN:
+async def _get_player_image_id(kind: str, entity_id: int) -> str | None:
+    """Backward-compatible file-id helper used by older internal callers."""
+    source = await _get_player_image_source(kind, entity_id)
+    return source[0] if source else None
+
+
+async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str, str] | None:
+    """Proxy a player image and identify custom/template art for frontend rendering."""
+    source = await _get_player_image_source(kind, entity_id)
+    if not source or not BOT_TOKEN:
         return None
+    file_id, image_kind = source
     import httpx
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -217,7 +234,7 @@ async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str] | N
         response = await client.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
         response.raise_for_status()
         content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0]
-        return response.content, content_type
+        return response.content, content_type, image_kind
 
 
 async def profile_image_bytes(user_id: int) -> tuple[bytes, str] | None:
@@ -266,14 +283,41 @@ async def _rank_for_user(user_id: int) -> int:
     return int(rank or 0)
 
 
+async def _runtime_session(engine: str, match_id: int):
+    """Load an internal engine snapshot if one exists; returns None on unsupported/unavailable state."""
+    engine = str(engine or "").upper()
+    if engine not in {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
+        return None
+    try:
+        row = await fetchrow(
+            "SELECT payload FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
+            engine, int(match_id),
+        )
+        if not row or not row.get("payload"):
+            return None
+        # Snapshots are produced and stored by this application's own game
+        # session recovery code; decode failures are treated as unavailable data.
+        import pickle
+        return pickle.loads(bytes(row["payload"]))
+    except Exception as exc:
+        print(f"[miniapp_backend] runtime snapshot unavailable engine={engine} id={int(match_id)} type={type(exc).__name__}")
+        return None
+
+
+def _team_names_from_match(row: dict[str, Any]) -> tuple[str, str]:
+    first = row.get("challenger_team_name") or row.get("challenger_team_code") or row.get("challenger_name") or "Challenger"
+    second = row.get("opponent_team_name") or row.get("opponent_team_code") or row.get("opponent_name") or "Opponent"
+    return str(first), str(second)
+
+
 async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    # Each engine has its own table. A small per-source cap still finds concurrent
+    # modes while avoiding dozens of snapshot reads on every Matches refresh.
+    per_source_limit = max(5, min(int(limit), 10))
     for table, engine in MATCH_TABLES:
         try:
             if table == "match_challenges":
-                # In the current schema challenges use challenge_id/format and
-                # have no pitch column; treating them as match rows made the
-                # whole source query fail and silently hid open challenges.
                 rows = await fetch(
                     """
                     SELECT challenge_id AS match_id,challenger_id,challenger_name,
@@ -282,37 +326,94 @@ async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
                     FROM match_challenges
                     WHERE (challenger_id=$1 OR opponent_id=$1)
                       AND LOWER(COALESCE(status,'')) NOT IN
-                          ('completed','ended','finished','complete','declined','abandoned','expired','timed_out')
+                          ('completed','ended','finished','complete','declined','abandoned','expired','timed_out','cancelled')
                     ORDER BY created_at DESC LIMIT $2;
                     """,
-                    int(user_id), int(limit),
+                    int(user_id), int(per_source_limit),
+                )
+            elif table == "playso_matches":
+                rows = await fetch(
+                    """
+                    SELECT match_id,challenger_id,challenger_name,challenger_username,
+                           opponent_id,opponent_name,opponent_username,status,pitch,format AS match_type,
+                           stadium,innings_no,state,created_at
+                    FROM playso_matches
+                    WHERE (challenger_id=$1 OR opponent_id=$1)
+                      AND LOWER(COALESCE(status,'')) NOT IN
+                          ('completed','ended','finished','complete','declined','abandoned','expired','timed_out','cancelled')
+                    ORDER BY created_at DESC LIMIT $2;
+                    """,
+                    int(user_id), int(per_source_limit),
+                )
+            elif table in {"playint_matches", "playipl_matches", "wpl_matches"}:
+                rows = await fetch(
+                    f"""
+                    SELECT match_id,challenger_id,challenger_name,challenger_username,
+                           opponent_id,opponent_name,opponent_username,status,pitch,created_at,
+                           challenger_team_code,challenger_team_name,opponent_team_code,opponent_team_name
+                    FROM {table}
+                    WHERE (challenger_id=$1 OR opponent_id=$1)
+                      AND LOWER(COALESCE(status,'')) NOT IN
+                          ('completed','ended','finished','complete','declined','abandoned','expired','timed_out','cancelled')
+                    ORDER BY created_at DESC LIMIT $2;
+                    """,
+                    int(user_id), int(per_source_limit),
                 )
             else:
                 rows = await fetch(
                     f"""
-                    SELECT match_id,challenger_id,challenger_name,opponent_id,opponent_name,
-                           status,pitch,created_at
+                    SELECT match_id,challenger_id,challenger_name,challenger_username,
+                           opponent_id,opponent_name,opponent_username,status,pitch,created_at
                     FROM {table}
                     WHERE (challenger_id=$1 OR opponent_id=$1)
                       AND LOWER(COALESCE(status,'')) NOT IN
-                          ('completed','ended','finished','complete','declined','abandoned','expired','timed_out')
+                          ('completed','ended','finished','complete','declined','abandoned','expired','timed_out','cancelled')
                     ORDER BY created_at DESC LIMIT $2;
                     """,
-                    int(user_id), int(limit),
+                    int(user_id), int(per_source_limit),
                 )
         except Exception as exc:
-            print(f"[miniapp_backend] match source {table} unavailable: {exc!r}")
+            print(f"[miniapp_backend] match source {table} unavailable: {type(exc).__name__}")
             continue
-        for row in rows:
-            item = dict(row)
+        for raw in rows:
+            item = dict(raw)
             item["engine"] = engine
             item["match_id"] = int(item["match_id"])
-            if item.get("match_type") is None:
-                item["match_type"] = engine
+            item["match_type"] = item.get("match_type") or engine
             item["created_at"] = item["created_at"].isoformat() if item.get("created_at") else None
-            item["is_live"] = str(item.get("status") or "").lower() in {"live", "innings_break"}
+            first, second = _team_names_from_match(item)
+            item["team_a_name"] = first
+            item["team_b_name"] = second
+            status = str(item.get("status") or "").lower()
+            item["is_live"] = status in {"live", "playing", "innings_break", "chase", "in_progress"}
+            item["current_score"] = None
+
+            if engine == "PLAYSO":
+                state = _json_value(item.get("state"), {})
+                if isinstance(state, dict) and ("runs" in state or "legal_balls" in state):
+                    balls = max(0, int(state.get("legal_balls") or 0))
+                    item["runs"] = max(0, int(state.get("runs") or 0))
+                    item["wickets"] = max(0, int(state.get("wickets") or 0))
+                    item["over_text"] = f"{balls // 6}.{balls % 6}"
+                    item["target"] = state.get("target")
+                    item["current_score"] = f"{item['runs']}/{item['wickets']} ({item['over_text']})"
+            else:
+                session = await _runtime_session(engine, item["match_id"])
+                innings = getattr(session, "innings", None) if session else None
+                score = getattr(innings, "score", None) if innings else None
+                if score is not None:
+                    runs = int(getattr(score, "runs", 0) or 0)
+                    wickets = int(getattr(score, "wickets", 0) or 0)
+                    balls = int(getattr(score, "legal_balls", 0) or 0)
+                    item["runs"] = runs
+                    item["wickets"] = wickets
+                    item["over_text"] = f"{balls // 6}.{balls % 6}"
+                    item["target"] = getattr(innings, "target", None)
+                    item["current_score"] = f"{runs}/{wickets} ({item['over_text']})"
+                    item["batting_team"] = getattr(session, "batting_team_display", None)
             result.append(item)
     result.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    # Match IDs are local to their engine. Preserve source engine in all cards/routes.
     return result[:limit]
 
 
@@ -665,8 +766,63 @@ async def build_player_detail_response(viewer: TelegramViewer, *, kind: str, ent
     }
 
 
+async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, Any]]:
+    """Return cards the pack service actually persisted as owned card inventory.
+
+    These are kept separate from the active squad: opening a pack does not silently
+    promote a reward into the user's playing XI/squad.
+    """
+    try:
+        rows = await fetch(
+            """
+            SELECT pci.opening_id,pci.player_id,pci.card_kind,pci.position,
+                   po.pack_key,po.opened_at,po.cards
+            FROM pack_card_inventory pci
+            JOIN pack_openings po ON po.opening_id=pci.opening_id
+            WHERE pci.user_id=$1
+            ORDER BY po.opened_at DESC,pci.position ASC LIMIT $2;
+            """, int(user_id), max(1, min(int(limit), 250)),
+        )
+    except Exception as exc:
+        # Older databases can lack the pack ledger until the additive migration
+        # has run. The UI should remain available while the startup migration runs.
+        print(f"[miniapp_backend] pack collection unavailable: {type(exc).__name__}")
+        return []
+
+    output: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        cards = _json_value(row.get("cards"), [])
+        if not isinstance(cards, list):
+            continue
+        position = int(row.get("position") or 0)
+        if position < 1 or position > len(cards):
+            continue
+        card = cards[position - 1]
+        if not isinstance(card, dict) or not isinstance(card.get("player"), dict):
+            continue
+        player = dict(card["player"])
+        # Prefer the immutable opening snapshot, but verify it matches the
+        # normalized ownership ledger row before showing it as a collected card.
+        try:
+            if int(player.get("player_id") or card.get("player_id") or 0) != int(row.get("player_id") or 0):
+                continue
+        except (TypeError, ValueError):
+            continue
+        output.append({
+            **_player_payload(player, owned=True),
+            "pack_key": str(row.get("pack_key") or ""),
+            "pack_slot": str(row.get("card_kind") or card.get("kind") or "bonus"),
+            "opening_id": str(row.get("opening_id") or ""),
+            "opened_at": _iso(row.get("opened_at")),
+            "card_ovr": int(card.get("ovr") or max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))),
+        })
+    return output
+
+
 async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
     squad = await _owned_squad(viewer.id)
+    pack_cards = await _pack_owned_cards(int(viewer.id))
     return {
         "count": len(squad),
         "capacity": MAX_SQUAD_SIZE,
@@ -675,6 +831,8 @@ async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
             | {"is_captain": int(player.get("player_id") or 0) == int(player.get("captain_player_id") or 0)}
             for player in squad
         ],
+        "pack_cards": pack_cards,
+        "pack_card_count": len(pack_cards),
     }
 
 
@@ -712,40 +870,439 @@ async def build_matches_response(viewer: TelegramViewer) -> dict[str, Any]:
         FROM quest_match_summaries WHERE user_id=$1 ORDER BY played_at DESC LIMIT 50;
         """, int(viewer.id),
     )
+    active = await _active_matches(viewer.id, limit=30)
+
+    # The summary table is deliberately compact and does not contain team labels.
+    # Enrich history in one bounded query per engine rather than issuing one query
+    # per card (which would create avoidable database load on each Matches refresh).
+    recent_dicts = [dict(raw) for raw in recent]
+    ids_by_engine: dict[str, set[int]] = {}
+    for row in recent_dicts:
+        engine = str(row.get("engine") or "MATCH").upper()
+        try:
+            match_id = int(row.get("match_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if match_id > 0 and engine in MATCH_SOURCE_TABLES:
+            ids_by_engine.setdefault(engine, set()).add(match_id)
+    source_rows: dict[tuple[str, int], dict[str, Any]] = {}
+    for engine, match_ids in ids_by_engine.items():
+        table, id_column = MATCH_SOURCE_TABLES[engine]
+        try:
+            rows = await fetch(
+                f"SELECT * FROM {table} WHERE {id_column}=ANY($1::bigint[]) AND (challenger_id=$2 OR opponent_id=$2);",
+                sorted(match_ids), int(viewer.id),
+            )
+            for source_row in rows:
+                source = dict(source_row)
+                try:
+                    source_id = int(source.get(id_column) or source.get("match_id") or source.get("challenge_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                source_rows[(engine, source_id)] = source
+        except Exception as exc:
+            print(f"[miniapp_backend] recent match enrichment unavailable engine={engine} type={type(exc).__name__}")
+
+    recent_items: list[dict[str, Any]] = []
+    for row in recent_dicts:
+        engine = str(row.get("engine") or "MATCH").upper()
+        match_id = int(row.get("match_id") or 0)
+        item = _match_summary(row)
+        item.update({"engine": engine, "match_id": match_id, "status": "completed",
+                     "is_live": False, "is_completed": True,
+                     "current_score": None, "over_text": None})
+        source = source_rows.get((engine, match_id))
+        if source:
+            first, second = _team_names_from_match(source)
+            item.update({
+                "team_a_name": first, "team_b_name": second,
+                "challenger_name": str(source.get("challenger_name") or first),
+                "opponent_name": str(source.get("opponent_name") or second),
+                "match_type": row.get("match_type") or source.get("format") or source.get("match_type") or engine,
+                "created_at": _iso(source.get("created_at")),
+            })
+        else:
+            # Don't substitute invented teams when older source rows no longer exist.
+            item.update({"team_a_name": "Team details unavailable", "team_b_name": "Team details unavailable"})
+        recent_items.append(item)
     return {
-        "recent": [_match_summary(dict(row)) for row in recent],
-        "active": await _active_matches(viewer.id, limit=30),
-        "note": "The persistent records available to the Mini App contain per-user quest match summaries and match setup/status. Full innings scorecards are not stored as queryable rows in this repository.",
+        "recent": recent_items,
+        "active": active,
+        "note": "Only stored Crickium match records are shown. Live details require an available current-session snapshot; completed details use persisted summaries. Missing scores and team names are not invented.",
     }
 
 
+def _as_mapping(value: Any) -> dict[str, Any]:
+    decoded = _json_value(value, {})
+    return dict(decoded) if isinstance(decoded, dict) else {}
+
+
+def _json_list(value: Any) -> list[dict[str, Any]]:
+    decoded = _json_value(value, [])
+    return [dict(item) for item in decoded if isinstance(item, dict)] if isinstance(decoded, list) else []
+
+
+def _iso(value: Any) -> str | None:
+    try:
+        return value.isoformat() if value else None
+    except Exception:
+        return str(value) if value else None
+
+
+def _overs_from_balls(balls: Any) -> str:
+    value = max(0, int(balls or 0))
+    return f"{value // 6}.{value % 6}"
+
+
+def _simple_batter(batter: dict[str, Any], striker_name: str | None = None, non_striker_name: str | None = None) -> dict[str, Any]:
+    name = str(batter.get("name") or "Player")
+    runs = int(batter.get("runs") or 0)
+    balls = int(batter.get("balls") or 0)
+    dismissed = bool(batter.get("dismissed"))
+    appeared = bool(batter.get("appeared")) or balls > 0 or runs > 0 or dismissed or name in {striker_name, non_striker_name}
+    status = "out" if dismissed else "at crease" if name in {striker_name, non_striker_name} else "not out" if appeared else "yet to bat"
+    fours = int(batter.get("fours") or batter.get("4s") or 0)
+    sixes = int(batter.get("sixes") or batter.get("6s") or 0)
+    return {
+        "name": name, "runs": runs, "balls": balls, "fours": fours, "sixes": sixes,
+        "strike_rate": round(runs * 100 / balls, 1) if balls else 0.0,
+        "dismissed": dismissed, "dismissal_text": batter.get("dismissal_text"),
+        "status": status,
+    }
+
+
+def _simple_bowler(bowler: dict[str, Any], current_bowler_name: str | None = None) -> dict[str, Any]:
+    balls = int(bowler.get("balls") or 0)
+    runs = int(bowler.get("runs") or 0)
+    wickets = int(bowler.get("wickets") or 0)
+    name = str(bowler.get("name") or "Bowler")
+    return {
+        "name": name, "balls": balls, "overs": _overs_from_balls(balls),
+        "maidens": int(bowler.get("maidens") or 0), "runs": runs, "wickets": wickets,
+        "economy": round(runs * 6 / balls, 2) if balls else 0.0,
+        "is_current": name == current_bowler_name,
+    }
+
+
+async def _source_match_row(engine: str, match_id: int, user_id: int) -> dict[str, Any] | None:
+    spec = MATCH_SOURCE_TABLES.get(str(engine or "").upper())
+    if not spec:
+        return None
+    table, id_column = spec
+    try:
+        row = await fetchrow(
+            f"SELECT * FROM {table} WHERE {id_column}=$1 AND (challenger_id=$2 OR opponent_id=$2);",
+            int(match_id), int(user_id),
+        )
+        return dict(row) if row else None
+    except Exception as exc:
+        print(f"[miniapp_backend] match detail source unavailable engine={str(engine).upper()} type={type(exc).__name__}")
+        return None
+
+
+def _attach_live_session_fields(payload: dict[str, Any], session: Any) -> dict[str, Any]:
+    innings_obj = getattr(session, "innings", None)
+    if innings_obj is None:
+        return payload
+    striker = getattr(innings_obj, "striker", None)
+    non_striker = getattr(innings_obj, "non_striker", None)
+
+    def slot(value: Any, status: str) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return {
+            "name": str(getattr(value, "name", None) or "Player"),
+            "runs": int(getattr(value, "runs", 0) or 0),
+            "balls": int(getattr(value, "balls", 0) or 0),
+            "fours": int(getattr(value, "fours", 0) or 0),
+            "sixes": int(getattr(value, "sixes", 0) or 0),
+            "dismissed": bool(getattr(value, "dismissed", False)),
+            "dismissal_text": getattr(value, "dismissal_text", None),
+            "strike_rate": round(int(getattr(value, "runs", 0) or 0) * 100 / int(getattr(value, "balls", 0) or 1), 1) if int(getattr(value, "balls", 0) or 0) else 0.0,
+            "status": status,
+        }
+
+    pair = []
+    if striker is not None:
+        pair.append(slot(striker, "on strike"))
+    if non_striker is not None:
+        pair.append(slot(non_striker, "non-striker"))
+    bowler = getattr(session, "current_bowler", None) or {}
+    bowler = dict(bowler) if isinstance(bowler, dict) else {}
+    bowler_stats_map = getattr(session, "bowler_stats", {}) or {}
+    bowler_id = bowler.get("player_id")
+    figures = (bowler_stats_map.get(int(bowler_id or 0)) or bowler_stats_map.get(str(bowler_id or 0)) or {}) if bowler_id is not None else {}
+    if bowler:
+        payload["current_bowler"] = _simple_bowler({"name": bowler.get("name") or "Bowler", **dict(figures)}, str(bowler.get("name") or "Bowler"))
+    else:
+        payload["current_bowler"] = None
+    payload["current_batting_pair"] = [item for item in pair if item]
+    payload["partnership"] = {
+        "runs": int(getattr(session, "partnership_runs", 0) or 0),
+        "balls": int(getattr(session, "partnership_balls", 0) or 0),
+    }
+    payload["this_over"] = list(getattr(session, "this_over", []) or [])
+    payload["current_innings_number"] = int(getattr(innings_obj, "innings_number", 1) or 1)
+    return payload
+
+
+async def _live_engine_payload(engine: str, match_id: int, match_row: dict[str, Any], status: str) -> dict[str, Any] | None:
+    engine = str(engine or "").upper()
+    try:
+        from services.match_analysis.collector import collect_runtime_session, collect_playso_match
+        if engine == "PLAYSO":
+            state = _as_mapping(match_row.get("state"))
+            if not state:
+                return None
+            payload = collect_playso_match(match_row, state, termination="live")
+            selected = {int(item.get("player_id") or 0): item for item in (state.get("batting_xi") or []) if isinstance(item, dict)}
+            striker_id = int(state.get("current_striker_id") or 0)
+            non_id = int(state.get("current_non_striker_id") or 0)
+            stats = state.get("batter_stats") or {}
+            pair = []
+            for player_id, tag in ((striker_id, "on strike"), (non_id, "non-striker")):
+                if not player_id:
+                    continue
+                player = selected.get(player_id, {})
+                stat = dict(stats.get(str(player_id)) or {})
+                item = _simple_batter({"name": player.get("name") or stat.get("name"), **stat, "appeared": str(player_id) in stats})
+                item["status"] = tag
+                item["player_id"] = player_id
+                pair.append(item)
+
+            selected_bowler_id = int(state.get("selected_bowler") or 0)
+            bowling_xi = [item for item in (state.get("bowling_xi") or []) if isinstance(item, dict)]
+            bowler_stats = state.get("bowler_stats") or {}
+            bowler_row = next((item for item in bowling_xi if int(item.get("player_id") or 0) == selected_bowler_id), {})
+            bowl_stat = dict(bowler_stats.get(str(selected_bowler_id)) or {})
+            current_bowler_name = str(bowler_row.get("name") or bowl_stat.get("name") or "")
+            current_bowler = _simple_bowler({"name": current_bowler_name, **bowl_stat}, current_bowler_name) if bowler_row or bowl_stat else None
+
+            # The live Super Over state keeps statistics only for batters who
+            # have faced a delivery. Expand that to the selected batting XI so
+            # the scorecard can correctly distinguish yet-to-bat players.
+            wicket_names = {str(x.get("batter") or x.get("name") or "") for x in (state.get("wickets_fallen") or []) if isinstance(x, dict)}
+            full_batters = []
+            for player_id, player in selected.items():
+                name = str(player.get("name") or (stats.get(str(player_id)) or {}).get("name") or "Player")
+                stat = dict(stats.get(str(player_id)) or {})
+                raw_batter = {"name": name, **stat,
+                              "dismissed": bool(stat.get("dismissed") or name in wicket_names),
+                              "appeared": str(player_id) in stats}
+                formatted = _simple_batter(raw_batter, name if player_id == striker_id else None,
+                                            name if player_id == non_id else None)
+                formatted["player_id"] = player_id
+                full_batters.append(formatted)
+
+            full_bowlers = []
+            for player in bowling_xi:
+                player_id = int(player.get("player_id") or 0)
+                stat = dict(bowler_stats.get(str(player_id)) or {})
+                formatted = _simple_bowler({"name": player.get("name") or stat.get("name") or "Bowler", **stat}, current_bowler_name)
+                formatted["player_id"] = player_id
+                full_bowlers.append(formatted)
+
+            current_no = int(state.get("innings_no") or match_row.get("innings_no") or 1)
+            for inning in (payload.get("innings") or []):
+                if int(inning.get("innings_number") or 1) == current_no:
+                    inning["batters"] = full_batters
+                    inning["bowlers"] = full_bowlers
+                    inning["current_batting_pair"] = pair
+                    inning["partnership"] = None
+                    inning["current_bowler"] = current_bowler
+                    break
+            payload["current_batting_pair"] = pair
+            payload["current_bowler"] = current_bowler
+            payload["partnership"] = None
+            payload["current_innings_number"] = current_no
+            current_balls = [ball for ball in (state.get("analysis_balls") or []) if isinstance(ball, dict) and int(ball.get("innings_number") or 1) == current_no]
+            payload["this_over"] = [str(ball.get("symbol") or ball.get("outcome") or ball.get("runs") or "•") for ball in current_balls[-6:]]
+            return payload
+
+        session = await _runtime_session(engine, match_id)
+        if session is None:
+            return None
+        payload = collect_runtime_session(engine, session, termination="live")
+        _attach_live_session_fields(payload, session)
+        return payload
+    except Exception as exc:
+        print(f"[miniapp_backend] live detail unavailable engine={engine} id={int(match_id)} type={type(exc).__name__}")
+        return None
+
+
+def _summary_innings_from_rows(rows: list[dict[str, Any]], source_match: dict[str, Any] | None, engine: str, match_id: int) -> list[dict[str, Any]]:
+    # Completed summaries persist per-user batting stats and each user's bowling
+    # figures. Pair the defending/chasing rows to recover both innings without
+    # fabricating delivery-level commentary that is not stored in this table.
+    defending = next((r for r in rows if bool(r.get("defending"))), None)
+    chasing = next((r for r in rows if bool(r.get("chasing"))), None)
+    innings_out = []
+    def team_name(user_id: int, fallback: str) -> str:
+        if source_match:
+            if int(source_match.get("challenger_id") or 0) == int(user_id):
+                return str(source_match.get("challenger_team_name") or source_match.get("challenger_team_code") or source_match.get("challenger_name") or fallback)
+            if int(source_match.get("opponent_id") or 0) == int(user_id):
+                return str(source_match.get("opponent_team_name") or source_match.get("opponent_team_code") or source_match.get("opponent_name") or fallback)
+        return fallback
+    for number, batting_row, bowling_row in ((1, defending, chasing), (2, chasing, defending)):
+        if not batting_row:
+            continue
+        user_id = int(batting_row.get("user_id") or 0)
+        batting = _json_list(batting_row.get("batting"))
+        bowling = _json_list(bowling_row.get("bowling")) if bowling_row else []
+        balls_history = _json_list(batting_row.get("over_history"))
+        inning_over_rows = []
+        for over in balls_history:
+            if int(over.get("innings_number") or 0) != number:
+                continue
+            if user_id and int(over.get("batting_team_id") or 0) not in {0, user_id}:
+                continue
+            inning_over_rows.append({
+                "over": int(over.get("over_number") or 0), "runs": int(over.get("runs") or 0),
+                "wickets": int(over.get("wickets") or 0), "legal_balls": int(over.get("balls") or 0),
+                "balls": [],
+            })
+        legal_balls = sum(int(x.get("legal_balls") or 0) for x in inning_over_rows)
+        runs = int(batting_row.get("batting_runs") or 0)
+        wickets = sum(1 for x in batting if bool(x.get("dismissed")))
+        if inning_over_rows:
+            wickets = sum(int(x.get("wickets") or 0) for x in inning_over_rows)
+        batters = [_simple_batter(item) for item in batting]
+        bowlers = [_simple_bowler(item) for item in bowling]
+        innings_out.append({
+            "innings_number": number,
+            "batting_team_id": user_id,
+            "bowling_team_id": int((bowling_row or {}).get("user_id") or 0),
+            "batting_team_display": team_name(user_id, "Chasing side" if number == 2 else "Defending side"),
+            "bowling_team_display": team_name(int((bowling_row or {}).get("user_id") or 0), "Bowling side"),
+            "runs": runs, "wickets": wickets, "legal_balls": legal_balls,
+            "over_text": _overs_from_balls(legal_balls),
+            "target": int(batting_row.get("target") or 0) or None,
+            "batters": batters, "bowlers": bowlers,
+            "analysis_overs": inning_over_rows, "analysis_balls": [],
+            "extras": {}, "source": "stored match summary",
+        })
+    return innings_out
+
+
 async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int) -> dict[str, Any] | None:
+    engine = str(engine or "").upper()
+    try:
+        match_id = int(match_id)
+    except (TypeError, ValueError):
+        return None
+    if engine not in MATCH_SOURCE_TABLES:
+        return None
+
+    # Gate all direct/guessable match IDs through participant ownership before
+    # returning the match record or its snapshots.
+    source_match = await _source_match_row(engine, match_id, int(viewer.id))
     summary = await fetchrow(
         """
-        SELECT engine,match_id,match_type,won,pitch,target,batting_runs,bowling_wickets,
-               batting,bowling,over_history,played_at
-        FROM quest_match_summaries WHERE user_id=$1 AND LOWER(engine)=LOWER($2) AND match_id=$3
+        SELECT * FROM quest_match_summaries
+        WHERE user_id=$1 AND LOWER(engine)=LOWER($2) AND match_id=$3
         ORDER BY played_at DESC LIMIT 1;
-        """, int(viewer.id), str(engine), int(match_id),
+        """, int(viewer.id), engine, match_id,
     )
+
+    active_status = str((source_match or {}).get("status") or "").lower()
+    if source_match and active_status not in _TERMINAL_MATCH_STATUSES:
+        live_payload = await _live_engine_payload(engine, match_id, source_match, active_status)
+        if live_payload:
+            first, second = _team_names_from_match(source_match)
+            innings = live_payload.get("innings") or []
+            current_no = int(live_payload.get("current_innings_number") or (innings[-1].get("innings_number") if innings else 1) or 1)
+            current = next((item for item in innings if int(item.get("innings_number") or 1) == current_no), innings[-1] if innings else {})
+            balls = int(current.get("legal_balls") or 0)
+            live_payload.update({
+                "engine": engine, "match_id": match_id,
+                "match_type": source_match.get("format") or source_match.get("match_type") or engine,
+                "status": active_status or "live", "is_live": active_status in {"live", "playing", "innings_break", "chase", "in_progress"},
+                "is_completed": False, "team_a_name": first, "team_b_name": second,
+                "challenger_name": str(source_match.get("challenger_name") or first),
+                "opponent_name": str(source_match.get("opponent_name") or second),
+                "pitch": source_match.get("pitch"), "stadium": source_match.get("stadium"),
+                "created_at": _iso(source_match.get("created_at")), "played_at": None,
+                "current_innings_number": current_no, "runs": int(current.get("runs") or 0),
+                "wickets": int(current.get("wickets") or 0), "over_text": current.get("over_text") or _overs_from_balls(balls),
+                "target": current.get("target"), "scorecard_available": bool(current),
+                "result_text": None, "winner_name": None,
+            })
+            return live_payload
+
     if summary:
-        item = _match_summary(dict(summary))
-        item["batting"] = _json_value(summary["batting"], {})
-        item["bowling"] = _json_value(summary["bowling"], {})
-        item["over_history"] = _json_value(summary["over_history"], [])
-        item["scorecard_available"] = bool(item["batting"] or item["bowling"] or item["over_history"])
-        return item
-    if str(engine).upper() == "PLAYSO":
-        row = await fetchrow(
-            "SELECT match_id,challenger_id,challenger_name,opponent_id,opponent_name,status,pitch,state,created_at FROM playso_matches WHERE match_id=$1 AND (challenger_id=$2 OR opponent_id=$2);",
-            int(match_id), int(viewer.id),
+        # Existing score summaries are the entitlement check; only then load the
+        # other participant's summary, if present, to reconstruct both innings.
+        summary_rows = await fetch(
+            "SELECT user_id,engine,match_id,won,chasing,defending,target,batting_runs,bowling_wickets,batting,bowling,over_history,played_at FROM quest_match_summaries WHERE LOWER(engine)=LOWER($1) AND match_id=$2 ORDER BY played_at DESC;",
+            engine, match_id,
         )
-        if row:
-            item = dict(row)
-            item["state"] = _json_value(item.get("state"), {})
-            item["created_at"] = item["created_at"].isoformat() if item.get("created_at") else None
-            return item
-    return None
+        cleaned = [dict(row) for row in summary_rows]
+        for row in cleaned:
+            row["batting"] = _json_list(row.get("batting"))
+            row["bowling"] = _json_list(row.get("bowling"))
+            row["over_history"] = _json_list(row.get("over_history"))
+        innings = _summary_innings_from_rows(cleaned, source_match, engine, match_id)
+        user_summary = dict(summary)
+        user_won = bool(user_summary.get("won"))
+        winner_name = None
+        for row in cleaned:
+            if bool(row.get("won")):
+                uid = int(row.get("user_id") or 0)
+                if source_match:
+                    if uid == int(source_match.get("challenger_id") or 0):
+                        winner_name = source_match.get("challenger_team_name") or source_match.get("challenger_name")
+                    elif uid == int(source_match.get("opponent_id") or 0):
+                        winner_name = source_match.get("opponent_team_name") or source_match.get("opponent_name")
+                if not winner_name:
+                    winner_name = "Winner" if uid != 0 else None
+                break
+        first, second = _team_names_from_match(source_match or {})
+        result_text = None
+        if user_won and winner_name:
+            result_text = f"{winner_name} won"
+        elif cleaned and any(bool(row.get("won")) for row in cleaned):
+            result_text = f"{winner_name} won" if winner_name else "Result recorded"
+        elif cleaned:
+            result_text = "Result recorded; winner unavailable"
+        return {
+            "engine": engine, "match_id": match_id,
+            "match_type": user_summary.get("match_type") or engine,
+            "status": "completed", "is_live": False, "is_completed": True,
+            "team_a_name": first, "team_b_name": second,
+            "challenger_name": str((source_match or {}).get("challenger_name") or first),
+            "opponent_name": str((source_match or {}).get("opponent_name") or second),
+            "pitch": user_summary.get("pitch") or (source_match or {}).get("pitch"),
+            "stadium": (source_match or {}).get("stadium"),
+            "created_at": _iso((source_match or {}).get("created_at")),
+            "played_at": _iso(user_summary.get("played_at")),
+            "innings": innings, "scorecard_available": bool(innings),
+            "current_innings_number": innings[-1].get("innings_number") if innings else None,
+            "result_text": result_text, "winner_name": winner_name,
+            "won": user_won, "target": user_summary.get("target"),
+            "runs": int(user_summary.get("batting_runs") or 0),
+            "wickets": int(user_summary.get("bowling_wickets") or 0),
+            "over_text": innings[-1].get("over_text") if innings else None,
+            "note": "Completed match details are reconstructed only from the summaries stored by Crickium. Per-ball commentary is shown only where the engine persisted delivery records.",
+        }
+
+    if not source_match:
+        return None
+    first, second = _team_names_from_match(source_match)
+    status = str(source_match.get("status") or "unknown")
+    return {
+        "engine": engine, "match_id": match_id,
+        "match_type": source_match.get("format") or source_match.get("match_type") or engine,
+        "status": status, "is_live": status.lower() in {"live", "playing", "innings_break", "chase", "in_progress"},
+        "is_completed": status.lower() in _TERMINAL_MATCH_STATUSES,
+        "team_a_name": first, "team_b_name": second,
+        "challenger_name": str(source_match.get("challenger_name") or first),
+        "opponent_name": str(source_match.get("opponent_name") or second),
+        "pitch": source_match.get("pitch"), "stadium": source_match.get("stadium"),
+        "created_at": _iso(source_match.get("created_at")), "played_at": None,
+        "innings": [], "scorecard_available": False, "result_text": None, "winner_name": None,
+        "note": "The match exists, but this engine has not persisted a detailed scorecard for this record. No score or commentary has been fabricated.",
+    }
 
 
 async def build_quests_response(viewer: TelegramViewer) -> dict[str, Any]:
@@ -813,6 +1370,82 @@ async def _select_player(kind: str, entity_id: int) -> dict[str, Any] | None:
     else:
         return None
     return dict(row) if row else None
+
+
+def _pack_opening_for_client(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a persisted pack opening without rerolling its cards."""
+    data = dict(record or {})
+    cards = _json_value(data.get("cards"), [])
+    output_cards = []
+    if isinstance(cards, list):
+        for raw_card in cards:
+            if not isinstance(raw_card, dict):
+                continue
+            card = dict(raw_card)
+            player = card.get("player")
+            if isinstance(player, dict):
+                client_player = _player_payload(dict(player), owned=True)
+                card["player"] = client_player
+                card["player_payload"] = client_player
+            card["ovr"] = int(card.get("ovr") or (max(int((player or {}).get("bat_level") or 0), int((player or {}).get("bowl_level") or 0)) if isinstance(player, dict) else 0))
+            output_cards.append(card)
+    opened_at = data.get("opened_at")
+    return {
+        "opening_id": str(data.get("opening_id") or ""),
+        "pack_key": str(data.get("pack_key") or ""),
+        "status": str(data.get("status") or "opened"),
+        "opened_at": _iso(opened_at),
+        "cards": output_cards,
+        "coins": int(data.get("coins") or 0),
+        "rubies": int(data.get("rubies") or 0),
+    }
+
+
+async def build_pack_shop_response(viewer: TelegramViewer) -> dict[str, Any]:
+    """Expose the bot's authoritative catalogue, balances and unopened inventory."""
+    from services.pack_system import PACK_CATALOG, inventory
+
+    user = await _ensure_user(viewer)
+    quantities = await inventory(int(viewer.id))
+    packs = []
+    for key, entry in PACK_CATALOG.items():
+        packs.append({
+            "key": key,
+            "name": str(entry["name"]),
+            "price_sigils": int(entry["price"]),
+            "cards": int(entry["cards"]),
+            "core_ovr": [int(entry["core"][0]), int(entry["core"][1])],
+            "bonus_ovr": [int(entry["bonus"][0]), int(entry["bonus"][1])],
+            "coins_reward": int(entry["coins"]),
+            "rubies_reward": int(entry["rubies"]),
+            "description": str(entry["description"]),
+            "quantity": int(quantities.get(key, 0)),
+            "enabled": True,
+        })
+    return {
+        "wallet": {
+            "sigils": int(user.get("sigils") or 0),
+            "coins": int(user.get("balance") or 0),
+            "rubies": int(user.get("rubies") or 0),
+        },
+        "packs": packs,
+        "note": "Prices, card bands and rewards come from Crickium's existing server catalogue.",
+    }
+
+
+async def build_pack_openings_response(viewer: TelegramViewer, limit: int = 10) -> dict[str, Any]:
+    limit = max(1, min(int(limit), 20))
+    rows = await fetch(
+        "SELECT opening_id,pack_key,cards,coins,rubies,status,opened_at FROM pack_openings WHERE user_id=$1 ORDER BY opened_at DESC LIMIT $2;",
+        int(viewer.id), limit,
+    )
+    return {"openings": [_pack_opening_for_client(dict(row)) for row in rows]}
+
+
+async def build_pack_opening_detail(viewer: TelegramViewer, opening_id: str) -> dict[str, Any] | None:
+    from services.pack_system import get_opening
+    record = await get_opening(int(viewer.id), str(opening_id))
+    return _pack_opening_for_client(dict(record)) if record else None
 
 
 async def purchase_market_player(viewer: TelegramViewer, kind: str, entity_id: int) -> dict[str, Any]:

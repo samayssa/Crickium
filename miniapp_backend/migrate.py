@@ -97,6 +97,64 @@ async def migrate() -> None:
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS rubies BIGINT DEFAULT 0;")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_spent BIGINT DEFAULT 0;")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sigils BIGINT DEFAULT 0;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_sigils_earned BIGINT DEFAULT 0;")
+    await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_sigils_spent BIGINT DEFAULT 0;")
+
+    # Make the bot's existing pack store available even if the Mini App server
+    # starts slightly before the bot's main migration finishes. All DDL is
+    # additive/idempotent and matches services/pack_system.py.
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_inventory(
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            pack_key TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(user_id, pack_key)
+        );
+    """)
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_purchase_requests(
+            request_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            pack_key TEXT NOT NULL,
+            price_sigils BIGINT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','cancelled','failed')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processed_at TIMESTAMPTZ
+        );
+    """)
+    await execute("ALTER TABLE IF EXISTS pack_purchase_requests ADD COLUMN IF NOT EXISTS client_request_id TEXT;")
+    await execute("CREATE INDEX IF NOT EXISTS idx_pack_purchase_requests_user_status ON pack_purchase_requests(user_id,status,created_at DESC);")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pack_purchase_requests_user_client_request ON pack_purchase_requests(user_id,client_request_id) WHERE client_request_id IS NOT NULL;")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_openings(
+            opening_id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            pack_key TEXT NOT NULL,
+            cards JSONB NOT NULL DEFAULT '[]'::jsonb,
+            coins BIGINT NOT NULL DEFAULT 0,
+            rubies BIGINT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'opened',
+            opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+    await execute("ALTER TABLE IF EXISTS pack_openings ADD COLUMN IF NOT EXISTS client_request_id TEXT;")
+    await execute("CREATE INDEX IF NOT EXISTS idx_pack_openings_user_time ON pack_openings(user_id,opened_at DESC);")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pack_openings_user_client_request ON pack_openings(user_id,client_request_id) WHERE client_request_id IS NOT NULL;")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS pack_card_inventory(
+            card_id BIGSERIAL PRIMARY KEY,
+            opening_id UUID NOT NULL REFERENCES pack_openings(opening_id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            player_id BIGINT NOT NULL,
+            card_kind TEXT NOT NULL CHECK (card_kind IN ('core','bonus')),
+            position INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(opening_id,position)
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_pack_card_inventory_user ON pack_card_inventory(user_id,created_at DESC);")
     await execute(
         """
         CREATE TABLE IF NOT EXISTS miniapp_kitbag_claims(

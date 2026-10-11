@@ -79,7 +79,7 @@ async def _send_json(send, payload, status: int = 200):
     await send({"type": "http.response.body", "body": body})
 
 
-async def _send_bytes(send, data: bytes, content_type: str, status: int = 200):
+async def _send_bytes(send, data: bytes, content_type: str, status: int = 200, extra_headers=None):
     await send({
         "type": "http.response.start", "status": status,
         "headers": [
@@ -87,6 +87,7 @@ async def _send_bytes(send, data: bytes, content_type: str, status: int = 200):
             (b"content-length", str(len(data)).encode("ascii")),
             (b"cache-control", b"private, max-age=300"),
             (b"x-content-type-options", b"nosniff"),
+            *((extra_headers or [])),
         ],
     })
     await send({"type": "http.response.body", "body": data})
@@ -165,7 +166,11 @@ class CrickiumMiniApp:
                     try:
                         await self._startup()
                     except Exception as exc:
-                        await send({"type": "lifespan.startup.failed", "message": str(exc)})
+                        # Avoid echoing database/provider exception text, which may
+                        # include hosts, usernames, or connection details in logs.
+                        safe_message = f"Mini App startup failed: {type(exc).__name__}"
+                        print(f"[miniapp_backend] {safe_message}")
+                        await send({"type": "lifespan.startup.failed", "message": safe_message})
                         return
                     await send({"type": "lifespan.startup.complete"})
                 elif event.get("type") == "lifespan.shutdown":
@@ -209,6 +214,24 @@ class CrickiumMiniApp:
             return
 
         if method == "GET":
+            if path == "/api/packs":
+                await _send_json(send, await api.build_pack_shop_response(viewer))
+                return
+            if path == "/api/packs/openings":
+                try:
+                    history_limit = max(1, min(int(query.get("limit") or 10), 20))
+                except ValueError:
+                    history_limit = 10
+                await _send_json(send, await api.build_pack_openings_response(viewer, history_limit))
+                return
+            if path.startswith("/api/packs/openings/"):
+                opening_id = path.rsplit("/", 1)[-1]
+                result = await api.build_pack_opening_detail(viewer, opening_id)
+                if result is None:
+                    await _send_json(send, {"ok": False, "detail": "Opening not found"}, 404)
+                    return
+                await _send_json(send, result)
+                return
             if path == "/api/home" or path == "/api/profile":
                 await _send_json(send, await api.build_home_response(viewer))
                 return
@@ -298,7 +321,8 @@ class CrickiumMiniApp:
                 if not image:
                     await _send_json(send, {"detail": "No player image available"}, 404)
                     return
-                await _send_bytes(send, image[0], image[1])
+                image_kind = image[2] if len(image) > 2 else "custom"
+                await _send_bytes(send, image[0], image[1], extra_headers=[(b"x-crickium-card-type", str(image_kind).encode("ascii", "ignore"))])
                 return
             await _send_json(send, {"detail": "Not found"}, 404)
             return
@@ -312,6 +336,75 @@ class CrickiumMiniApp:
             await _send_json(send, {"detail": str(exc)}, 400)
             return
 
+        if path == "/api/packs/purchase-request":
+            from services.pack_system import create_purchase_request
+            pack_key = str(payload.get("pack_key") or "").strip().lower()
+            request_key = str(payload.get("client_request_id") or "").strip()[:80]
+            if not pack_key:
+                await _send_json(send, {"status": "invalid", "detail": "Choose a valid pack."}, 400)
+                return
+            await api._ensure_user(viewer)
+            request = await create_purchase_request(int(viewer.id), pack_key, request_key or None)
+            if not request:
+                await _send_json(send, {"status": "invalid", "detail": "This pack is unavailable."}, 400)
+                return
+            await _send_json(send, request, 200)
+            return
+        if path == "/api/packs/purchase-confirm":
+            from services.pack_system import confirm_purchase
+            request_id = str(payload.get("request_id") or "")
+            if not request_id:
+                await _send_json(send, {"status": "invalid", "detail": "Purchase request is required."}, 400)
+                return
+            result = await confirm_purchase(int(viewer.id), request_id)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"insufficient", "cancelled", "failed", "pending", "invalid"} else 403 if result.get("status") == "owner" else 404 if result.get("status") == "missing" else 500
+            if status != 200:
+                result["detail"] = {
+                    "insufficient": "You do not have enough Sigils for this pack.",
+                    "cancelled": "This purchase was cancelled.",
+                    "failed": "This purchase could not be completed.",
+                    "pending": "This purchase is still pending.",
+                    "invalid": "Invalid pack purchase request.",
+                    "owner": "This purchase request does not belong to your account.",
+                    "missing": "Purchase request not found.",
+                }.get(result.get("status"), "Purchase failed.")
+            await _send_json(send, result, status)
+            return
+        if path == "/api/packs/purchase-cancel":
+            from services.pack_system import cancel_purchase
+            request_id = str(payload.get("request_id") or "")
+            result = await cancel_purchase(int(viewer.id), request_id)
+            status = 200 if result.get("status") == "cancelled" else 403 if result.get("status") == "owner" else 404 if result.get("status") == "missing" else 409
+            if status != 200:
+                result["detail"] = "This purchase cannot be cancelled in its current state."
+            await _send_json(send, result, status)
+            return
+        if path == "/api/packs/open":
+            from services.pack_system import open_pack
+            pack_key = str(payload.get("pack_key") or "").strip().lower()
+            request_key = str(payload.get("client_request_id") or "").strip()[:80]
+            if not pack_key:
+                await _send_json(send, {"status": "invalid", "detail": "Choose a valid pack."}, 400)
+                return
+            await api._ensure_user(viewer)
+            result = await open_pack(int(viewer.id), pack_key, request_key or None)
+            if result.get("status") != "success":
+                status = 409 if result.get("status") in {"empty", "no_player"} else 400 if result.get("status") == "invalid" else 500
+                result["detail"] = {
+                    "empty": "You do not have an unopened copy of this pack.",
+                    "no_player": "No eligible player pool is available for this pack. No pack was consumed.",
+                    "invalid": "This pack is unavailable.",
+                }.get(result.get("status"), "The pack could not be opened.")
+                await _send_json(send, result, status)
+                return
+            opening = await api.build_pack_opening_detail(viewer, str(result.get("opening_id") or ""))
+            if opening is None:
+                await _send_json(send, {"status": "failed", "detail": "The opening was stored but its result could not be loaded."}, 500)
+                return
+            opening["status"] = "success"
+            opening["replayed"] = bool(result.get("replayed"))
+            await _send_json(send, opening)
+            return
         if path == "/api/market/purchase":
             kind = str(payload.get("kind") or "").lower()
             try:
