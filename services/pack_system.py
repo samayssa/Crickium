@@ -43,22 +43,66 @@ def pack_shop_text() -> str:
     return "\n".join(lines)
 
 
-async def create_purchase_request(user_id: int, pack_key: str) -> dict[str, Any] | None:
+async def create_purchase_request(user_id: int, pack_key: str, client_request_id: str | None = None) -> dict[str, Any] | None:
     key = normalize_pack_key(pack_key)
     if not key:
         return None
     p = PACK_CATALOG[key]
+    request_key = str(client_request_id or "").strip()[:80] or None
     request_id = uuid.uuid4()
-    await execute(
-        """
-        INSERT INTO pack_purchase_requests(request_id,user_id,pack_key,price_sigils,status,created_at)
-        VALUES($1,$2,$3,$4,'pending',NOW());
-        """,
-        request_id, int(user_id), key, int(p["price"]),
-    )
+
+    # Reusing a client request ID makes a network retry return the same pending
+    # request rather than creating another independently confirmable request.
+    if request_key:
+        existing = await fetchrow(
+            "SELECT request_id,user_id,pack_key,price_sigils,status FROM pack_purchase_requests WHERE user_id=$1 AND client_request_id=$2;",
+            int(user_id), request_key,
+        )
+        if existing:
+            row = await fetchrow("SELECT sigils FROM users WHERE user_id=$1;", int(user_id))
+            return {
+                "request_id": str(existing["request_id"]), "user_id": int(user_id),
+                "pack_key": str(existing["pack_key"]), "price": int(existing["price_sigils"]),
+                "status": str(existing["status"]), "sigils": int((row or {}).get("sigils") or 0),
+                "replayed": True,
+            }
+
+    if request_key:
+        inserted = await fetchrow(
+            """
+            INSERT INTO pack_purchase_requests(request_id,user_id,pack_key,price_sigils,status,created_at,client_request_id)
+            VALUES($1,$2,$3,$4,'pending',NOW(),$5)
+            ON CONFLICT (user_id,client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING
+            RETURNING request_id;
+            """,
+            request_id, int(user_id), key, int(p["price"]), request_key,
+        )
+        if not inserted:
+            existing = await fetchrow(
+                "SELECT request_id,user_id,pack_key,price_sigils,status FROM pack_purchase_requests WHERE user_id=$1 AND client_request_id=$2;",
+                int(user_id), request_key,
+            )
+            if not existing:
+                return None
+            request_id = existing["request_id"]
+            key = str(existing["pack_key"])
+            p = PACK_CATALOG[key]
+    else:
+        await execute(
+            """
+            INSERT INTO pack_purchase_requests(request_id,user_id,pack_key,price_sigils,status,created_at)
+            VALUES($1,$2,$3,$4,'pending',NOW());
+            """,
+            request_id, int(user_id), key, int(p["price"]),
+        )
+
     row = await fetchrow("SELECT sigils FROM users WHERE user_id=$1;", int(user_id))
     current = int(row["sigils"] or 0) if row else 0
-    return {"request_id": str(request_id), "user_id": int(user_id), "pack_key": key, "sigils": current}
+    return {
+        "request_id": str(request_id), "user_id": int(user_id), "pack_key": key,
+        "price": int(p["price"]), "status": "pending", "sigils": current,
+        "replayed": False,
+    }
 
 
 async def confirm_purchase(user_id: int, request_id: str) -> dict[str, Any]:
@@ -72,6 +116,10 @@ async def confirm_purchase(user_id: int, request_id: str) -> dict[str, Any]:
             return {"status": "missing"}
         if int(req["user_id"]) != int(user_id):
             return {"status": "owner"}
+        if req["status"] == "confirmed":
+            user = await conn.fetchrow("SELECT sigils FROM users WHERE user_id=$1;", int(user_id))
+            return {"status": "success", "already_confirmed": True, "pack_key": str(req["pack_key"]),
+                    "price": int(req["price_sigils"]), "balance": int((user or {}).get("sigils") or 0)}
         if req["status"] != "pending":
             return {"status": str(req["status"])}
         key = normalize_pack_key(req["pack_key"])
@@ -100,6 +148,30 @@ async def confirm_purchase(user_id: int, request_id: str) -> dict[str, Any]:
             "UPDATE pack_purchase_requests SET status='confirmed',processed_at=NOW() WHERE request_id=$1;", rid
         )
         return {"status": "success", "pack_key": key, "price": price, "balance": balance - price}
+
+    return await transaction(_tx)
+
+
+async def cancel_purchase(user_id: int, request_id: str) -> dict[str, Any]:
+    try:
+        rid = uuid.UUID(str(request_id))
+    except (TypeError, ValueError, AttributeError):
+        return {"status": "invalid"}
+
+    async def _tx(conn):
+        req = await conn.fetchrow("SELECT * FROM pack_purchase_requests WHERE request_id=$1 FOR UPDATE;", rid)
+        if not req:
+            return {"status": "missing"}
+        if int(req["user_id"]) != int(user_id):
+            return {"status": "owner"}
+        if req["status"] == "cancelled":
+            return {"status": "cancelled", "already_cancelled": True}
+        if req["status"] != "pending":
+            return {"status": str(req["status"])}
+        await conn.execute(
+            "UPDATE pack_purchase_requests SET status='cancelled',processed_at=NOW() WHERE request_id=$1;", rid
+        )
+        return {"status": "cancelled"}
 
     return await transaction(_tx)
 
@@ -151,13 +223,39 @@ def _sample(pool: list[dict[str, Any]], count: int, *, exclude_ids: set[int] | N
     return secrets.SystemRandom().sample(available, count)
 
 
-async def open_pack(user_id: int, pack_key: str) -> dict[str, Any]:
+async def open_pack(user_id: int, pack_key: str, client_request_id: str | None = None) -> dict[str, Any]:
     key = normalize_pack_key(pack_key)
     if not key:
         return {"status": "invalid"}
     p = PACK_CATALOG[key]
-    opening_id = uuid.uuid4()
+    request_key = str(client_request_id or "").strip()[:80] or None
 
+    def _result_from_row(row: Any, *, replayed: bool = True) -> dict[str, Any]:
+        data = dict(row)
+        cards = data.get("cards")
+        if isinstance(cards, str):
+            try:
+                cards = json.loads(cards)
+            except (TypeError, ValueError):
+                cards = []
+        return {
+            "status": "success", "opening_id": str(data.get("opening_id")),
+            "pack_key": normalize_pack_key(data.get("pack_key")) or key,
+            "cards": cards or [], "coins": int(data.get("coins") or 0),
+            "rubies": int(data.get("rubies") or 0), "replayed": replayed,
+        }
+
+    if request_key:
+        existing = await fetchrow(
+            "SELECT opening_id,pack_key,cards,coins,rubies FROM pack_openings WHERE user_id=$1 AND client_request_id=$2;",
+            int(user_id), request_key,
+        )
+        if existing:
+            return _result_from_row(existing)
+
+    # Keep the original per-pack core/bonus ranges. The separate 50/30/20
+    # level-band rule is intentionally not applied to every catalogue pack,
+    # because that would contradict Diamond/Platinum guarantees.
     core_pool = await _candidate_players(*p["core"])
     bonus_pool = await _candidate_players(*p["bonus"])
     if not core_pool or not bonus_pool:
@@ -172,31 +270,79 @@ async def open_pack(user_id: int, pack_key: str) -> dict[str, Any]:
     cards = []
     for item in raw_cards:
         player = dict(item["player"])
+        ovr = overall_rating(player.get("bat_level"), player.get("bowl_level"))
         cards.append({
-            "kind": item["kind"],
-            "player": player,
+            "kind": item["kind"], "player": player,
             "player_id": int(player.get("player_id") or 0),
-            "ovr": overall_rating(player.get("bat_level"), player.get("bowl_level")),
-            "rarity": get_rarity(overall_rating(player.get("bat_level"), player.get("bowl_level"))),
+            "ovr": ovr, "rarity": get_rarity(ovr),
         })
 
+    opening_id = uuid.uuid4()
+
     async def _tx(conn):
+        # Re-check under the transaction to make retried/concurrent requests idempotent.
+        if request_key:
+            prior = await conn.fetchrow(
+                "SELECT opening_id,pack_key,cards,coins,rubies FROM pack_openings WHERE user_id=$1 AND client_request_id=$2 FOR UPDATE;",
+                int(user_id), request_key,
+            )
+            if prior:
+                data = dict(prior)
+                previous_cards = data.get("cards")
+                if isinstance(previous_cards, str):
+                    try: previous_cards = json.loads(previous_cards)
+                    except (TypeError, ValueError): previous_cards = []
+                return {"status": "success", "opening_id": str(data["opening_id"]),
+                        "pack_key": normalize_pack_key(data.get("pack_key")) or key,
+                        "cards": previous_cards or [], "coins": int(data.get("coins") or 0),
+                        "rubies": int(data.get("rubies") or 0), "replayed": True}
+
         inv = await conn.fetchrow(
             "SELECT quantity FROM pack_inventory WHERE user_id=$1 AND pack_key=$2 FOR UPDATE;", int(user_id), key
         )
         quantity = int(inv["quantity"] or 0) if inv else 0
         if quantity <= 0:
             return {"status": "empty"}
+
+        # Persist the immutable reveal before consuming inventory. A unique
+        # request key prevents concurrent retries from creating a second opening.
+        if request_key:
+            inserted = await conn.fetchrow(
+                """
+                INSERT INTO pack_openings(opening_id,user_id,pack_key,cards,coins,rubies,status,opened_at,client_request_id)
+                VALUES($1,$2,$3,$4::jsonb,$5,$6,'opened',NOW(),$7)
+                ON CONFLICT (user_id,client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING
+                RETURNING opening_id;
+                """,
+                opening_id, int(user_id), key, json.dumps(cards, default=str), int(p["coins"]), int(p["rubies"]), request_key,
+            )
+            if not inserted:
+                prior = await conn.fetchrow(
+                    "SELECT opening_id,pack_key,cards,coins,rubies FROM pack_openings WHERE user_id=$1 AND client_request_id=$2 FOR UPDATE;",
+                    int(user_id), request_key,
+                )
+                if not prior:
+                    return {"status": "failed"}
+                data = dict(prior); prior_cards = data.get("cards")
+                if isinstance(prior_cards, str):
+                    try: prior_cards = json.loads(prior_cards)
+                    except (TypeError, ValueError): prior_cards = []
+                return {"status": "success", "opening_id": str(data["opening_id"]),
+                        "pack_key": normalize_pack_key(data.get("pack_key")) or key,
+                        "cards": prior_cards or [], "coins": int(data.get("coins") or 0),
+                        "rubies": int(data.get("rubies") or 0), "replayed": True}
+        else:
+            await conn.execute(
+                """
+                INSERT INTO pack_openings(opening_id,user_id,pack_key,cards,coins,rubies,status,opened_at)
+                VALUES($1,$2,$3,$4::jsonb,$5,$6,'opened',NOW());
+                """,
+                opening_id, int(user_id), key, json.dumps(cards, default=str), int(p["coins"]), int(p["rubies"]),
+            )
+
         await conn.execute(
             "UPDATE pack_inventory SET quantity=quantity-1,updated_at=NOW() WHERE user_id=$1 AND pack_key=$2;",
             int(user_id), key,
-        )
-        await conn.execute(
-            """
-            INSERT INTO pack_openings(opening_id,user_id,pack_key,cards,coins,rubies,status,opened_at)
-            VALUES($1,$2,$3,$4::jsonb,$5,$6,'opened',NOW());
-            """,
-            opening_id, int(user_id), key, json.dumps(cards, default=str), int(p["coins"]), int(p["rubies"]),
         )
         for pos, card in enumerate(cards, start=1):
             await conn.execute(
@@ -216,12 +362,10 @@ async def open_pack(user_id: int, pack_key: str) -> dict[str, Any]:
             """,
             int(p["coins"]), int(p["rubies"]), int(user_id),
         )
-        return {"status": "success"}
+        return {"status": "success", "opening_id": str(opening_id), "pack_key": key,
+                "cards": cards, "coins": int(p["coins"]), "rubies": int(p["rubies"]), "replayed": False}
 
-    result = await transaction(_tx)
-    if result.get("status") != "success":
-        return result
-    return {"status": "success", "opening_id": str(opening_id), "pack_key": key, "cards": cards, "coins": int(p["coins"]), "rubies": int(p["rubies"])}
+    return await transaction(_tx)
 
 
 async def get_opening(user_id: int, opening_id: str) -> dict[str, Any] | None:
