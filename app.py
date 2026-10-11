@@ -16,7 +16,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import API_HASH, API_ID, BOT_TOKEN
 
-print(f"[app.py] Pyrogram adapter loaded. bot_token = {BOT_TOKEN[:8]}...{BOT_TOKEN[-4:]}")
+print("[app.py] Pyrogram adapter loaded.")
 
 # Some button fields (style, icon_custom_emoji_id - Bot API 9.4) only
 # exist on maintained pyrogram forks like kurigram (see requirements.txt).
