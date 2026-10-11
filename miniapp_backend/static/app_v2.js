@@ -34,6 +34,10 @@
     lineupSwap: null,
     pendingKitbag: null,
     pendingKitbagClaimId: null,
+    currentNewsId: null,
+    internalBackStack: [],
+    playingOrderDraft: [],
+    bulkSellSelected: [],
     tgBackBound: false,
   };
 
@@ -52,9 +56,8 @@
     ["rewards", "Daily rewards & Kit Bag", "🎁"],
     ["wallet", "Coins & transactions", "◈"],
     ["packs", "Pack Shop", "▣"],
-    ["settings", "Settings", "⚙"],
     ["help", "Help & support", "?"],
-    ["about", "About Crickium", "ⓘ"],
+    ["news", "News Update", "▤"],
   ];
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -167,11 +170,11 @@
   }
 
   function shell(content, title, eyebrow = "CLUB HOUSE") {
-    // Telegram supplies its own native BackButton inside Mini Apps. Use the
-    // in-page arrow only in browser previews so users never see duplicate arrows.
-    const hasBackRoute = Number(window.history?.state?.index || 0) > 0;
-    const back = hasBackRoute && !tg
-      ? `<button class="back-page-button" data-action="back-page" aria-label="Go back">‹</button>`
+    // Crickium owns page-level navigation. Keep it inside the content header
+    // instead of coupling this control to browser history or Telegram chrome.
+    const hasBackRoute = state.page !== "home" || state.internalBackStack.length > 0;
+    const back = hasBackRoute
+      ? `<button class="back-page-button" data-action="back-page" aria-label="Go to previous Crickium page">‹</button>`
       : "";
     root.innerHTML = `<div class="app-frame">${topbar()}
       <main class="page-content">
@@ -651,12 +654,13 @@
     const host = document.getElementById(hostId);
     if (!host) return;
     const players = data.players || [];
-    const xi = players.filter((player) => player.in_playing_xi);
+    const lineupOrder = new Map((data.lineup_player_ids || []).map((id, index) => [Number(id), index]));
+    const xi = players.filter((player) => player.in_playing_xi).sort((a, b) => (lineupOrder.get(Number(a.squad_player_id ?? a.player_id)) ?? 99) - (lineupOrder.get(Number(b.squad_player_id ?? b.player_id)) ?? 99));
     const bench = players.filter((player) => !player.in_playing_xi);
     host.innerHTML = `<div class="squad-capacity"><span>SQUAD CAPACITY</span><b>${number(data.count)} / ${number(data.capacity)}</b><i style="width:${Math.min(100, data.count / Math.max(1, data.capacity) * 100)}%"></i></div>
-      <section class="managed-roster-section">${sectionTitle(`Playing XI · ${number(xi.length)}/11`)}
+      <section class="managed-roster-section">${sectionTitle(`Playing XI · ${number(xi.length)}/11`, `<button class="button secondary roster-header-action" data-action="set-playing-order">Set Playing Order</button>`)}
         ${xi.length ? `<div class="player-grid">${xi.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : emptyState("Playing XI not set", "Add at least eleven players to manage your team lineup.")}</section>
-      <section class="managed-roster-section">${sectionTitle(`Substitutes · ${number(bench.length)}`)}
+      <section class="managed-roster-section">${sectionTitle(`Substitutes · ${number(bench.length)}`, `<button class="button secondary roster-header-action" data-action="open-sell-multiple">Sell Multiple</button>`)}
         ${bench.length ? `<div class="player-grid">${bench.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : emptyState("No substitutes yet", "Own more than eleven players to add substitutes to your Playing XI.")}</section>
       <p class="notice">Lineup changes are saved to Crickium’s existing Playing XI record, so bot match flows use the same selected players. Squad sales use the bot price chart and require at least eleven players to remain.</p>`;
     hydrateImages(host);
@@ -672,6 +676,139 @@
     }
   }
 
+  function renderPlayingOrder() {
+    const host = document.getElementById("playing-order-content");
+    if (!host) return;
+    const players = state.squadData?.players || [];
+    const byId = new Map(players.map((item) => [Number(item.squad_player_id ?? item.player_id), item]));
+    const ordered = (state.playingOrderDraft || []).map((id) => byId.get(Number(id))).filter(Boolean);
+    const rows = ordered.map((player, index) => {
+      const playerId = Number(player.squad_player_id ?? player.player_id);
+      const overall = Number(player.overall || Math.max(player.bat_level || 0, player.bowl_level || 0));
+      return `<div class="order-row">
+        <span class="order-position">${String(index + 1).padStart(2, "0")}</span>
+        <div class="order-player-copy"><b>${esc(player.name || "Player")}</b><small>${esc(player.role || "Player")}${player.country ? ` · ${esc(player.country)}` : ""}</small></div>
+        <span class="order-rating">${overall}<small>OVR</small></span>
+        <div class="order-controls"><button class="order-move" data-action="move-playing-order" data-player-id="${playerId}" data-direction="up" aria-label="Move ${esc(player.name)} forward" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-move" data-action="move-playing-order" data-player-id="${playerId}" data-direction="down" aria-label="Move ${esc(player.name)} backward" ${index === ordered.length - 1 ? "disabled" : ""}>↓</button></div>
+      </div>`;
+    }).join("");
+    const changed = (state.playingOrderDraft || []).join(",") !== (state.squadData?.lineup_player_ids || []).join(",");
+    host.innerHTML = `<section class="panel order-intro"><span class="eyebrow">PLAYING XI · BATTING ORDER</span><h2>Set Playing Order</h2><p>Move each player forward or backward to choose the order used by Crickium match flows.</p><div class="order-legend"><span>POSITION</span><span>PLAYER · ROLE</span><span>RATING</span></div></section>
+      <div class="order-list">${rows || emptyState("Playing XI unavailable", "Set up eleven players before changing their order.")}</div>
+      <div class="order-save-wrap"><button class="button primary full" data-action="save-playing-order" ${!changed || ordered.length !== 11 ? "disabled" : ""}>Save Playing Order</button><p class="muted-copy">Your changes are saved to the same lineup record used by bot match commands.</p></div>`;
+  }
+
+  async function loadPlayingOrder() {
+    state.page = "lineup-order";
+    state.playingOrderDraft = [];
+    shell(`<div id="playing-order-content"><div class="loading-line">Loading your Playing XI…</div></div>`, "Set Playing Order", "SQUAD MANAGEMENT");
+    try {
+      const data = await api("/api/squad");
+      state.squadData = data;
+      const ids = (data.lineup_player_ids || []).map(Number);
+      const valid = new Set((data.players || []).map((item) => Number(item.squad_player_id ?? item.player_id)));
+      state.playingOrderDraft = ids.filter((id) => valid.has(id)).slice(0, 11);
+      renderPlayingOrder();
+      hydrateImages(document.getElementById("playing-order-content"));
+    } catch (error) {
+      document.getElementById("playing-order-content").innerHTML = errorState(error, "squad");
+    }
+  }
+
+  function movePlayingOrder(playerId, direction) {
+    const draft = [...(state.playingOrderDraft || [])];
+    const index = draft.indexOf(Number(playerId));
+    const nextIndex = index + (direction === "up" ? -1 : 1);
+    if (index < 0 || nextIndex < 0 || nextIndex >= draft.length) return;
+    [draft[index], draft[nextIndex]] = [draft[nextIndex], draft[index]];
+    state.playingOrderDraft = draft;
+    renderPlayingOrder();
+    ping("light");
+  }
+
+  async function savePlayingOrder(button) {
+    if (button) { button.disabled = true; button.textContent = "Saving order…"; }
+    try {
+      const result = await api("/api/squad/lineup/order", {
+        method: "POST",
+        body: JSON.stringify({ player_ids: state.playingOrderDraft.map(Number) }),
+      });
+      if (result.status !== "success") throw Object.assign(new Error(result.detail || result.status || "Could not save order"), { payload: result });
+      toast("Playing order saved for Crickium matches.");
+      ping("medium");
+      state.playingOrderDraft = [];
+      backInApp();
+    } catch (error) {
+      toast(claimError(error.payload || { status: error.message }), true);
+      if (button) { button.disabled = false; button.textContent = "Try again"; }
+    }
+  }
+
+  function renderBulkSellPage() {
+    const host = document.getElementById("bulk-sell-content");
+    if (!host) return;
+    const players = (state.squadData?.players || []).filter((item) => !item.in_playing_xi);
+    const available = new Set(players.map((item) => Number(item.squad_player_id ?? item.player_id)));
+    state.bulkSellSelected = (state.bulkSellSelected || []).filter((id) => available.has(Number(id)));
+    const selectedSet = new Set(state.bulkSellSelected.map(Number));
+    const chosen = players.filter((item) => selectedSet.has(Number(item.squad_player_id ?? item.player_id)));
+    const total = chosen.reduce((sum, item) => sum + Number(item.sell_price || 0), 0);
+    const cards = players.map((player) => {
+      const id = Number(player.squad_player_id ?? player.player_id);
+      const isSelected = selectedSet.has(id);
+      return `<div class="bulk-sale-player ${isSelected ? "selected" : ""}" data-action="toggle-bulk-player" data-player-id="${id}" role="checkbox" aria-checked="${isSelected}" tabindex="0">
+        <span class="bulk-select-mark">${isSelected ? "✓" : "＋"}</span>${playerCard({ ...player, buy_price: null }, true)}<div class="bulk-sale-value">Resale value <b>${number(player.sell_price)} coins</b></div>
+      </div>`;
+    }).join("");
+    host.innerHTML = `<section class="bulk-selection-summary"><div><span>SELECTED PLAYERS</span><b>${number(chosen.length)}</b></div><div><span>TOTAL SELL VALUE</span><b>${number(total)} <small>coins</small></b></div><p>Choose one or more substitutes. The Playing XI is protected and at least eleven squad players must remain.</p></section>
+      ${sectionTitle("Select substitutes", `<span class="muted-inline">${number(players.length)} available</span>`)}
+      ${cards ? `<div class="player-grid bulk-sale-grid">${cards}</div>` : emptyState("No substitutes available", "You need reserve players before using Sell Multiple.")}
+      <div class="bulk-sale-footer"><button class="button sell-button full" data-action="confirm-sell-multiple" data-count="${chosen.length}" data-amount="${total}" ${!chosen.length ? "disabled" : ""}>Sell ${number(chosen.length)} players · ${number(total)} coins</button></div>`;
+    hydrateImages(host);
+  }
+
+  async function loadSellMultiple() {
+    state.page = "sell-multiple";
+    state.bulkSellSelected = [];
+    shell(`<div id="bulk-sell-content"><div class="loading-line">Loading substitute players…</div></div>`, "Sell Multiple", "SQUAD MANAGEMENT");
+    try {
+      state.squadData = await api("/api/squad");
+      renderBulkSellPage();
+    } catch (error) {
+      document.getElementById("bulk-sell-content").innerHTML = errorState(error, "squad");
+    }
+  }
+
+  function toggleBulkSellPlayer(playerId) {
+    const id = Number(playerId);
+    const selected = new Set((state.bulkSellSelected || []).map(Number));
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    state.bulkSellSelected = Array.from(selected);
+    renderBulkSellPage();
+    ping("light");
+  }
+
+  async function sellMultiplePlayers(button) {
+    const playerIds = (state.bulkSellSelected || []).map(Number);
+    if (!playerIds.length) return;
+    if (button) { button.disabled = true; button.textContent = "Selling selected players…"; }
+    try {
+      const result = await api("/api/squad/sell-multiple", {
+        method: "POST",
+        body: JSON.stringify({ player_ids: playerIds }),
+      });
+      if (result.status !== "success") throw Object.assign(new Error(result.detail || result.status || "Bulk sale failed"), { payload: result });
+      if (state.home?.wallet) state.home.wallet.coins = result.balance;
+      state.bulkSellSelected = [];
+      toast(`${number(result.sold_count)} players sold for ${number(result.total_sell_price)} coins.`);
+      ping("medium");
+      backInApp();
+    } catch (error) {
+      toast(claimError(error.payload || { status: error.message }), true);
+      if (button) { button.disabled = false; button.textContent = "Try again"; }
+    }
+  }
+
   async function loadCollection() {
     shell(`<div id="collection-list"><div class="loading-line">Loading your collection…</div></div>`, "Player collection", "YOUR PLAYER CARDS");
     try {
@@ -679,7 +816,8 @@
       state.squadData = data;
       const squadPlayers = data.players || [];
       const packCards = data.pack_cards || [];
-      const xiPlayers = squadPlayers.filter((item) => item.in_playing_xi);
+      const lineupOrder = new Map((data.lineup_player_ids || []).map((id, index) => [Number(id), index]));
+      const xiPlayers = squadPlayers.filter((item) => item.in_playing_xi).sort((a, b) => (lineupOrder.get(Number(a.squad_player_id ?? a.player_id)) ?? 99) - (lineupOrder.get(Number(b.squad_player_id ?? b.player_id)) ?? 99));
       const benchPlayers = squadPlayers.filter((item) => !item.in_playing_xi);
       const squadSection = squadPlayers.length
         ? `<section class="collection-group">${sectionTitle(`Squad cards · ${number(data.count)}`)}<p class="muted-copy">Manage Playing XI selection or sell a player without leaving the collection.</p>
@@ -919,13 +1057,51 @@
     }
   }
 
+  async function loadNews() {
+    shell(`<div id="news-list"><div class="loading-line">Loading latest Crickium news…</div></div>`, "News Update", "CLUB BULLETIN");
+    try {
+      const data = await api("/api/news?limit=50");
+      const host = document.getElementById("news-list");
+      const articles = data.articles || [];
+      host.innerHTML = articles.length
+        ? `<p class="muted-copy news-list-intro">Club announcements, updates and stories from Crickium.</p><div class="news-list">${articles.map((item) => `<button class="news-teaser" data-action="open-news" data-news-id="${Number(item.article_id)}"><div class="news-teaser-image">${image(item.image_url, item.title, "news-list-image")}</div><div class="news-teaser-copy"><span class="eyebrow">CRICKIUM NEWS · ${esc(dateText(item.created_at))}</span><h2>${esc(item.title)}</h2><p>${esc(item.excerpt || "Open this article to read the full update.")}</p><span class="news-read-more">Read article <b>›</b></span></div></button>`).join("")}</div>`
+        : emptyState("No news published yet", "New Crickium announcements will appear here.");
+      hydrateImages(host);
+    } catch (error) {
+      document.getElementById("news-list").innerHTML = errorState(error, "news");
+    }
+  }
+
+  async function openNewsArticle(articleId) {
+    const id = Number(articleId || 0);
+    if (!id) return;
+    pushRoute({ page: "news-detail", currentNewsId: id });
+    state.currentNewsId = id;
+    state.page = "news-detail";
+    await loadNewsDetail(id, { skipRoute: true });
+  }
+
+  async function loadNewsDetail(articleId, options = {}) {
+    const id = Number(articleId || state.currentNewsId || 0);
+    if (!id) { await navigate("news", { history: false }); return; }
+    if (!options.skipRoute && id !== Number(state.currentNewsId || 0)) pushRoute({ page: "news-detail", currentNewsId: id });
+    state.currentNewsId = id;
+    state.page = "news-detail";
+    shell(`<div id="news-article"><div class="loading-line">Opening article…</div></div>`, "News article", "CRICKIUM NEWS");
+    try {
+      const article = await api(`/api/news/${id}`);
+      const host = document.getElementById("news-article");
+      const paragraphs = String(article.description || "").split(/\r?\n/).map((line) => line.trim());
+      host.innerHTML = `<article class="news-article"><div class="news-article-meta"><span class="eyebrow">CLUB BULLETIN</span><time>${esc(dateText(article.created_at))}</time></div><h2>${esc(article.title)}</h2><div class="news-article-art">${image(article.image_url, article.title, "news-article-image")}</div><div class="news-article-body">${paragraphs.map((line) => line ? `<p>${esc(line)}</p>` : `<div class="news-paragraph-space"></div>`).join("")}</div><div class="news-article-end"><span></span> END OF ARTICLE <span></span></div></article>`;
+      hydrateImages(host);
+    } catch (error) {
+      document.getElementById("news-article").innerHTML = errorState(error, "news");
+    }
+  }
+
   function staticPage(page) {
-    const copy = {
-      settings: ["Settings", "Preferences", "Telegram appearance and account security are controlled by Telegram. Crickium's existing bot does not store Mini App settings."],
-      help: ["Help & support", "Need a hand?", "Use the Crickium bot’s existing help and support command in Telegram. Never share your login code or account credentials."],
-      about: ["About Crickium", "Play. Build. Compete.", "Crickium is your cricket card club. This Mini App displays data from the bot’s existing player, squad, match, quest and reward systems."],
-    }[page];
-    shell(`<section class="panel info-page"><div class="info-emblem">${page === "settings" ? "⚙" : page === "help" ? "?" : "C"}</div><span class="eyebrow">${esc(copy[1])}</span><h2>${esc(copy[0])}</h2><p>${esc(copy[2])}</p>${page === "about" ? `<p class="notice">Some screens are limited to records the existing bot persists. The Mini App does not run or simulate cricket matches.</p>` : ""}</section>`, copy[0], "CLUB HOUSE");
+    if (page !== "help") { navigate("home", { history: false }); return; }
+    shell(`<section class="panel info-page"><div class="info-emblem">?</div><span class="eyebrow">NEED A HAND?</span><h2>Help &amp; support</h2><p>Join the official Crickium community for help, discussion and announcements. Never share your login code or account credentials.</p><div class="support-link-list"><a class="support-link-card" href="https://t.me/CrickiumHub" target="_blank" rel="noopener noreferrer"><span class="support-link-icon">♟</span><span><b>Crickium Main Group</b><small>Join the player community</small></span><strong>↗</strong></a><a class="support-link-card" href="https://t.me/CrickiumUpdates" target="_blank" rel="noopener noreferrer"><span class="support-link-icon">◉</span><span><b>Bot Update Channel</b><small>Official updates and announcements</small></span><strong>↗</strong></a></div></section>`, "Help & support", "CLUB HOUSE");
   }
 
   function matchRouteSnapshot(page = state.page, match = state.currentMatch, tab = state.matchTab, innings = state.matchInnings) {
@@ -933,16 +1109,19 @@
       crickium: true, page, currentMatch: match ? { engine: match.engine, id: match.id } : null,
       currentPlayer: state.currentPlayerRef, returnPage: state.playerReturnPage || "search",
       lineupSwap: state.lineupSwap, kitbagClaimId: state.pendingKitbagClaimId,
+      currentNewsId: state.currentNewsId,
       matchTab: tab || "live", matchInnings: innings == null ? null : Number(innings),
       index: Number(window.history?.state?.index || 0),
     };
   }
 
   function pushRoute(next) {
+    const current = matchRouteSnapshot();
+    state.internalBackStack.push({ ...current });
+    if (state.internalBackStack.length > 60) state.internalBackStack.shift();
     try {
       if (!window.history || !window.history.pushState) return;
       const existing = window.history.state;
-      const current = matchRouteSnapshot();
       if (!existing || !existing.crickium) window.history.replaceState({ ...current, index: 0 }, "", window.location.href);
       const index = Number(window.history.state?.index || 0) + 1;
       const currentMatch = Object.prototype.hasOwnProperty.call(next, "currentMatch") ? next.currentMatch : state.currentMatch;
@@ -961,37 +1140,31 @@
   }
 
   function syncTelegramBackButton() {
-    if (!tg?.BackButton) return;
-    try {
-      if (!state.tgBackBound) {
-        tg.BackButton.onClick(backInApp);
-        state.tgBackBound = true;
-      }
-      const hasBackRoute = Number(window.history?.state?.index || 0) > 0;
-      if (state.page !== "home" || hasBackRoute) tg.BackButton.show();
-      else tg.BackButton.hide();
-    } catch (_) {}
+    // The visible back arrow is part of the Crickium page heading. Leave
+    // Telegram/browser/OS navigation controls in their normal platform state.
+    try { tg?.BackButton?.hide(); } catch (_) {}
   }
 
-  function backInApp() {
+  async function backInApp() {
     if (state.drawer) {
       state.drawer = false;
       document.querySelector(".drawer-scrim")?.remove();
       return;
     }
-    const current = window.history?.state;
-    if (current?.crickium && Number(current.index || 0) > 0 && window.history.length > 1) {
-      window.history.back();
+    const previous = state.internalBackStack.pop();
+    if (previous) {
+      await restoreRoute(previous).catch(() => navigate("home", { history: false }));
       return;
     }
     state.currentMatch = null;
     state.currentMatchData = null;
     const fallback = state.page === "match-detail" ? "matches"
       : state.page === "player-detail" ? (state.playerReturnPage || "search")
-      : state.page === "lineup-swap" ? "squad"
+      : state.page === "lineup-swap" || state.page === "lineup-order" || state.page === "sell-multiple" ? "squad"
+      : state.page === "news-detail" ? "news"
       : state.page === "kitbag-replace" || state.page === "kitbag-reveal" ? "rewards"
       : "home";
-    navigate(fallback, { history: false });
+    await navigate(fallback, { history: false });
   }
 
   function matchOverText(innings = {}) {
@@ -1159,6 +1332,7 @@
     state.playerReturnPage = value.returnPage || "search";
     state.lineupSwap = value.lineupSwap || null;
     state.pendingKitbagClaimId = value.kitbagClaimId || null;
+    state.currentNewsId = value.currentNewsId == null ? null : Number(value.currentNewsId);
     state.matchTab = value.matchTab || "live";
     state.matchInnings = value.matchInnings == null ? null : Number(value.matchInnings);
     if (value.page === "match-detail" && state.currentMatch) {
@@ -1170,6 +1344,12 @@
       await loadLineupSwap({ skipRoute: true });
     } else if (value.page === "kitbag-replace") {
       await loadKitbagReplacement(state.pendingKitbagClaimId, { skipRoute: true });
+    } else if (value.page === "lineup-order") {
+      await loadPlayingOrder();
+    } else if (value.page === "sell-multiple") {
+      await loadSellMultiple();
+    } else if (value.page === "news-detail" && state.currentNewsId) {
+      await loadNewsDetail(state.currentNewsId, { skipRoute: true });
     } else if (value.page === "kitbag-reveal") {
       await restoreKitbagReveal(value.kitbagClaimId || state.pendingKitbagClaimId);
     } else {
@@ -1267,6 +1447,10 @@
       minimum_squad_size: "Keep at least eleven players in your squad for a complete Playing XI.",
       card_not_owned: "This collection card is no longer available.",
       card_data_unavailable: "This card’s saved details could not be loaded.",
+      playing_xi_player_selected: "Only substitute players can be sold in Sell Multiple.",
+      lineup_changed: "Your Playing XI changed. Refresh and set the order again.",
+      invalid_order: "The Playing XI order is invalid. Arrange all eleven players and try again.",
+      invalid_selection: "Select one or more available substitutes.",
     })[status] || String(status || "The reward could not be claimed.");
   }
 
@@ -1306,6 +1490,7 @@
     }
     if (page !== "player-detail") state.currentPlayerRef = null;
     if (page !== "lineup-swap") state.lineupSwap = null;
+    if (page !== "news-detail") state.currentNewsId = null;
     state.page = page;
     state.drawer = false;
     clearInterval(state.matchTimer);
@@ -1327,7 +1512,11 @@
       case "squad": return loadSquad();
       case "collection": return loadCollection();
       case "lineup-swap": return loadLineupSwap();
+      case "lineup-order": return loadPlayingOrder();
+      case "sell-multiple": return loadSellMultiple();
       case "kitbag-replace": return loadKitbagReplacement(state.pendingKitbagClaimId);
+      case "news": return loadNews();
+      case "news-detail": return loadNewsDetail(state.currentNewsId, { skipRoute: true });
       case "quests": return loadQuests();
       case "rewards": return loadRewards();
       case "wallet": return loadWallet();
@@ -1377,6 +1566,17 @@
       if (action === "close-pack-reveal") { state.packOpening = null; renderPackShop(state.packData); }
       if (action === "lineup-swap-start") startLineupSwap(actionButton.dataset.playerId, actionButton.dataset.mode);
       if (action === "confirm-lineup-swap") confirmLineupSwap(actionButton.dataset.playingPlayerId, actionButton.dataset.substitutePlayerId, actionButton);
+      if (action === "set-playing-order") navigate("lineup-order");
+      if (action === "move-playing-order") movePlayingOrder(actionButton.dataset.playerId, actionButton.dataset.direction);
+      if (action === "save-playing-order") savePlayingOrder(actionButton);
+      if (action === "open-sell-multiple") navigate("sell-multiple");
+      if (action === "toggle-bulk-player") toggleBulkSellPlayer(actionButton.dataset.playerId);
+      if (action === "confirm-sell-multiple") {
+        const count = Number(actionButton.dataset.count || 0);
+        const amount = Number(actionButton.dataset.amount || 0);
+        if (count > 0) showConfirm(`Are you sure you want to sell ${count} player${count === 1 ? "" : "s"} and receive ${number(amount)} coins? This action cannot be undone.`, `Yes, sell ${count}`, () => sellMultiplePlayers(actionButton));
+      }
+      if (action === "open-news") openNewsArticle(actionButton.dataset.newsId);
       if (action === "sell-squad-player") {
         const name = actionButton.dataset.name || "this player";
         const price = Number(actionButton.dataset.sellPrice || 0);
@@ -1399,7 +1599,13 @@
     if (match) openMatch(match.dataset.matchEngine, match.dataset.matchId);
   });
 
-  window.addEventListener("popstate", (event) => { restoreRoute(event.state).catch(() => navigate("matches", { history: false })); });
+  window.addEventListener("popstate", (event) => {
+    const route = event.state || { page: "home", crickium: true, index: 0 };
+    const currentKey = JSON.stringify([state.page, state.currentMatch?.engine, state.currentMatch?.id, state.currentPlayerRef?.kind, state.currentPlayerRef?.id, state.currentNewsId]);
+    const targetKey = JSON.stringify([route.page, route.currentMatch?.engine, route.currentMatch?.id, route.currentPlayer?.kind, route.currentPlayer?.id, route.currentNewsId]);
+    if (currentKey !== targetKey && state.internalBackStack.length) state.internalBackStack.pop();
+    restoreRoute(route).catch(() => navigate("home", { history: false }));
+  });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.drawer) { state.drawer = false; document.querySelector(".drawer-scrim")?.remove(); }
