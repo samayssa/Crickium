@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import asyncio
+import random
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,51 @@ from utils.rarity import get_rarity
 MAX_SQUAD_SIZE = 25
 KITBAG_COOLDOWN_SECONDS = 60 * 60
 DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
+
+# Kit Bag OVR-tier odds total 100%. Higher-rated tiers become progressively
+# rarer. Odds apply to the tier first, then a random eligible card is selected
+# uniformly from that tier.
+KITBAG_OVR_BANDS = (
+    (65, 72, 50),  # Common: 50%
+    (73, 78, 30),  # Uncommon: 30%
+    (79, 80, 12),  # Rare: 12%
+    (81, 82, 6),   # Very rare: 6%
+    (83, 85, 2),   # Extremely rare: 2%
+)
+
+
+def _choose_kitbag_candidate(candidates: list[dict[str, Any]], rng: Any = random) -> dict[str, Any] | None:
+    """Choose a Kit Bag player using weighted OVR bands.
+
+    If a tier has no eligible, unowned cards, its weight is redistributed
+    proportionally across tiers that do have candidates. This preserves the
+    intended odds whenever the catalog supports all tiers while avoiding a
+    failed claim when a tier is exhausted.
+    """
+    grouped: list[tuple[int, list[dict[str, Any]]]] = []
+    for minimum, maximum, weight in KITBAG_OVR_BANDS:
+        band_players: list[dict[str, Any]] = []
+        for candidate in candidates:
+            try:
+                overall = max(
+                    int(candidate.get("bat_level") or 0),
+                    int(candidate.get("bowl_level") or 0),
+                )
+            except (TypeError, ValueError):
+                continue
+            if minimum <= overall <= maximum:
+                band_players.append(candidate)
+        if band_players:
+            grouped.append((weight, band_players))
+
+    if not grouped:
+        return None
+    _selected_weight, selected_players = rng.choices(
+        grouped,
+        weights=[weight for weight, _players in grouped],
+        k=1,
+    )[0]
+    return rng.choice(selected_players)
 
 # This schedule mirrors handlers/daily.py and is deliberately owned by the
 # server. The client cannot submit or alter a reward amount.
@@ -1980,24 +2026,25 @@ async def claim_kitbag(viewer: TelegramViewer) -> dict[str, Any]:
             if last_at and (now - last_at).total_seconds() < KITBAG_COOLDOWN_SECONDS:
                 remaining = KITBAG_COOLDOWN_SECONDS - int((now - last_at).total_seconds())
                 return {"status": "cooldown", "seconds_until_available": remaining}
-            # This is a real OVR 85 catalog card. At squad capacity the claim is
-            # persisted as pending, so the player can choose whom to replace.
+            # Pick from real, unowned global cards with OVR 65-85. The tier
+            # odds are server-side and intentionally descend as OVR increases.
+            # At squad capacity the chosen reward is persisted as pending, so
+            # the player can choose whom to replace.
             candidates = await conn.fetch(
                 """
                 SELECT p.*,'global'::text player_kind
                 FROM players p
-                WHERE GREATEST(COALESCE(p.bat_level,0),COALESCE(p.bowl_level,0))=85
+                WHERE GREATEST(COALESCE(p.bat_level,0),COALESCE(p.bowl_level,0)) BETWEEN 65 AND 85
                   AND NOT EXISTS (
                     SELECT 1 FROM jsonb_array_elements($1::jsonb) e
                     WHERE e->>'player_id'=p.player_id::text
-                  )
-                ORDER BY random() LIMIT 50;
+                  );
                 """,
                 json.dumps(squad, default=str),
             )
-            if not candidates:
+            player = _choose_kitbag_candidate([dict(candidate) for candidate in candidates])
+            if not player:
                 return {"status": "no_player"}
-            player = dict(candidates[0])
             needs_replacement = len(squad) >= MAX_SQUAD_SIZE
             if not needs_replacement:
                 squad.append(player)
