@@ -209,6 +209,17 @@ TABLES = {
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "miniapp_news_articles": """
+        CREATE TABLE IF NOT EXISTS miniapp_news_articles(
+            article_id BIGSERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            image_file_id TEXT NOT NULL,
+            created_by BIGINT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            is_published BOOLEAN NOT NULL DEFAULT TRUE
+        );
+    """,
     "probability_profiles": """
         CREATE TABLE IF NOT EXISTS probability_profiles(
             profile_id SERIAL PRIMARY KEY,
@@ -619,6 +630,9 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_auction_backups_original ON auction_tournament_backups(original_tournament_id, created_at DESC);")
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auction_active_creator_draft ON auction_tournaments(creator_id) WHERE status IN ('select_mode','await_prize','confirm_prize','overview','await_pool','confirm_pool','ask_group','await_group','confirm_group','final_confirm');")
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auction_tournament_team_owner_nonnull ON auction_tournament_teams(tournament_id, owner_user_id) WHERE owner_user_id IS NOT NULL;")
+    await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_news_articles_published ON miniapp_news_articles(is_published, created_at DESC);")
+    print("[migrate] Mini App news table/index OK.")
+
     print("[migrate] special-edition indexes OK.")
 
     print("[migrate] Ensuring 'player_claims.chat_id' column exists...")
