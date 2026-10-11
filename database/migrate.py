@@ -761,6 +761,8 @@ async def migrate():
         );
     """)
     await execute("CREATE INDEX IF NOT EXISTS idx_pack_purchase_requests_user_status ON pack_purchase_requests(user_id, status, created_at DESC);")
+    await execute("ALTER TABLE pack_purchase_requests ADD COLUMN IF NOT EXISTS client_request_id TEXT;")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pack_purchase_requests_user_client_request ON pack_purchase_requests(user_id,client_request_id) WHERE client_request_id IS NOT NULL;")
     await execute("""
         CREATE TABLE IF NOT EXISTS pack_openings(
             opening_id UUID PRIMARY KEY,
@@ -774,6 +776,8 @@ async def migrate():
         );
     """)
     await execute("CREATE INDEX IF NOT EXISTS idx_pack_openings_user_time ON pack_openings(user_id, opened_at DESC);")
+    await execute("ALTER TABLE pack_openings ADD COLUMN IF NOT EXISTS client_request_id TEXT;")
+    await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pack_openings_user_client_request ON pack_openings(user_id,client_request_id) WHERE client_request_id IS NOT NULL;")
     await execute("""
         CREATE TABLE IF NOT EXISTS pack_card_inventory(
             card_id BIGSERIAL PRIMARY KEY,
