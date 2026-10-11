@@ -162,10 +162,18 @@ async def migrate() -> None:
             user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             player_id BIGINT NOT NULL,
             player_kind TEXT NOT NULL DEFAULT 'global',
-            opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            status TEXT NOT NULL DEFAULT 'added',
+            replaced_player_id BIGINT,
+            resolved_at TIMESTAMPTZ
         );
         """
     )
+    # Additive fields support a Kit Bag reward that is held for replacement when
+    # the 25-card squad is already full. Existing claims are treated as already added.
+    await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'added';")
+    await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS replaced_player_id BIGINT;")
+    await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;")
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_kitbag_claims_user_time ON miniapp_kitbag_claims(user_id, opened_at DESC);"
     )

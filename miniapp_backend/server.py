@@ -405,6 +405,45 @@ class CrickiumMiniApp:
             opening["replayed"] = bool(result.get("replayed"))
             await _send_json(send, opening)
             return
+        if path == "/api/squad/lineup/swap":
+            try:
+                playing_player_id = int(payload.get("playing_player_id") or 0)
+                substitute_player_id = int(payload.get("substitute_player_id") or 0)
+            except (TypeError, ValueError):
+                await _send_json(send, {"status": "invalid_selection", "detail": "Choose two valid players."}, 400)
+                return
+            result = await api.swap_playing_xi_players(viewer, playing_player_id, substitute_player_id)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "squad_too_small", "player_not_in_xi", "player_already_in_xi"} else 404 if result.get("status") == "user_missing" else 400
+            await _send_json(send, result, status)
+            return
+        if path == "/api/squad/sell":
+            try:
+                player_id = int(payload.get("player_id") or 0)
+            except (TypeError, ValueError):
+                player_id = 0
+            result = await api.sell_squad_player(viewer, player_id)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "minimum_squad_size"} else 404 if result.get("status") == "user_missing" else 400
+            await _send_json(send, result, status)
+            return
+        if path == "/api/collection/sell-pack-card":
+            try:
+                card_id = int(payload.get("card_id") or 0)
+            except (TypeError, ValueError):
+                card_id = 0
+            result = await api.sell_pack_collection_card(viewer, card_id)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"card_not_owned", "card_data_unavailable"} else 404 if result.get("status") in {"user_missing"} else 400
+            await _send_json(send, result, status)
+            return
+        if path == "/api/rewards/kitbag/replace":
+            claim_id = str(payload.get("claim_id") or "")
+            try:
+                replaced_player_id = int(payload.get("replaced_player_id") or 0)
+            except (TypeError, ValueError):
+                replaced_player_id = 0
+            result = await api.replace_kitbag_player(viewer, claim_id, replaced_player_id)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"claim_already_resolved", "replacement_not_owned", "reward_already_owned", "invalid_replacement"} else 404 if result.get("status") in {"claim_not_found", "player_not_found", "user_missing"} else 400
+            await _send_json(send, result, status)
+            return
         if path == "/api/market/purchase":
             kind = str(payload.get("kind") or "").lower()
             try:
@@ -425,7 +464,7 @@ class CrickiumMiniApp:
             return
         if path == "/api/rewards/kitbag":
             result = await api.claim_kitbag(viewer)
-            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"cooldown", "squad_full", "no_player"} else 500
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"cooldown", "squad_full", "no_player", "replacement_pending"} else 404 if result.get("status") == "user_missing" else 500
             await _send_json(send, result, status)
             return
         await _send_json(send, {"detail": "Not found"}, 404)

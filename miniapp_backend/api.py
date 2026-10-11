@@ -155,6 +155,7 @@ def _player_payload(player: dict[str, Any], *, owned: bool = False) -> dict[str,
         "batting_hand": player.get("batting_hand"),
         "bowling_hand": player.get("bowling_hand"),
         "buy_price": price,
+        "sell_price": int(get_price(overall)[1]),
         "owned": bool(owned),
         "card_type": _card_type(player),
         "card_image_url": f"/api/image/player?kind={kind}&id={entity_id}",
@@ -189,7 +190,11 @@ async def _ensure_user(viewer: TelegramViewer) -> dict[str, Any]:
 
 
 async def _get_player_image_source(kind: str, entity_id: int) -> tuple[str, str] | None:
-    """Return (Telegram file_id, source kind) without exposing file identifiers to clients."""
+    """Return a custom image file ID or the player's default-template source.
+
+    The Mini App deliberately uses the same PIL renderer and coordinate config as
+    bot commands for cards without a custom uploaded image.
+    """
     spec = _CARD_IMAGES.get(kind)
     if not spec:
         return None
@@ -197,31 +202,20 @@ async def _get_player_image_source(kind: str, entity_id: int) -> tuple[str, str]
     row = await fetchrow(f"SELECT file_id FROM {table} WHERE {id_column}=$1;", int(entity_id))
     if row and row.get("file_id"):
         return str(row["file_id"]), "custom"
-    if kind == "global":
-        role = await fetchrow("SELECT role,bat_level,bowl_level FROM players WHERE player_id=$1;", int(entity_id))
-    elif kind == "special":
-        role = await fetchrow("SELECT role,bat_level,bowl_level FROM special_edition_players WHERE special_player_id=$1;", int(entity_id))
-    else:
-        role = await fetchrow("SELECT role,bat_level,bowl_level FROM showcase_cards WHERE showcase_card_id=$1;", int(entity_id))
-    if not role:
+    player = await _select_player(kind, entity_id)
+    if not player:
         return None
-    card = _card_type(dict(role))
+    # Keep template selection identical to the bot renderer, including role
+    # aliases and the All Rounder batting/bowling-level tiebreaker.
+    from services.card_provider import resolve_card_type
+    card = resolve_card_type(player)
     template = await fetchrow("SELECT file_id FROM template_card_image WHERE card_type=$1;", card)
-    return (str(template["file_id"]), "template") if template and template.get("file_id") else None
+    return (str(template["file_id"]), "template") if template and template.get("file_id") else ("", "template")
 
 
-async def _get_player_image_id(kind: str, entity_id: int) -> str | None:
-    """Backward-compatible file-id helper used by older internal callers."""
-    source = await _get_player_image_source(kind, entity_id)
-    return source[0] if source else None
-
-
-async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str, str] | None:
-    """Proxy a player image and identify custom/template art for frontend rendering."""
-    source = await _get_player_image_source(kind, entity_id)
-    if not source or not BOT_TOKEN:
+async def _download_telegram_image(file_id: str) -> tuple[bytes, str] | None:
+    if not file_id or not BOT_TOKEN:
         return None
-    file_id, image_kind = source
     import httpx
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -233,8 +227,41 @@ async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str, str
             return None
         response = await client.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
         response.raise_for_status()
-        content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0]
-        return response.content, content_type, image_kind
+        return response.content, response.headers.get("content-type", "image/jpeg").split(";", 1)[0]
+
+
+async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str, str] | None:
+    """Proxy custom art, or render a default card with the bot's exact coordinates."""
+    source = await _get_player_image_source(kind, entity_id)
+    if not source:
+        return None
+    file_id, image_kind = source
+    if image_kind == "custom":
+        downloaded = await _download_telegram_image(file_id)
+        return (downloaded[0], downloaded[1], "custom") if downloaded else None
+
+    player = await _select_player(kind, entity_id)
+    if not player:
+        return None
+    template_bytes = None
+    if file_id:
+        try:
+            downloaded = await _download_telegram_image(file_id)
+            if downloaded:
+                template_bytes = downloaded[0]
+        except Exception as exc:
+            # If Telegram's stored template cannot be fetched, use the same
+            # bundled template fallback that the bot's card provider uses.
+            print(f"[miniapp_backend] card template fetch failed: {type(exc).__name__}")
+    try:
+        from services.card_provider import resolve_card_type
+        from services.player_card import render_player_card
+        rendered = render_player_card(player, template_bytes=template_bytes, card_type=resolve_card_type(player))
+        return rendered, "image/png", "rendered-template"
+    except Exception as exc:
+        print(f"[miniapp_backend] default card render failed: {type(exc).__name__}")
+        # Returning no image allows the frontend's branded fallback to remain usable.
+        return None
 
 
 async def profile_image_bytes(user_id: int) -> tuple[bytes, str] | None:
@@ -268,6 +295,52 @@ async def profile_image_bytes(user_id: int) -> tuple[bytes, str] | None:
 async def _owned_squad(user_id: int) -> list[dict[str, Any]]:
     row = await fetchrow("SELECT squad FROM team_squads WHERE user_id=$1;", int(user_id))
     return _squad(row["squad"] if row else None)
+
+
+def _player_id_set(squad: list[dict[str, Any]]) -> set[int]:
+    return {int(player.get("player_id") or 0) for player in squad if int(player.get("player_id") or 0) != 0}
+
+
+def _normalize_lineup_ids(value: Any, squad: list[dict[str, Any]]) -> list[int]:
+    """Match engines require eleven unique squad IDs; repair stale lineups safely."""
+    available = _player_id_set(squad)
+    raw = _json_value(value, [])
+    result: list[int] = []
+    seen: set[int] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            try:
+                player_id = int(item)
+            except (TypeError, ValueError):
+                continue
+            if player_id in available and player_id not in seen:
+                result.append(player_id)
+                seen.add(player_id)
+            if len(result) >= 11:
+                break
+    for player in squad:
+        player_id = int(player.get("player_id") or 0)
+        if player_id and player_id not in seen:
+            result.append(player_id)
+            seen.add(player_id)
+        if len(result) >= min(11, len(available)):
+            break
+    return result[:11]
+
+
+async def _effective_lineup_ids(user_id: int, squad: list[dict[str, Any]]) -> list[int]:
+    row = await fetchrow("SELECT player_ids FROM team_lineups WHERE user_id=$1;", int(user_id))
+    return _normalize_lineup_ids(row["player_ids"] if row else None, squad)
+
+
+def _save_lineup_ids_conn(conn: Any, user_id: int, player_ids: list[int]) -> Any:
+    return conn.execute(
+        """
+        INSERT INTO team_lineups(user_id,player_ids,updated_at) VALUES($1,$2::jsonb,NOW())
+        ON CONFLICT(user_id) DO UPDATE SET player_ids=EXCLUDED.player_ids,updated_at=NOW();
+        """,
+        int(user_id), json.dumps(player_ids),
+    )
 
 
 async def _rank_for_user(user_id: int) -> int:
@@ -775,7 +848,7 @@ async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, An
     try:
         rows = await fetch(
             """
-            SELECT pci.opening_id,pci.player_id,pci.card_kind,pci.position,
+            SELECT pci.card_id,pci.opening_id,pci.player_id,pci.card_kind,pci.position,
                    po.pack_key,po.opened_at,po.cards
             FROM pack_card_inventory pci
             JOIN pack_openings po ON po.opening_id=pci.opening_id
@@ -809,13 +882,18 @@ async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, An
                 continue
         except (TypeError, ValueError):
             continue
+        card_ovr = int(card.get("ovr") or max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0)))
         output.append({
             **_player_payload(player, owned=True),
+            # Pack inventory sells using the saved opening's OVR. Mirror that
+            # exact value in the collection UI to keep confirmation and credit aligned.
+            "sell_price": int(get_price(card_ovr)[1]),
             "pack_key": str(row.get("pack_key") or ""),
             "pack_slot": str(row.get("card_kind") or card.get("kind") or "bonus"),
+            "card_id": int(row.get("card_id") or 0),
             "opening_id": str(row.get("opening_id") or ""),
             "opened_at": _iso(row.get("opened_at")),
-            "card_ovr": int(card.get("ovr") or max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))),
+            "card_ovr": card_ovr,
         })
     return output
 
@@ -823,17 +901,186 @@ async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, An
 async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
     squad = await _owned_squad(viewer.id)
     pack_cards = await _pack_owned_cards(int(viewer.id))
+    lineup_ids = await _effective_lineup_ids(int(viewer.id), squad)
+    lineup_set = set(lineup_ids)
+    players = []
+    for player in squad:
+        squad_player_id = int(player.get("player_id") or 0)
+        players.append(
+            _player_payload(player, owned=True)
+            | {
+                "squad_player_id": squad_player_id,
+                "in_playing_xi": squad_player_id in lineup_set,
+                "is_captain": squad_player_id == int(player.get("captain_player_id") or 0),
+            }
+        )
     return {
         "count": len(squad),
         "capacity": MAX_SQUAD_SIZE,
-        "players": [
-            _player_payload(player, owned=True)
-            | {"is_captain": int(player.get("player_id") or 0) == int(player.get("captain_player_id") or 0)}
-            for player in squad
-        ],
+        "players": players,
+        "lineup_player_ids": lineup_ids,
+        "playing_xi_count": len(lineup_ids),
+        "substitute_count": max(0, len(squad) - len(lineup_ids)),
         "pack_cards": pack_cards,
         "pack_card_count": len(pack_cards),
     }
+
+
+async def swap_playing_xi_players(viewer: TelegramViewer, playing_player_id: int, substitute_player_id: int) -> dict[str, Any]:
+    """Swap a squad member with a substitute in the persisted bot lineup."""
+    playing_player_id = int(playing_player_id)
+    substitute_player_id = int(substitute_player_id)
+    if not playing_player_id or not substitute_player_id or playing_player_id == substitute_player_id:
+        return {"status": "invalid_selection"}
+    async with acquire() as conn:
+        async with conn.transaction():
+            user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            if not user:
+                return {"status": "user_missing"}
+            squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            squad = _squad(squad_row["squad"] if squad_row else None)
+            squad_ids = _player_id_set(squad)
+            if playing_player_id not in squad_ids or substitute_player_id not in squad_ids:
+                return {"status": "player_not_owned"}
+            if len(squad) < 11:
+                return {"status": "squad_too_small", "count": len(squad)}
+            lineup_row = await conn.fetchrow("SELECT player_ids FROM team_lineups WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            lineup_ids = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
+            if playing_player_id not in lineup_ids:
+                return {"status": "player_not_in_xi"}
+            if substitute_player_id in lineup_ids:
+                return {"status": "player_already_in_xi"}
+            # Mirror /changeXL: swap the incoming player's squad position with
+            # the outgoing one as well as updating the authoritative XI IDs.
+            # The bot's /squad numbering and XI management therefore stay aligned.
+            playing_index = next(i for i, item in enumerate(squad) if int(item.get("player_id") or 0) == playing_player_id)
+            substitute_index = next(i for i, item in enumerate(squad) if int(item.get("player_id") or 0) == substitute_player_id)
+            updated_squad = list(squad)
+            updated_squad[playing_index], updated_squad[substitute_index] = updated_squad[substitute_index], updated_squad[playing_index]
+            await conn.execute(
+                "UPDATE team_squads SET squad=$2::jsonb,updated_at=NOW() WHERE user_id=$1;",
+                int(viewer.id), json.dumps(updated_squad, default=str),
+            )
+            lineup_ids[lineup_ids.index(playing_player_id)] = substitute_player_id
+            await _save_lineup_ids_conn(conn, int(viewer.id), lineup_ids)
+    try:
+        from services.quest_engine import record_quest_event
+        await record_quest_event(
+            int(viewer.id), "PLAYING_XI_CONFIRMED",
+            metadata={"source": "miniapp", "playing_player_id": substitute_player_id, "substituted_player_id": playing_player_id},
+        )
+    except Exception as exc:
+        print(f"[miniapp_backend] lineup quest event failed: {type(exc).__name__}")
+    return {"status": "success", "lineup_player_ids": lineup_ids}
+
+
+async def sell_squad_player(viewer: TelegramViewer, player_id: int) -> dict[str, Any]:
+    """Sell an owned squad card atomically, using the same price chart as /sell."""
+    player_id = int(player_id)
+    if not player_id:
+        return {"status": "invalid_selection"}
+    player_payload = None
+    sell_price = 0
+    count = 0
+    balance = 0
+    async with acquire() as conn:
+        async with conn.transaction():
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            if not user:
+                return {"status": "user_missing"}
+            squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            squad = _squad(squad_row["squad"] if squad_row else None)
+            index = next((i for i, item in enumerate(squad) if int(item.get("player_id") or 0) == player_id), None)
+            if index is None:
+                return {"status": "player_not_owned"}
+            if len(squad) <= 11:
+                return {"status": "minimum_squad_size", "count": len(squad), "minimum": 11}
+            player = dict(squad[index])
+            overall = max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
+            sell_price = int(get_price(overall)[1])
+            player_payload = _player_payload(player, owned=True)
+            remaining_squad = squad[:index] + squad[index + 1:]
+            remaining_ids = _player_id_set(remaining_squad)
+            lineup_row = await conn.fetchrow("SELECT player_ids FROM team_lineups WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            current_lineup = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
+            # If a sold player was in the XI, refill that XI slot from the bench.
+            next_lineup = [pid for pid in current_lineup if pid in remaining_ids]
+            for item in remaining_squad:
+                pid = int(item.get("player_id") or 0)
+                if pid and pid not in next_lineup:
+                    next_lineup.append(pid)
+                if len(next_lineup) >= min(11, len(remaining_squad)):
+                    break
+            next_lineup = next_lineup[:11]
+            await conn.execute(
+                "UPDATE team_squads SET squad=$2::jsonb,updated_at=NOW() WHERE user_id=$1;",
+                int(viewer.id), json.dumps(remaining_squad, default=str),
+            )
+            await _save_lineup_ids_conn(conn, int(viewer.id), next_lineup)
+            await conn.execute(
+                "UPDATE users SET balance=COALESCE(balance,0)+$1,last_seen_at=NOW() WHERE user_id=$2;",
+                sell_price, int(viewer.id),
+            )
+            balance = int(user.get("balance") or 0) + sell_price
+            count = len(remaining_squad)
+    try:
+        from database.player_user_stats_repo import reset_player_user_stats
+        await reset_player_user_stats(int(viewer.id), int(player_id))
+    except Exception as exc:
+        print(f"[miniapp_backend] sold-player stats reset failed: {type(exc).__name__}")
+    try:
+        from services.quest_engine import record_quest_event
+        await record_quest_event(int(viewer.id), "PLAYER_SOLD", metadata={"player_id": player_id, "source": "miniapp"})
+    except Exception as exc:
+        print(f"[miniapp_backend] player-sale quest event failed: {type(exc).__name__}")
+    return {"status": "success", "player": player_payload, "sell_price": sell_price, "balance": balance, "count": count}
+
+
+async def sell_pack_collection_card(viewer: TelegramViewer, card_id: int) -> dict[str, Any]:
+    """Sell a separately-owned pack reward without changing the active squad."""
+    card_id = int(card_id)
+    if card_id <= 0:
+        return {"status": "invalid_selection"}
+    sold_player: dict[str, Any] | None = None
+    sell_price = 0
+    balance = 0
+    async with acquire() as conn:
+        async with conn.transaction():
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            if not user:
+                return {"status": "user_missing"}
+            row = await conn.fetchrow(
+                """
+                SELECT pci.card_id,pci.player_id,pci.position,po.cards
+                FROM pack_card_inventory pci
+                JOIN pack_openings po ON po.opening_id=pci.opening_id
+                WHERE pci.card_id=$1 AND pci.user_id=$2
+                FOR UPDATE OF pci;
+                """,
+                card_id, int(viewer.id),
+            )
+            if not row:
+                return {"status": "card_not_owned"}
+            cards = _json_value(row.get("cards"), [])
+            position = int(row.get("position") or 0)
+            if not isinstance(cards, list) or position < 1 or position > len(cards):
+                return {"status": "card_data_unavailable"}
+            saved_card = cards[position - 1]
+            if not isinstance(saved_card, dict) or not isinstance(saved_card.get("player"), dict):
+                return {"status": "card_data_unavailable"}
+            player = dict(saved_card["player"])
+            if int(player.get("player_id") or saved_card.get("player_id") or 0) != int(row.get("player_id") or 0):
+                return {"status": "card_data_unavailable"}
+            overall = int(saved_card.get("ovr") or max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0)))
+            sell_price = int(get_price(overall)[1])
+            sold_player = _player_payload(player, owned=True)
+            await conn.execute("DELETE FROM pack_card_inventory WHERE card_id=$1 AND user_id=$2;", card_id, int(viewer.id))
+            await conn.execute(
+                "UPDATE users SET balance=COALESCE(balance,0)+$1,last_seen_at=NOW() WHERE user_id=$2;",
+                sell_price, int(viewer.id),
+            )
+            balance = int(user.get("balance") or 0) + sell_price
+    return {"status": "success", "player": sold_player, "sell_price": sell_price, "balance": balance, "card_id": card_id}
 
 
 async def build_leaderboard_response(viewer: TelegramViewer, limit: int = 50) -> dict[str, Any]:
@@ -1337,6 +1584,19 @@ async def build_rewards_response(viewer: TelegramViewer) -> dict[str, Any]:
         "SELECT opened_at FROM miniapp_kitbag_claims WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 1;",
         int(viewer.id),
     )
+    pending_row = await fetchrow(
+        "SELECT claim_id,player_id,player_kind,opened_at FROM miniapp_kitbag_claims WHERE user_id=$1 AND status='pending' ORDER BY opened_at DESC LIMIT 1;",
+        int(viewer.id),
+    )
+    pending = None
+    if pending_row:
+        pending_player = await _select_player(str(pending_row.get("player_kind") or "global"), int(pending_row["player_id"]))
+        if pending_player:
+            pending = {
+                "claim_id": str(pending_row["claim_id"]),
+                "player": _player_payload(pending_player, owned=True),
+                "opened_at": _iso(pending_row.get("opened_at")),
+            }
     now = datetime.now(timezone.utc)
     last_at = last["opened_at"] if last else None
     if last_at and last_at.tzinfo is None:
@@ -1344,7 +1604,8 @@ async def build_rewards_response(viewer: TelegramViewer) -> dict[str, Any]:
     seconds = max(0, int((last_at + timedelta(seconds=KITBAG_COOLDOWN_SECONDS) - now).total_seconds())) if last_at else 0
     return {
         "daily": home["daily_reward"],
-        "kitbag": {"available": seconds == 0, "seconds_until_available": seconds, "reward_overall": 85},
+        "kitbag": {"available": seconds == 0 and pending is None, "seconds_until_available": seconds, "reward_overall": 85, "pending_replacement": pending is not None},
+        "pending_kitbag": pending,
         "available_systems": ["daily_streak", "hourly_kitbag", "quests"],
     }
 
@@ -1509,15 +1770,20 @@ async def purchase_market_player(viewer: TelegramViewer, kind: str, entity_id: i
 
 async def claim_kitbag(viewer: TelegramViewer) -> dict[str, Any]:
     claim_id = uuid.uuid4()
+    needs_replacement = False
     async with acquire() as conn:
         async with conn.transaction():
             user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
             if not user:
                 return {"status": "user_missing"}
+            pending = await conn.fetchrow(
+                "SELECT claim_id,player_id FROM miniapp_kitbag_claims WHERE user_id=$1 AND status='pending' ORDER BY opened_at DESC LIMIT 1 FOR UPDATE;",
+                int(viewer.id),
+            )
+            if pending:
+                return {"status": "replacement_pending", "claim_id": str(pending["claim_id"]), "player_id": int(pending["player_id"])}
             squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
             squad = _squad(squad_row["squad"] if squad_row else None)
-            if len(squad) >= MAX_SQUAD_SIZE:
-                return {"status": "squad_full", "count": len(squad)}
             last = await conn.fetchrow(
                 "SELECT opened_at FROM miniapp_kitbag_claims WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 1;",
                 int(viewer.id),
@@ -1529,8 +1795,8 @@ async def claim_kitbag(viewer: TelegramViewer) -> dict[str, Any]:
             if last_at and (now - last_at).total_seconds() < KITBAG_COOLDOWN_SECONDS:
                 remaining = KITBAG_COOLDOWN_SECONDS - int((now - last_at).total_seconds())
                 return {"status": "cooldown", "seconds_until_available": remaining}
-            # The reward uses only a real catalogued player whose stored OVR
-            # is exactly 85. It never fabricates or overwrites player stats.
+            # This is a real OVR 85 catalog card. At squad capacity the claim is
+            # persisted as pending, so the player can choose whom to replace.
             candidates = await conn.fetch(
                 """
                 SELECT p.*,'global'::text player_kind
@@ -1547,24 +1813,134 @@ async def claim_kitbag(viewer: TelegramViewer) -> dict[str, Any]:
             if not candidates:
                 return {"status": "no_player"}
             player = dict(candidates[0])
-            squad.append(player)
+            needs_replacement = len(squad) >= MAX_SQUAD_SIZE
+            if not needs_replacement:
+                squad.append(player)
+                await conn.execute(
+                    """
+                    INSERT INTO team_squads(user_id,squad,updated_at) VALUES($1,$2::jsonb,NOW())
+                    ON CONFLICT(user_id) DO UPDATE SET squad=EXCLUDED.squad,updated_at=NOW();
+                    """,
+                    int(viewer.id), json.dumps(squad, default=str),
+                )
             await conn.execute(
                 """
-                INSERT INTO team_squads(user_id,squad,updated_at) VALUES($1,$2::jsonb,NOW())
-                ON CONFLICT(user_id) DO UPDATE SET squad=EXCLUDED.squad,updated_at=NOW();
+                INSERT INTO miniapp_kitbag_claims(claim_id,user_id,player_id,player_kind,opened_at,status)
+                VALUES($1,$2,$3,'global',NOW(),$4);
                 """,
-                int(viewer.id), json.dumps(squad, default=str),
-            )
-            await conn.execute(
-                "INSERT INTO miniapp_kitbag_claims(claim_id,user_id,player_id,player_kind,opened_at) VALUES($1,$2,$3,'global',NOW());",
-                claim_id, int(viewer.id), int(player["player_id"]),
+                claim_id, int(viewer.id), int(player["player_id"]), "pending" if needs_replacement else "added",
             )
     try:
         from services.quest_engine import record_quest_event
         await record_quest_event(int(viewer.id), "KITBAG_OPEN")
     except Exception as exc:
-        print(f"[miniapp_backend] kitbag quest event failed: {exc!r}")
-    return {"status": "success", "player": _player_payload(player, owned=True), "claim_id": str(claim_id)}
+        print(f"[miniapp_backend] kitbag quest event failed: {type(exc).__name__}")
+    return {
+        "status": "success",
+        "player": _player_payload(player, owned=True),
+        "claim_id": str(claim_id),
+        "requires_replacement": needs_replacement,
+        "squad_count": len(squad),
+    }
+
+
+async def replace_kitbag_player(viewer: TelegramViewer, claim_id: str, replaced_player_id: int) -> dict[str, Any]:
+    """Resolve a saved Kit Bag reward, replacing a card only if the squad is full."""
+    try:
+        parsed_claim_id = uuid.UUID(str(claim_id))
+    except (TypeError, ValueError, AttributeError):
+        return {"status": "claim_not_found"}
+    try:
+        replaced_player_id = int(replaced_player_id or 0)
+    except (TypeError, ValueError):
+        return {"status": "invalid_replacement"}
+    new_player: dict[str, Any] | None = None
+    old_player: dict[str, Any] | None = None
+    count = 0
+    added_without_replacement = False
+    async with acquire() as conn:
+        async with conn.transaction():
+            user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            if not user:
+                return {"status": "user_missing"}
+            claim = await conn.fetchrow(
+                "SELECT claim_id,player_id,player_kind,status FROM miniapp_kitbag_claims WHERE claim_id=$1 AND user_id=$2 FOR UPDATE;",
+                parsed_claim_id, int(viewer.id),
+            )
+            if not claim:
+                return {"status": "claim_not_found"}
+            if str(claim.get("status") or "added") != "pending":
+                return {"status": "claim_already_resolved"}
+            squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            squad = _squad(squad_row["squad"] if squad_row else None)
+            claimed_id = int(claim["player_id"])
+            if claimed_id in _player_id_set(squad):
+                return {"status": "reward_already_owned"}
+            player_row = await conn.fetchrow("SELECT *, 'global'::text player_kind FROM players WHERE player_id=$1;", claimed_id)
+            if not player_row:
+                return {"status": "player_not_found"}
+            new_player = dict(player_row)
+            lineup_row = await conn.fetchrow("SELECT player_ids FROM team_lineups WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
+            lineup_ids = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
+
+            if len(squad) < MAX_SQUAD_SIZE:
+                # The user may have sold a card after opening the Kit Bag. Use
+                # that now-free slot instead of forcing a second, unnecessary sale.
+                updated_squad = list(squad) + [new_player]
+                await conn.execute(
+                    """
+                    INSERT INTO team_squads(user_id,squad,updated_at) VALUES($1,$2::jsonb,NOW())
+                    ON CONFLICT(user_id) DO UPDATE SET squad=EXCLUDED.squad,updated_at=NOW();
+                    """,
+                    int(viewer.id), json.dumps(updated_squad, default=str),
+                )
+                await _save_lineup_ids_conn(conn, int(viewer.id), lineup_ids)
+                await conn.execute(
+                    "UPDATE miniapp_kitbag_claims SET status='added',replaced_player_id=NULL,resolved_at=NOW() WHERE claim_id=$1 AND user_id=$2;",
+                    parsed_claim_id, int(viewer.id),
+                )
+                added_without_replacement = True
+            else:
+                if not replaced_player_id:
+                    return {"status": "invalid_replacement"}
+                old_index = next((i for i, item in enumerate(squad) if int(item.get("player_id") or 0) == replaced_player_id), None)
+                if old_index is None:
+                    return {"status": "replacement_not_owned"}
+                old_player = dict(squad[old_index])
+                updated_squad = list(squad)
+                updated_squad[old_index] = new_player
+                lineup_ids = [claimed_id if pid == replaced_player_id else pid for pid in lineup_ids]
+                await conn.execute(
+                    "UPDATE team_squads SET squad=$2::jsonb,updated_at=NOW() WHERE user_id=$1;",
+                    int(viewer.id), json.dumps(updated_squad, default=str),
+                )
+                await _save_lineup_ids_conn(conn, int(viewer.id), lineup_ids)
+                await conn.execute(
+                    "UPDATE miniapp_kitbag_claims SET status='replaced',replaced_player_id=$1,resolved_at=NOW() WHERE claim_id=$2 AND user_id=$3;",
+                    replaced_player_id, parsed_claim_id, int(viewer.id),
+                )
+            count = len(updated_squad)
+    if old_player:
+        try:
+            from database.player_user_stats_repo import reset_player_user_stats
+            await reset_player_user_stats(int(viewer.id), int(replaced_player_id))
+        except Exception as exc:
+            print(f"[miniapp_backend] replaced-player stats reset failed: {type(exc).__name__}")
+    try:
+        from services.quest_engine import record_quest_event
+        await record_quest_event(
+            int(viewer.id), "TEAM_UPDATE",
+            metadata={"source": "kitbag_replacement" if old_player else "kitbag_pending_add", "player_id": int(claim["player_id"]), "replaced_player_id": replaced_player_id if old_player else None},
+        )
+    except Exception as exc:
+        print(f"[miniapp_backend] kitbag replacement quest event failed: {type(exc).__name__}")
+    return {
+        "status": "success",
+        "player": _player_payload(new_player or {}, owned=True),
+        "replaced_player": _player_payload(old_player, owned=False) if old_player else None,
+        "added_without_replacement": added_without_replacement,
+        "count": count,
+    }
 
 
 async def claim_daily_reward(viewer: TelegramViewer) -> dict[str, Any]:
