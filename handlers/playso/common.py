@@ -12,6 +12,7 @@ from engines.lineup_engine import load_current_xi
 from services.match_summary import send_match_summary
 from utils.mentions import mention_html, mention_name_only_html
 from utils.stadium import random_stadium
+from utils.match_scoring_link import match_scoring_keyboard
 from utils.temperature import random_weather
 from database.stadium_images_repo import get_stadium_image, save_stadium_image
 from services.search import find_stadium_image_url
@@ -134,22 +135,23 @@ async def send_match_ready(chat_id: int, match: dict[str, Any]) -> dict:
         "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
     await set_state(match["match_id"], {**(match.get("state") or {}), "stadium": stadium, "weather": weather}, status="lineup")
+    score_keyboard = match_scoring_keyboard("PLAYSO", int(match["match_id"]))
     cached_file_id = await get_stadium_image(stadium)
     if cached_file_id:
         try:
-            sent = await app.send_photo(chat_id, photo=cached_file_id, caption=text, parse_mode="HTML")
+            sent = await app.send_photo(chat_id, photo=cached_file_id, caption=text, parse_mode="HTML", reply_markup=score_keyboard)
             return {"stadium": stadium, "weather": weather, "message_id": int(sent.get("message_id") or 0)}
         except Exception as exc:
             print(f"[playso] Cached stadium image send failed: {exc!r}")
     try:
         image_url = await find_stadium_image_url(stadium)
         if image_url:
-            sent = await app.send_photo(chat_id, photo=image_url, caption=text, parse_mode="HTML")
+            sent = await app.send_photo(chat_id, photo=image_url, caption=text, parse_mode="HTML", reply_markup=score_keyboard)
             file_id = (sent.get("photo") or {}).get("file_id")
             if file_id:
                 await save_stadium_image(stadium, file_id)
             return {"stadium": stadium, "weather": weather, "message_id": int(sent.get("message_id") or 0)}
     except Exception as exc:
         print(f"[playso] Stadium image lookup/send failed: {exc!r}")
-    sent = await app.send_message(chat_id, text, parse_mode="HTML")
+    sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=score_keyboard)
     return {"stadium": stadium, "weather": weather, "message_id": int(sent.get("message_id") or 0)}

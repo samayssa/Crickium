@@ -190,17 +190,35 @@ async def playso_shot(callback_query):
         non_striker=_player(state,"batting_xi",current_non_id) if current_non_id else None
         result=resolve_ball(pitch=str(match.get("pitch") or "even"),bowler=bowler,batter=batter,family=bowling_family(bowler),delivery=str(state.get("delivery")),line=str(state.get("line")),length=str(state.get("length")),foot=str(state.get("foot")),intent=str(state.get("intent")),shot=shot)
         analysis=state.setdefault("analysis_balls",[])
+        outcome_kind = str(result.outcome or "dot").lower().replace("-", "_")
+        delivery_runs = int(result.runs or 0)
+        if result.wicket:
+            delivery_symbol = "W"
+        elif outcome_kind in {"wide", "wide_ball", "wd"}:
+            delivery_symbol = "WD"
+        elif outcome_kind in {"no_ball", "noball", "nb"}:
+            delivery_symbol = "NB"
+        elif outcome_kind in {"leg_bye", "legbyes", "lb"}:
+            delivery_symbol = "LB"
+        elif outcome_kind in {"bye", "byes", "by"}:
+            delivery_symbol = "BY"
+        elif delivery_runs == 6 or outcome_kind in {"6", "six"}:
+            delivery_symbol = "6"
+        elif delivery_runs == 4 or outcome_kind in {"4", "four", "boundary"}:
+            delivery_symbol = "4"
+        else:
+            delivery_symbol = str(delivery_runs) if delivery_runs else "•"
         analysis.append({
             "innings_number": int(state.get("innings_no") or match.get("innings_no") or 1),
             "over": legal_balls_before//6 + 1,
             "ball": legal_balls_before%6 + 1,
             "legal": bool(result.legal),
-            "runs": int(result.runs or 0),
-            "bowler_runs": int(result.runs or 0),
+            "runs": delivery_runs,
+            "bowler_runs": delivery_runs,
             "wicket": bool(result.wicket),
-            "outcome": str(result.outcome or "dot").lower(),
-            "symbol": "W" if result.wicket else str(result.outcome or result.runs),
-            "extra_type": (str(result.outcome or "").lower() if str(result.outcome or "").upper() in {"WIDE","NO_BALL","LEG_BYE","BYE"} else None),
+            "outcome": outcome_kind,
+            "symbol": delivery_symbol,
+            "extra_type": outcome_kind if outcome_kind in {"wide", "wide_ball", "wd", "no_ball", "noball", "nb", "leg_bye", "legbyes", "lb", "bye", "byes", "by"} else None,
             "batter": batter.get("name"), "batter_id": int(batter.get("player_id") or 0) or None,
             "non_striker": non_striker.get("name") if non_striker else None, "non_striker_id": current_non_id or None,
             "bowler": bowler.get("name"), "bowler_id": int(bowler.get("player_id") or 0) or None,
