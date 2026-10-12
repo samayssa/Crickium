@@ -1555,16 +1555,79 @@
   }
 
 
+  let monetagSdkLoadPromise = null;
+
+  async function ensureMonetagSdk() {
+    if (typeof window.show_12010515 === "function") return window.show_12010515;
+    if (monetagSdkLoadPromise) return monetagSdkLoadPromise;
+
+    // The initial HTML tag can be blocked by a transient network/WebView issue.
+    // Retry it once on demand, rather than immediately telling the user to try later.
+    monetagSdkLoadPromise = new Promise((resolve, reject) => {
+      const existing = Array.from(document.scripts).filter((script) =>
+        script.dataset.sdk === "show_12010515" || /libtl\.com\/sdk\.js(?:\?|$)/i.test(script.src || "")
+      );
+      existing.forEach((script) => script.remove());
+
+      const script = document.createElement("script");
+      script.src = "https://libtl.com/sdk.js";
+      script.dataset.zone = "12010515";
+      script.dataset.sdk = "show_12010515";
+      script.async = true;
+
+      let settled = false;
+      let timeoutId = null;
+      const finish = (error, fn) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        script.onload = null;
+        script.onerror = null;
+        if (error) reject(error);
+        else resolve(fn);
+      };
+
+      timeoutId = setTimeout(() => finish(new Error("sdk_load_timeout")), 12000);
+      script.onerror = () => finish(new Error("sdk_load_failed"));
+      script.onload = () => {
+        const deadline = Date.now() + 1500;
+        const checkReady = () => {
+          if (typeof window.show_12010515 === "function") {
+            finish(null, window.show_12010515);
+          } else if (Date.now() >= deadline) {
+            finish(new Error("sdk_function_missing"));
+          } else {
+            setTimeout(checkReady, 50);
+          }
+        };
+        checkReady();
+      };
+      document.head.appendChild(script);
+    }).finally(() => {
+      monetagSdkLoadPromise = null;
+    });
+
+    return monetagSdkLoadPromise;
+  }
+
   async function startBonusAd(button) {
     if (state.adFlowBusy) return;
     if (!initData) { toast("Open Crickium inside Telegram first.", true); return; }
-    if (typeof window.show_12010515 !== "function") {
-      toast("Monetag ad is still loading. Please try again in a moment.", true);
-      return;
-    }
+
     state.adFlowBusy = true;
-    if (button) { button.disabled = true; button.textContent = "Preparing ad…"; }
+    if (button) { button.disabled = true; button.textContent = "Loading ad service…"; }
     try {
+      let showMonetagAd;
+      try {
+        showMonetagAd = await ensureMonetagSdk();
+      } catch (sdkError) {
+        console.warn("[Crickium] Monetag SDK could not be loaded:", sdkError?.message || "unknown error");
+        toast("Monetag SDK could not load. Check your connection and try again. If this continues, check that the SDK tag is active in Monetag and that libtl.com is not blocked.", true);
+        await loadRewards();
+        return;
+      }
+
+      if (button) button.textContent = "Preparing ad…";
       const attempt = await api("/api/ads/attempt", { method: "POST", body: "{}" });
       if (attempt.status !== "success" || !attempt.ymid) {
         const message = attempt.status === "daily_limit"
@@ -1583,16 +1646,20 @@
 
       let adResult;
       try {
-        adResult = await window.show_12010515({ ymid: attempt.ymid, requestVar: "kitbag_bonus" });
-      } catch (_) {
+        adResult = await showMonetagAd({ type: "end", timeout: 15, ymid: attempt.ymid, requestVar: "kitbag_bonus" });
+      } catch (adError) {
+        // This is only a client-side SDK outcome. The server-side Monetag
+        // postback remains authoritative and may arrive later, so the backend
+        // permits a later verified postback to recover a failed/expired attempt.
         await api("/api/ads/attempt/finish", { method: "POST", body: JSON.stringify({ ymid: attempt.ymid, outcome: "failed" }) }).catch(() => {});
-        toast("The ad could not be loaded or verified. No Kit Bag was used.", true);
+        console.warn("[Crickium] Monetag ad failed:", adError?.message || "unknown error");
+        toast("Monetag could not show or confirm an ad just now. No reward has been assumed; you can try again when the button is available.", true);
         await loadRewards();
         return;
       }
 
-      // The client callback is for UX only. Even if it reports non_valued,
-      // wait for Monetag's server-to-server postback to decide the final state.
+      // The client callback is for UX only. The backend grants a Kit Bag only
+      // after the authenticated server-to-server valued impression postback.
       toast(adResult?.reward_event_type === "non_valued"
         ? "Ad finished. Checking Monetag's final confirmation…"
         : "Ad finished. Verifying your extra Kit Bag…");
@@ -1614,14 +1681,16 @@
           }
           return;
         }
-        if (["non_valued", "failed", "expired", "no_player"].includes(status?.status)) {
+        if (["non_valued", "failed", "expired", "no_player", "daily_limit"].includes(status?.status)) {
           const message = status.status === "non_valued"
             ? "Monetag marked this ad as unpaid, so no Kit Bag was granted."
             : status.status === "no_player"
               ? "No eligible unowned Kit Bag player was available. Please try again later."
-              : status.status === "expired"
-                ? "Ad verification timed out. Please open Rewards and try again."
-                : "The ad could not be verified. No Kit Bag was granted.";
+              : status.status === "daily_limit"
+                ? "Your daily bonus Kit Bag limit has already been reached."
+                : status.status === "expired"
+                  ? "Ad verification timed out. Please open Rewards and check your updated status."
+                  : "The ad could not be verified. No Kit Bag was granted.";
           toast(message, true);
           await loadRewards();
           return;
@@ -1633,7 +1702,7 @@
     } catch (error) {
       const payload = error.payload || { status: error.message };
       const message = payload.status === "daily_limit"
-        ? "You have used all three bonus ads for today."
+        ? "You have used all three bonus ads today."
         : payload.status === "cooldown"
           ? `Next bonus ad in ${clockWithSeconds(payload.seconds_until_available || 0)}.`
           : payload.status === "ad_pending"
