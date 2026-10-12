@@ -535,6 +535,11 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
             "bowler_name": (session.current_bowler or {}).get("name"),
         },
     )
+    try:
+        from services.match_analysis.collector import add_runtime_commentary
+        add_runtime_commentary(session, commentary)
+    except Exception as exc:
+        print(f"[match_analysis] commentary telemetry hook failed: {exc!r}")
     session.this_over.append(outcome.symbol)
     session.over_commentary.append(commentary)
     if outcome.wicket:
