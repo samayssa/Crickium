@@ -79,13 +79,13 @@ async def _send_json(send, payload, status: int = 200):
     await send({"type": "http.response.body", "body": body})
 
 
-async def _send_bytes(send, data: bytes, content_type: str, status: int = 200, extra_headers=None):
+async def _send_bytes(send, data: bytes, content_type: str, status: int = 200, extra_headers=None, cache_control: bytes = b"private, max-age=300"):
     await send({
         "type": "http.response.start", "status": status,
         "headers": [
             (b"content-type", content_type.encode("latin-1", "replace")),
             (b"content-length", str(len(data)).encode("ascii")),
-            (b"cache-control", b"private, max-age=300"),
+            (b"cache-control", cache_control),
             (b"x-content-type-options", b"nosniff"),
             *((extra_headers or [])),
         ],
@@ -110,7 +110,10 @@ async def _send_static(send, path: str):
         return
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
-    await _send_bytes(send, data, mime or "application/octet-stream")
+    # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
+    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css"}
+    cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
+    await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
 
 
 def _rate_limited(key: str, limit: int) -> bool:

@@ -2073,8 +2073,14 @@ async def process_monetag_postback(params: dict[str, str]) -> dict[str, Any]:
             attempt = await conn.fetchrow("SELECT * FROM miniapp_ad_attempts WHERE ymid=$1 FOR UPDATE;", ymid)
             if not user or not attempt:
                 return {"status": "unknown_ymid"}
-            if str(attempt.get("status") or "") != "pending":
-                return {"status": "duplicate_ignored", "attempt_status": str(attempt.get("status") or "")}
+            attempt_status = str(attempt.get("status") or "")
+            # Monetag's server-to-server event is authoritative. A client SDK
+            # failure/timeout can race with a delayed postback, so allow a
+            # verified impression to recover these non-final client states.
+            if attempt_status in {"rewarded", "non_valued", "no_player", "daily_limit"}:
+                return {"status": "duplicate_ignored", "attempt_status": attempt_status}
+            if attempt_status not in {"pending", "failed", "expired"}:
+                return {"status": "duplicate_ignored", "attempt_status": attempt_status}
             if telegram_id and telegram_id != str(user_id):
                 await conn.execute(
                     "UPDATE miniapp_ad_attempts SET status='failed',event_type='impression',updated_at=NOW() WHERE ymid=$1;",
@@ -2089,6 +2095,21 @@ async def process_monetag_postback(params: dict[str, str]) -> dict[str, Any]:
                     ymid, zone_id, sub_zone_id, str(params.get("request_var") or "kitbag_bonus")[:100], estimated_price,
                 )
                 return {"status": "non_valued"}
+
+            # Enforce the three-reward daily cap again at postback time. This
+            # closes the race where earlier attempts are confirmed late.
+            rewarded_for_attempt_day = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM miniapp_ad_attempts WHERE user_id=$1 AND usage_date=$2 AND status='rewarded';",
+                user_id, attempt["usage_date"],
+            ) or 0)
+            if rewarded_for_attempt_day >= MONETAG_ADS_PER_DAY:
+                await conn.execute(
+                    """UPDATE miniapp_ad_attempts SET status='daily_limit',event_type='impression',
+                              reward_event_type='valued',zone_id=$2,sub_zone_id=$3,
+                              request_var=$4,estimated_price=$5,updated_at=NOW() WHERE ymid=$1;""",
+                    ymid, zone_id, sub_zone_id, str(params.get("request_var") or "kitbag_bonus")[:100], estimated_price,
+                )
+                return {"status": "daily_limit"}
 
             grant = await _grant_ad_kitbag_in_transaction(conn, user_id)
             if grant.get("status") != "success":
