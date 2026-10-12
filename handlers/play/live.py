@@ -44,6 +44,7 @@ from services.quest_engine import record_match_summary_for_session
 from services.match_analysis import collect_runtime_session, send_report
 from utils.mentions import display_name, mention_html
 from utils.stadium import random_stadium
+from utils.match_scoring_link import match_scoring_keyboard
 from utils.temperature import random_weather
 from handlers.registry import register_callback
 from services.live_runtime_controls import (ensure_impact_state, reset_impact_pending, full_squad, current_xi, impact_out_candidates, impact_in_candidates, apply_impact_replacement, future_batting_candidates, move_future_batting_player_to_position, confirm_batting_order, consume_next_scheduled_bowler, scheduled_bowler_candidates, current_over_number, confirm_next_bowler, impact_batting_position_allowed, decorate_impact_snapshot)
@@ -107,7 +108,7 @@ def _match_ready_text(match: dict[str, Any]) -> str:
     )
 
 
-async def _send_match_ready(chat_id: int, stadium_name: str, text: str) -> dict:
+async def _send_match_ready(chat_id: int, stadium_name: str, text: str, reply_markup: dict | None = None) -> dict:
     """Sends the MATCH READY card exactly as built by _match_ready_text()
     - this never changes the message content, only whether it's sent as
     a plain message or as a photo with that same text as the caption.
@@ -121,14 +122,14 @@ async def _send_match_ready(chat_id: int, stadium_name: str, text: str) -> dict:
     cached_file_id = await get_stadium_image(stadium_name)
     if cached_file_id:
         try:
-            return await app.send_photo(chat_id, photo=cached_file_id, caption=text, parse_mode="HTML")
+            return await app.send_photo(chat_id, photo=cached_file_id, caption=text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception as exc:
             print(f"[play] Cached stadium photo failed to send, falling back to search: {exc!r}")
 
     image_url = await find_stadium_image_url(stadium_name)
     if image_url:
         try:
-            sent = await app.send_photo(chat_id, photo=image_url, caption=text, parse_mode="HTML")
+            sent = await app.send_photo(chat_id, photo=image_url, caption=text, parse_mode="HTML", reply_markup=reply_markup)
             file_id = (sent.get("photo") or {}).get("file_id")
             if file_id:
                 await save_stadium_image(stadium_name, file_id)
@@ -136,7 +137,7 @@ async def _send_match_ready(chat_id: int, stadium_name: str, text: str) -> dict:
         except Exception as exc:
             print(f"[play] Telegram couldn't fetch the stadium photo URL, falling back to text: {exc!r}")
 
-    return await app.send_message(chat_id, text, parse_mode="HTML")
+    return await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
 
 
 async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
@@ -205,7 +206,7 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
 
     start_new_partnership(session)
 
-    ready = await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match))
+    ready = await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match), reply_markup=match_scoring_keyboard("PLAY", int(match["match_id"])))
     session.ready_message_id = ready["message_id"]
     try:
         await app.pin_chat_message(chat_id, ready["message_id"], disable_notification=True)
