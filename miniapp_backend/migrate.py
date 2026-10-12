@@ -180,9 +180,8 @@ async def migrate() -> None:
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_kitbag_claims_user_time ON miniapp_kitbag_claims(user_id, opened_at DESC);"
     )
-    # Monetag rewarded-interstitial attempts are persisted before the SDK opens.
-    # Only a valued server-side impression postback may transition an attempt
-    # into a rewarded Kit Bag. ymid is the idempotency key for postback retries.
+    # Provider-neutral ad attempt ledger. The existing ymid column is retained
+    # for database compatibility but stores our internal one-time attempt ID.
     await execute("""
         CREATE TABLE IF NOT EXISTS miniapp_ad_attempts(
             ymid TEXT PRIMARY KEY,
@@ -198,9 +197,13 @@ async def migrate() -> None:
             claim_id UUID,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             rewarded_at TIMESTAMPTZ,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            provider TEXT NOT NULL DEFAULT 'legacy'
         );
     """)
+    await execute("ALTER TABLE miniapp_ad_attempts ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'legacy';")
+    # A pending attempt from the retired provider must not block AdsGram.
+    await execute("UPDATE miniapp_ad_attempts SET status='expired',updated_at=NOW() WHERE status='pending' AND provider <> 'adsgram';")
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_ad_attempts_user_date ON miniapp_ad_attempts(user_id, usage_date, status);"
     )

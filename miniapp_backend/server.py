@@ -196,17 +196,6 @@ class CrickiumMiniApp:
         if path == "/api/health" and method in {"GET", "HEAD"}:
             await _send_json(send, {"ok": True, "app": APP_NAME})
             return
-        # Monetag server-to-server postbacks are intentionally handled before
-        # Telegram Mini App authentication; they authenticate with a private
-        # shared secret and server-side event fields instead.
-        if path == "/monetag/postback":
-            if method != "GET":
-                await _send_json(send, {"ok": False, "detail": "Method not allowed"}, 405)
-                return
-            result = await api.process_monetag_postback(query)
-            status = int(result.pop("_http_status", 200))
-            await _send_json(send, {"ok": status < 400, **result}, status)
-            return
         if path.startswith("/static/") and method in {"GET", "HEAD"}:
             await _send_static(send, path)
             return
@@ -328,8 +317,8 @@ class CrickiumMiniApp:
                 await _send_json(send, await api.build_quests_response(viewer))
                 return
             if path.startswith("/api/ads/attempt/"):
-                ymid = path.removeprefix("/api/ads/attempt/")
-                result = await api.get_monetag_ad_attempt(viewer, ymid)
+                attempt_id = path.removeprefix("/api/ads/attempt/")
+                result = await api.get_adsgram_ad_attempt(viewer, attempt_id)
                 await _send_json(send, result, 404 if result.get("status") == "not_found" else 200)
                 return
             if path == "/api/rewards":
@@ -385,15 +374,20 @@ class CrickiumMiniApp:
             return
 
         if path == "/api/ads/attempt":
-            result = await api.create_monetag_ad_attempt(viewer)
+            result = await api.create_adsgram_ad_attempt(viewer)
             status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"daily_limit", "cooldown", "ad_pending", "replacement_pending"} else 404 if result.get("status") == "user_missing" else 400
             await _send_json(send, result, status)
             return
+        if path == "/api/ads/attempt/complete":
+            attempt_id = str(payload.get("attempt_id") or "")
+            result = await api.complete_adsgram_ad_attempt(viewer, attempt_id)
+            status = 200 if result.get("status") in {"rewarded", "no_player", "expired", "daily_limit", "replacement_pending", "failed"} else 409 if result.get("status") == "cooldown" else 404 if result.get("status") == "not_found" else 400
+            await _send_json(send, result, status)
+            return
         if path == "/api/ads/attempt/finish":
-            ymid = str(payload.get("ymid") or "")
-            outcome = str(payload.get("outcome") or "")
-            result = await api.finish_monetag_ad_attempt(viewer, ymid, outcome)
-            status = 200 if result.get("status") in {"failed", "non_valued", "rewarded", "expired", "no_player"} else 404 if result.get("status") == "not_found" else 400
+            attempt_id = str(payload.get("attempt_id") or "")
+            result = await api.finish_adsgram_ad_attempt(viewer, attempt_id)
+            status = 200 if result.get("status") in {"failed", "rewarded", "expired", "no_player", "daily_limit"} else 404 if result.get("status") == "not_found" else 400
             await _send_json(send, result, status)
             return
         if path == "/api/packs/purchase-request":
