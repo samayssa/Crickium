@@ -1089,7 +1089,7 @@
       const pendingMarkup = pending ? `<section class="panel pending-reward-panel"><span class="eyebrow">REPLACEMENT REQUIRED</span><h2>Your Kit Bag player is waiting</h2><p class="muted-copy">Your squad was full when this card was claimed. Choose one squad player to replace it. The reward is safely saved until you finish.</p><div class="pending-reward-card">${playerCard(pending.player, true)}</div><button class="button primary full" data-action="open-kitbag-replace" data-claim-id="${esc(pending.claim_id)}">Choose player to replace</button></section>` : "";
       const adUsage = `${number(ads.completed_today)} / ${number(ads.daily_limit)} bonus ads claimed today · ${number(ads.remaining_today)} remaining`;
       document.getElementById("rewards-content").innerHTML = `${pendingMarkup}
-        <section class="kitbag-banner large"><div class="kitbag-emblem">✦</div><div><span class="eyebrow">HOURLY DROP · 85 OVR</span><h2>Free Kit Bag</h2><p>One real, unowned OVR 85 player from the global catalog. Claim cooldown is enforced by the server.</p><small>${pending ? "FINISH YOUR PENDING REPLACEMENT" : bag.available ? "READY TO OPEN" : `AVAILABLE IN ${clock(bag.seconds_until_available)}`}</small></div></section>
+        <section class="kitbag-banner large"><div class="kitbag-emblem kitbag-art-emblem is-ready"><img src="/static/kitbag-crickium.svg?v=kitbag-animation-20261012-1" alt="Crickium green Kit Bag" /></div><div><span class="eyebrow">HOURLY DROP · 85 OVR</span><h2>Free Kit Bag</h2><p>One real, unowned OVR 85 player from the global catalog. Claim cooldown is enforced by the server.</p><small>${pending ? "FINISH YOUR PENDING REPLACEMENT" : bag.available ? "READY TO OPEN" : `AVAILABLE IN ${clock(bag.seconds_until_available)}`}</small></div></section>
         <button class="button gold full" data-action="kitbag-claim" ${bag.available ? "" : "disabled"}>${pending ? "Replace pending player first" : bag.available ? "Open free Kit Bag" : "Kit Bag cooling down"}</button>
         <div class="reward-timer-line" id="reward-timer-line"
           data-free-seconds="${Math.max(0, Number(bag.seconds_until_available || 0))}"
@@ -1546,6 +1546,13 @@
       if (kind === "kitbag") {
         const player = result.player;
         state.pendingKitbagClaimId = result.claim_id || null;
+        // Play only after the backend has confirmed the claim. Animation logic
+        // lives in its own static module; reward selection remains server-owned.
+        await window.CrickiumKitBagAnimation?.playOpen({
+          cardMarkup: playerCard(player),
+          playerName: player.name,
+          hydrateImages,
+        });
         pushRoute({ page: "kitbag-reveal", kitbagClaimId: state.pendingKitbagClaimId });
         renderKitbagReveal(player, result.claim_id || null, Boolean(result.requires_replacement));
       } else {
@@ -1758,6 +1765,11 @@
         const details = resultStatus.player ? resultStatus : await api(`/api/ads/attempt/${encodeURIComponent(attempt.attempt_id)}`).catch(() => resultStatus);
         ping("medium");
         if (details.player && details.claim_id) {
+          await window.CrickiumKitBagAnimation?.playOpen({
+            cardMarkup: playerCard(details.player),
+            playerName: details.player.name,
+            hydrateImages,
+          });
           pushRoute({ page: "kitbag-reveal", kitbagClaimId: details.claim_id });
           renderKitbagReveal(details.player, details.claim_id, Boolean(details.requires_replacement), "ad");
         } else {

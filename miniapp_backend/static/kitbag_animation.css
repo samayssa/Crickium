@@ -1,0 +1,180 @@
+/* Crickium Kit Bag animation module. Isolated from the main app stylesheet. */
+.kitbag-art-emblem {
+  flex: 0 0 52px !important;
+  width: 52px !important;
+  height: 58px !important;
+  display: grid !important;
+  place-items: center !important;
+  overflow: visible;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: transparent !important;
+  color: inherit !important;
+}
+.kitbag-art-emblem img {
+  display: block;
+  width: 58px;
+  height: 62px;
+  object-fit: contain;
+  filter: drop-shadow(0 5px 5px #0007);
+  transform-origin: 50% 75%;
+}
+.kitbag-art-emblem.is-ready img { animation: kitbag-idle-bob 3.7s ease-in-out infinite; }
+@keyframes kitbag-idle-bob { 0%,100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-2px) rotate(-1deg); } }
+
+.kitbag-opening-overlay {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(18px, env(safe-area-inset-top)) 15px max(20px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  background:
+    radial-gradient(ellipse at 50% 32%, #2b482d 0%, #15291e 35%, transparent 68%),
+    linear-gradient(180deg, rgba(5,14,11,.98), rgba(7,17,15,.99));
+  opacity: 0;
+  animation: kitbag-overlay-in .22s ease-out forwards;
+  isolation: isolate;
+  -webkit-tap-highlight-color: transparent;
+}
+.kitbag-opening-dialog {
+  position: relative;
+  width: min(100%, 470px);
+  text-align: center;
+  color: var(--text, #f2f5ed);
+}
+.kitbag-opening-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--lime, #c5ef61);
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: .22em;
+}
+.kitbag-opening-brand::before,
+.kitbag-opening-brand::after { content: ""; width: 22px; height: 1px; background: #c5ef6170; }
+.kitbag-opening-title { margin: 0; font-size: clamp(21px, 6vw, 27px); font-weight: 900; letter-spacing: -.035em; }
+.kitbag-opening-subtitle { min-height: 16px; margin: 7px 0 0; color: #b6c7b7; font-size: 10px; line-height: 1.5; }
+.kitbag-opening-stage {
+  position: relative;
+  width: min(100%, 360px);
+  height: clamp(250px, 42vh, 330px);
+  margin: 5px auto 0;
+  overflow: hidden;
+  perspective: 900px;
+  isolation: isolate;
+}
+.kitbag-opening-halo {
+  position: absolute;
+  width: 220px;
+  height: 220px;
+  left: 50%;
+  top: 50%;
+  border-radius: 50%;
+  transform: translate(-50%, -45%) scale(.7);
+  background: radial-gradient(circle, #c5ef6128 0, #7fba3e13 35%, transparent 70%);
+  opacity: 0;
+}
+.kitbag-opening-bag {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  bottom: 0;
+  width: clamp(172px, 52vw, 228px);
+  height: 100%;
+  max-height: 300px;
+  transform: translateX(-50%);
+  transform-origin: 50% 80%;
+  filter: drop-shadow(0 17px 13px #0008);
+}
+.kitbag-opening-bag svg,
+.kitbag-opening-bag img { display: block; width: 100%; height: 100%; overflow: visible; object-fit: contain; }
+.kitbag-svg-flap,
+#kitbag-svg-flap { transform-box: fill-box; transform-origin: 50% 15%; transition: transform .55s cubic-bezier(.2,.8,.2,1); }
+.kitbag-opening-card {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  bottom: 17px;
+  width: min(69%, 218px);
+  opacity: 0;
+  transform: translate(-50%, 94px) scale(.68) rotateY(-16deg);
+  transform-origin: 50% 100%;
+  filter: drop-shadow(0 10px 18px #0009);
+}
+.kitbag-opening-card .player-card { width: 100%; max-width: 218px; margin: 0 auto; text-align: left; cursor: default; }
+.kitbag-opening-card .player-art { min-height: 70px; }
+.kitbag-opening-card .player-copy { padding: 8px 9px; }
+.kitbag-opening-card .player-name { font-size: 10px; }
+.kitbag-opening-card .player-sub,
+.kitbag-opening-card .player-levels { font-size: 7px; }
+.kitbag-opening-particle {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--lime, #c5ef61);
+  box-shadow: 0 0 13px #c5ef6170;
+  opacity: 0;
+  pointer-events: none;
+}
+.kitbag-opening-particle:nth-child(1) { --p-x: -100px; --p-y: -47px; }
+.kitbag-opening-particle:nth-child(2) { --p-x: 96px; --p-y: -70px; width: 4px; height: 4px; background: var(--gold, #efc66b); }
+.kitbag-opening-particle:nth-child(3) { --p-x: 111px; --p-y: 20px; }
+.kitbag-opening-particle:nth-child(4) { --p-x: -110px; --p-y: 22px; width: 4px; height: 4px; background: var(--gold, #efc66b); }
+.kitbag-opening-actions { min-height: 32px; display: flex; justify-content: center; align-items: center; margin-top: 0; }
+.kitbag-opening-skip {
+  padding: 8px 13px;
+  border: 1px solid #536b4e;
+  border-radius: 999px;
+  background: #102018b8;
+  color: #bdcbbd;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 800;
+}
+.kitbag-opening-overlay.is-shaking .kitbag-opening-bag { animation: kitbag-shake .8s cubic-bezier(.36,.07,.19,.97) both; }
+.kitbag-opening-overlay.is-shaking .kitbag-opening-halo { animation: kitbag-halo-pulse .9s ease-out forwards; }
+.kitbag-opening-overlay.is-opening .kitbag-opening-bag { animation: kitbag-lift .65s ease-in-out forwards; }
+.kitbag-opening-overlay.is-opening .kitbag-svg-flap,
+.kitbag-opening-overlay.is-opening #kitbag-svg-flap { transform: rotateX(145deg) translateY(-4px); }
+.kitbag-opening-overlay.is-opening .kitbag-opening-card { animation: kitbag-card-rise 1.6s cubic-bezier(.16,.88,.22,1) .12s forwards; }
+.kitbag-opening-overlay.is-opening .kitbag-opening-halo { opacity: 1; transform: translate(-50%, -45%) scale(1.15); transition: all .75s ease-out; }
+.kitbag-opening-overlay.is-opening .kitbag-opening-particle { animation: kitbag-spark 1.15s ease-out .15s forwards; }
+.kitbag-opening-overlay.is-revealed .kitbag-opening-bag { opacity: .62; transform: translateX(-50%) scale(.9); transition: opacity .35s, transform .35s; }
+.kitbag-opening-overlay.is-revealed .kitbag-opening-card { z-index: 5; width: min(66%, 236px); animation: kitbag-card-hero .42s ease-out forwards; }
+.kitbag-opening-overlay.is-revealed .kitbag-opening-subtitle { color: var(--lime, #c5ef61); }
+.kitbag-opening-overlay.is-leaving { animation: kitbag-overlay-out .25s ease-in forwards; }
+@keyframes kitbag-overlay-in { to { opacity: 1; } }
+@keyframes kitbag-overlay-out { to { opacity: 0; visibility: hidden; } }
+@keyframes kitbag-shake {
+  0%,100% { transform: translateX(-50%) rotate(0) translateY(0); }
+  12%,36%,60%,84% { transform: translateX(calc(-50% - 7px)) rotate(-3deg) translateY(-2px); }
+  24%,48%,72% { transform: translateX(calc(-50% + 7px)) rotate(3deg) translateY(-1px); }
+  92% { transform: translateX(-50%) rotate(0) translateY(-4px); }
+}
+@keyframes kitbag-lift { to { transform: translateX(-50%) translateY(-9px) scale(1.015); } }
+@keyframes kitbag-halo-pulse { 0% { opacity: 0; transform: translate(-50%,-45%) scale(.65); } 75% { opacity: 1; } 100% { opacity: .92; transform: translate(-50%,-45%) scale(1.12); } }
+@keyframes kitbag-card-rise {
+  0% { opacity: 0; transform: translate(-50%,94px) scale(.64) rotateY(-16deg); }
+  40% { opacity: 1; transform: translate(-50%,8px) scale(.82) rotateY(5deg); }
+  72% { opacity: 1; transform: translate(-50%,-36px) scale(.9) rotateY(0); }
+  100% { opacity: 1; transform: translate(-50%,-52px) scale(.91) rotateY(0); }
+}
+@keyframes kitbag-card-hero { from { opacity: 1; transform: translate(-50%,-52px) scale(.91); } to { opacity: 1; transform: translate(-50%,-8px) scale(1); } }
+@keyframes kitbag-spark { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.3); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(calc(-50% + var(--p-x)),calc(-50% + var(--p-y))) scale(.2) rotate(90deg); } }
+@media (max-width: 370px) {
+  .kitbag-opening-stage { height: 252px; }
+  .kitbag-opening-bag { width: 178px; }
+  .kitbag-opening-card { width: 71%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kitbag-opening-overlay,
+  .kitbag-opening-overlay * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
