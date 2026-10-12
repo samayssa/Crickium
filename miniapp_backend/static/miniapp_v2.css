@@ -551,3 +551,43 @@ select.field { color: var(--text); }
 .support-link-card b { font-size: 10px; }
 .support-link-card small { margin-top: 4px; color: var(--muted); font-size: 8px; }
 .support-link-card > strong { color: var(--lime); font-size: 16px; }
+
+
+/* Monetag bonus Kit Bag: deliberately reuses the existing Crickium gold button
+   and evergreen panels so the new reward does not introduce a new visual theme. */
+.reward-timer-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  margin: 9px 0 13px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #101c17;
+  color: var(--muted, #aab6ac);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.reward-timer-line .timer-free { color: var(--gold); }
+.reward-timer-line .timer-ad { color: var(--lime); }
+.reward-timer-line .timer-divider { color: #526157; }
+.reward-ad-panel { margin: 0 0 18px; padding: 16px; border: 1px solid #c8a84c55; }
+.reward-ad-panel .ad-panel-heading { display: flex; align-items: flex-start; gap: 10px; }
+.reward-ad-panel .ad-panel-icon {
+  display: grid; place-items: center; flex: 0 0 38px; height: 38px;
+  border: 1px solid #e2c45f77; border-radius: 13px; color: var(--gold); font-size: 18px;
+  background: #352e1d;
+}
+.reward-ad-panel h2 { margin: 2px 0 5px; font-size: 15px; }
+.reward-ad-panel p { margin: 0 0 10px; color: #c4c4a9; font-size: 10px; line-height: 1.5; }
+.reward-ad-panel .ad-usage { display: inline-block; margin: 1px 0 12px; color: var(--lime); font-size: 9px; font-weight: 900; letter-spacing: .06em; }
+.reward-ad-panel .button { margin-top: 2px; }
+.reward-ad-panel .ad-disclaimer { display: block; margin-top: 9px; color: var(--muted, #87978b); font-size: 8px; line-height: 1.45; }
+@media (max-width: 360px) {
+  .reward-timer-line { gap: 5px; padding: 8px 6px; font-size: 8px; }
+}
