@@ -41,8 +41,20 @@ def record_runtime_ball(session: Any, context: Any, outcome: Any) -> None:
             "batting_approach": str(getattr(context, "strategy", None) or "Balanced").strip(),
             "bowling_plan": str(session.current_tactic or getattr(context, "bowler_tactic", None) or "Mixed").strip(),
             "pitch": str(session.pitch or "even"),
+            "commentary": None,
         }
     )
+
+
+def add_runtime_commentary(session: Any, commentary: str) -> None:
+    """Attach the same commentary text emitted to the Telegram match to its delivery telemetry."""
+    try:
+        history = (getattr(session, "match", {}) or {}).get("_analysis_balls") or []
+        if history and isinstance(history[-1], dict):
+            history[-1]["commentary"] = str(commentary or "").strip()
+    except Exception:
+        # Telemetry must never affect or interrupt the match simulation.
+        return
 
 
 def _symbol_for(outcome: Any) -> str:
@@ -53,6 +65,10 @@ def _symbol_for(outcome: Any) -> str:
         return "WD"
     if kind == "no_ball":
         return "NB"
+    if kind in {"leg_bye", "legbyes", "lb"}:
+        return "LB"
+    if kind in {"bye", "byes", "by"}:
+        return "BY"
     if kind == "six":
         return "6"
     if kind == "four":
@@ -86,6 +102,7 @@ def _legacy_ball(result: dict[str, Any], *, batter_before: dict[str, Any] | None
         "foot": result.get("foot_movement"),
         "stroke_type": result.get("stroke_type"),
         "shot": result.get("specific_shot"),
+        "commentary": result.get("commentary"),
     }
 
 
@@ -97,6 +114,10 @@ def _legacy_symbol(result: dict[str, Any]) -> str:
         return "WD"
     if outcome == "no_ball":
         return "NB"
+    if outcome in {"leg_bye", "legbyes", "lb"}:
+        return "LB"
+    if outcome in {"bye", "byes", "by"}:
+        return "BY"
     if outcome == "six":
         return "6"
     if outcome in {"four", "boundary"}:
