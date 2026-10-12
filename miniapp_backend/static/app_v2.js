@@ -17,6 +17,7 @@
     matchTimer: null,
     rewardTimer: null,
     adFlowBusy: false,
+    monetagSdkStatus: "loading",
     searchSeq: 0,
     marketSeq: 0,
     matchesSeq: 0,
@@ -367,8 +368,17 @@
     if (adNode) adNode.textContent = adText;
 
     const button = document.querySelector('[data-action="watch-bonus-ad"]');
-    const ready = completed < limit && adSeconds <= 0 && !pendingAttempt && !replacementPending;
-    if (button) button.disabled = !ready || state.adFlowBusy;
+    const eligible = completed < limit && adSeconds <= 0 && !pendingAttempt && !replacementPending;
+    if (button) {
+      button.disabled = !eligible || state.adFlowBusy || state.monetagSdkStatus === "loading";
+      if (!state.adFlowBusy) {
+        button.textContent = state.monetagSdkStatus === "loading"
+          ? "Preparing ad service…"
+          : state.monetagSdkStatus === "failed"
+            ? "Retry Ad Connection"
+            : "▶ Watch Ad & Get 1 Extra Kit Bag";
+      }
+    }
 
     freeSeconds = Math.max(0, freeSeconds - 1);
     adSeconds = Math.max(0, adSeconds - 1);
@@ -1091,7 +1101,7 @@
           <span class="timer-free">FREE KIT BAG: CHECKING</span><span class="timer-divider">•</span><span class="timer-ad">NEXT AD: CHECKING</span>
         </div>
         <section class="panel reward-ad-panel"><div class="ad-panel-heading"><div class="ad-panel-icon">▶</div><div><span class="eyebrow">EXTRA KIT BAG</span><h2>Watch an Ad</h2><p>Earn one extra Kit Bag after a verified eligible Monetag ad. Up to three per day, with a one-hour gap between rewards.</p><span class="ad-usage" id="ad-usage">${esc(adUsage)}</span></div></div>
-          <button class="button gold full" data-action="watch-bonus-ad" ${ads.can_watch && !pending ? "" : "disabled"}>▶ Watch Ad &amp; Get 1 Extra Kit Bag</button>
+          <button class="button gold full" data-action="watch-bonus-ad" ${ads.can_watch && !pending && state.monetagSdkStatus !== "loading" ? "" : "disabled"}>${state.monetagSdkStatus === "loading" ? "Preparing ad service…" : state.monetagSdkStatus === "failed" ? "Retry Ad Connection" : "▶ Watch Ad &amp; Get 1 Extra Kit Bag"}</button>
           <small class="ad-disclaimer">Rewards are granted only after Monetag confirms an eligible ad event. Failed or unpaid events do not grant a Kit Bag.</small>
         </section>
         <section class="panel reward-panel"><div class="panel-heading"><div><span class="eyebrow">7-DAY STREAK</span><h2>${number(daily.streak)} claimed · ${number(daily.total_claimed)} total claims</h2></div><button class="button primary" data-action="daily-claim" ${daily.available ? "" : "disabled"}>${daily.available ? "Claim" : clock(daily.seconds_until_available)}</button></div>
@@ -1556,57 +1566,120 @@
 
 
   let monetagSdkLoadPromise = null;
+  const MONETAG_ZONE_ID = "12010515";
+
+  function syncMonetagButtonState() {
+    const button = document.querySelector('[data-action="watch-bonus-ad"]');
+    const line = document.getElementById("reward-timer-line");
+    if (!button || !line) return;
+    const completed = Number(line.dataset.completed || 0);
+    const limit = Number(line.dataset.limit || 3);
+    const adSeconds = Math.max(0, Number(line.dataset.adSeconds || 0));
+    const eligible = completed < limit
+      && adSeconds <= 0
+      && line.dataset.pendingAttempt !== "true"
+      && line.dataset.replacementPending !== "true";
+    button.disabled = !eligible || state.adFlowBusy || state.monetagSdkStatus === "loading";
+    if (!state.adFlowBusy) {
+      button.textContent = state.monetagSdkStatus === "loading"
+        ? "Preparing ad service…"
+        : state.monetagSdkStatus === "failed"
+          ? "Retry Ad Connection"
+          : "▶ Watch Ad & Get 1 Extra Kit Bag";
+    }
+  }
+
+  function waitForMonetagFunction(timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const started = Date.now();
+      const poll = () => {
+        const fn = window.show_12010515;
+        if (typeof fn === "function") {
+          resolve(fn);
+          return;
+        }
+        if (Date.now() - started >= timeoutMs) {
+          reject(new Error("monetag_sdk_function_unavailable"));
+          return;
+        }
+        setTimeout(poll, 100);
+      };
+      poll();
+    });
+  }
 
   async function ensureMonetagSdk() {
-    if (typeof window.show_12010515 === "function") return window.show_12010515;
+    if (typeof window.show_12010515 === "function") {
+      state.monetagSdkStatus = "ready";
+      syncMonetagButtonState();
+      return window.show_12010515;
+    }
     if (monetagSdkLoadPromise) return monetagSdkLoadPromise;
 
-    // The initial HTML tag can be blocked by a transient network/WebView issue.
-    // Retry it once on demand, rather than immediately telling the user to try later.
+    state.monetagSdkStatus = "loading";
+    syncMonetagButtonState();
     monetagSdkLoadPromise = new Promise((resolve, reject) => {
-      const existing = Array.from(document.scripts).filter((script) =>
-        script.dataset.sdk === "show_12010515" || /libtl\.com\/sdk\.js(?:\?|$)/i.test(script.src || "")
-      );
-      existing.forEach((script) => script.remove());
-
-      const script = document.createElement("script");
-      script.src = "https://libtl.com/sdk.js";
-      script.dataset.zone = "12010515";
-      script.dataset.sdk = "show_12010515";
-      script.async = true;
+      let script = document.getElementById("monetag-sdk-script");
+      if (script?.dataset.loadFailed === "true") {
+        script.remove();
+        script = null;
+      }
+      if (!script) {
+        script = document.createElement("script");
+        script.id = "monetag-sdk-script";
+        script.src = "https://libtl.com/sdk.js";
+        script.dataset.zone = MONETAG_ZONE_ID;
+        script.dataset.sdk = `show_${MONETAG_ZONE_ID}`;
+        script.async = true;
+      }
 
       let settled = false;
-      let timeoutId = null;
+      let pollTimer = null;
+      const deadline = Date.now() + 15000;
       const finish = (error, fn) => {
         if (settled) return;
         settled = true;
-        if (timeoutId) clearTimeout(timeoutId);
+        if (pollTimer) clearTimeout(pollTimer);
+        clearTimeout(timeoutTimer);
         script.onload = null;
         script.onerror = null;
-        if (error) reject(error);
-        else resolve(fn);
+        if (error) {
+          script.dataset.loadFailed = "true";
+          reject(error);
+        } else {
+          resolve(fn);
+        }
       };
-
-      timeoutId = setTimeout(() => finish(new Error("sdk_load_timeout")), 12000);
-      script.onerror = () => finish(new Error("sdk_load_failed"));
-      script.onload = () => {
-        const deadline = Date.now() + 1500;
-        const checkReady = () => {
-          if (typeof window.show_12010515 === "function") {
-            finish(null, window.show_12010515);
-          } else if (Date.now() >= deadline) {
-            finish(new Error("sdk_function_missing"));
-          } else {
-            setTimeout(checkReady, 50);
-          }
-        };
-        checkReady();
+      const poll = () => {
+        if (typeof window.show_12010515 === "function") {
+          finish(null, window.show_12010515);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          finish(new Error("monetag_sdk_function_unavailable"));
+          return;
+        }
+        pollTimer = setTimeout(poll, 100);
       };
-      document.head.appendChild(script);
+      const timeoutTimer = setTimeout(() => finish(new Error("monetag_sdk_load_timeout")), 16000);
+      script.onerror = () => finish(new Error("monetag_sdk_script_load_failed"));
+      script.onload = poll;
+      if (!script.isConnected) document.head.appendChild(script);
+      // Poll as well as listening for load: if the SDK finished before this
+      // listener was attached, the global function is still detected.
+      poll();
+    }).then((fn) => {
+      state.monetagSdkStatus = "ready";
+      console.info("[Crickium] Monetag SDK ready", MONETAG_ZONE_ID);
+      return fn;
+    }).catch((error) => {
+      state.monetagSdkStatus = "failed";
+      console.warn("[Crickium] Monetag SDK unavailable. Check the Monetag-generated tag, zone activation, Telegram WebView network access, and content blockers.", error?.message || "unknown error");
+      throw error;
     }).finally(() => {
       monetagSdkLoadPromise = null;
+      syncMonetagButtonState();
     });
-
     return monetagSdkLoadPromise;
   }
 
@@ -1622,8 +1695,8 @@
         showMonetagAd = await ensureMonetagSdk();
       } catch (sdkError) {
         console.warn("[Crickium] Monetag SDK could not be loaded:", sdkError?.message || "unknown error");
-        toast("Monetag SDK could not load. Check your connection and try again. If this continues, check that the SDK tag is active in Monetag and that libtl.com is not blocked.", true);
-        await loadRewards();
+        toast("Monetag SDK could not load. Check your connection, Monetag zone activation, and whether libtl.com is blocked. The Rewards page has been kept open so you can retry.", true);
+        syncMonetagButtonState();
         return;
       }
 
@@ -1646,15 +1719,20 @@
 
       let adResult;
       try {
-        adResult = await showMonetagAd({ type: "end", timeout: 15, ymid: attempt.ymid, requestVar: "kitbag_bonus" });
+        adResult = await showMonetagAd({ type: "end", timeout: 30, ymid: attempt.ymid, requestVar: "kitbag_bonus" });
       } catch (adError) {
         // This is only a client-side SDK outcome. The server-side Monetag
         // postback remains authoritative and may arrive later, so the backend
         // permits a later verified postback to recover a failed/expired attempt.
         await api("/api/ads/attempt/finish", { method: "POST", body: JSON.stringify({ ymid: attempt.ymid, outcome: "failed" }) }).catch(() => {});
         console.warn("[Crickium] Monetag ad failed:", adError?.message || "unknown error");
-        toast("Monetag could not show or confirm an ad just now. No reward has been assumed; you can try again when the button is available.", true);
-        await loadRewards();
+        toast("Monetag could not show or confirm an ad just now. No reward has been assumed. Check the connection and retry when the button is available.", true);
+        const timerLine = document.getElementById("reward-timer-line");
+        if (timerLine) {
+          timerLine.dataset.pendingAttempt = "false";
+          timerLine.dataset.adState = "ready";
+        }
+        syncMonetagButtonState();
         return;
       }
 
@@ -1914,5 +1992,8 @@
     try { tg.ready(); tg.expand(); tg.setHeaderColor?.("#071310"); tg.setBackgroundColor?.("#071310"); } catch (_) {}
   }
   try { if (window.history && !window.history.state?.crickium) window.history.replaceState({ crickium: true, page: "home", currentMatch: null, matchTab: "live", matchInnings: null, index: 0 }, "", window.location.href); } catch (_) {}
+  // Warm the single Monetag SDK early. The Watch Ad button is enabled only
+  // after the main-zone function is available, avoiding click-time script load.
+  ensureMonetagSdk().catch(() => {});
   loadHome();
 })();
