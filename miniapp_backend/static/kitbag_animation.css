@@ -64,7 +64,8 @@
   height: clamp(250px, 42vh, 330px);
   margin: 5px auto 0;
   overflow: hidden;
-  perspective: 900px;
+  perspective: 720px;
+  perspective-origin: 50% 44%;
   isolation: isolate;
 }
 .kitbag-opening-halo {
@@ -86,12 +87,21 @@
   width: clamp(172px, 52vw, 228px);
   height: 100%;
   max-height: 300px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) rotateY(-10deg) rotateX(2.5deg) rotateZ(-1deg) translateZ(0);
   transform-origin: 50% 80%;
-  filter: drop-shadow(0 17px 13px #0008);
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  filter: drop-shadow(13px 16px 11px #0008) drop-shadow(-3px 0 3px #9bce7030);
+  will-change: transform;
 }
 .kitbag-opening-bag svg,
-.kitbag-opening-bag img { display: block; width: 100%; height: 100%; overflow: visible; object-fit: contain; }
+.kitbag-opening-bag img { display: block; width: 100%; height: 100%; overflow: visible; object-fit: contain; transform-style: preserve-3d; }
+.kitbag-opening-bag::after {
+  content: ""; position: absolute; inset: 9% 5% 4% 3%; pointer-events: none;
+  border-radius: 22% 22% 18% 18%; transform: translateZ(5px) rotateY(-3deg);
+  background: linear-gradient(108deg, transparent 16%, #eaffca0c 27%, #efffd81f 34%, transparent 46%, transparent 78%, #00000010 92%);
+  mix-blend-mode: screen; opacity: .86;
+}
 .kitbag-svg-flap,
 #kitbag-svg-flap { transform-box: fill-box; transform-origin: 50% 15%; transition: transform .55s cubic-bezier(.2,.8,.2,1); }
 .kitbag-opening-card {
@@ -101,8 +111,10 @@
   bottom: 17px;
   width: min(69%, 218px);
   opacity: 0;
-  transform: translate(-50%, 94px) scale(.68) rotateY(-16deg);
+  transform: translate(-50%, 94px) scale(.68) rotateY(-23deg) rotateX(7deg) translateZ(-14px);
   transform-origin: 50% 100%;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
   filter: drop-shadow(0 10px 18px #0009);
 }
 .kitbag-opening-card .player-card { width: 100%; max-width: 218px; margin: 0 auto; text-align: left; cursor: default; }
@@ -143,31 +155,31 @@
 .kitbag-opening-overlay.is-shaking .kitbag-opening-halo { animation: kitbag-halo-pulse .9s ease-out forwards; }
 .kitbag-opening-overlay.is-opening .kitbag-opening-bag { animation: kitbag-lift .65s ease-in-out forwards; }
 .kitbag-opening-overlay.is-opening .kitbag-svg-flap,
-.kitbag-opening-overlay.is-opening #kitbag-svg-flap { transform: rotateX(145deg) translateY(-4px); }
+.kitbag-opening-overlay.is-opening #kitbag-svg-flap { transform: perspective(180px) rotateX(158deg) translateY(-5px) translateZ(8px); }
 .kitbag-opening-overlay.is-opening .kitbag-opening-card { animation: kitbag-card-rise 1.6s cubic-bezier(.16,.88,.22,1) .12s forwards; }
 .kitbag-opening-overlay.is-opening .kitbag-opening-halo { opacity: 1; transform: translate(-50%, -45%) scale(1.15); transition: all .75s ease-out; }
 .kitbag-opening-overlay.is-opening .kitbag-opening-particle { animation: kitbag-spark 1.15s ease-out .15s forwards; }
-.kitbag-opening-overlay.is-revealed .kitbag-opening-bag { opacity: .62; transform: translateX(-50%) scale(.9); transition: opacity .35s, transform .35s; }
+.kitbag-opening-overlay.is-revealed .kitbag-opening-bag { opacity: .58; transform: translateX(-50%) rotateY(-14deg) rotateX(1deg) scale(.88) translateZ(-8px); transition: opacity .35s, transform .35s; }
 .kitbag-opening-overlay.is-revealed .kitbag-opening-card { z-index: 5; width: min(66%, 236px); animation: kitbag-card-hero .42s ease-out forwards; }
 .kitbag-opening-overlay.is-revealed .kitbag-opening-subtitle { color: var(--lime, #c5ef61); }
 .kitbag-opening-overlay.is-leaving { animation: kitbag-overlay-out .25s ease-in forwards; }
 @keyframes kitbag-overlay-in { to { opacity: 1; } }
 @keyframes kitbag-overlay-out { to { opacity: 0; visibility: hidden; } }
 @keyframes kitbag-shake {
-  0%,100% { transform: translateX(-50%) rotate(0) translateY(0); }
-  12%,36%,60%,84% { transform: translateX(calc(-50% - 7px)) rotate(-3deg) translateY(-2px); }
-  24%,48%,72% { transform: translateX(calc(-50% + 7px)) rotate(3deg) translateY(-1px); }
-  92% { transform: translateX(-50%) rotate(0) translateY(-4px); }
+  0%,100% { transform: translateX(-50%) rotateY(-10deg) rotateX(2.5deg) rotateZ(-1deg) translateY(0) translateZ(0); }
+  12%,36%,60%,84% { transform: translateX(calc(-50% - 7px)) rotateY(-16deg) rotateX(4deg) rotateZ(-4deg) translateY(-2px) translateZ(2px); }
+  24%,48%,72% { transform: translateX(calc(-50% + 7px)) rotateY(-4deg) rotateX(1deg) rotateZ(3deg) translateY(-1px) translateZ(6px); }
+  92% { transform: translateX(-50%) rotateY(-10deg) rotateX(2deg) rotateZ(0deg) translateY(-4px) translateZ(4px); }
 }
-@keyframes kitbag-lift { to { transform: translateX(-50%) translateY(-9px) scale(1.015); } }
+@keyframes kitbag-lift { to { transform: translateX(-50%) rotateY(-14deg) rotateX(1deg) rotateZ(0deg) translateY(-9px) scale(1.025) translateZ(15px); } }
 @keyframes kitbag-halo-pulse { 0% { opacity: 0; transform: translate(-50%,-45%) scale(.65); } 75% { opacity: 1; } 100% { opacity: .92; transform: translate(-50%,-45%) scale(1.12); } }
 @keyframes kitbag-card-rise {
-  0% { opacity: 0; transform: translate(-50%,94px) scale(.64) rotateY(-16deg); }
-  40% { opacity: 1; transform: translate(-50%,8px) scale(.82) rotateY(5deg); }
-  72% { opacity: 1; transform: translate(-50%,-36px) scale(.9) rotateY(0); }
-  100% { opacity: 1; transform: translate(-50%,-52px) scale(.91) rotateY(0); }
+  0% { opacity: 0; transform: translate(-50%,94px) scale(.64) rotateY(-23deg) rotateX(7deg) translateZ(-14px); }
+  40% { opacity: 1; transform: translate(-50%,8px) scale(.82) rotateY(9deg) rotateX(2deg) translateZ(28px); }
+  72% { opacity: 1; transform: translate(-50%,-36px) scale(.9) rotateY(-3deg) rotateX(0) translateZ(22px); }
+  100% { opacity: 1; transform: translate(-50%,-52px) scale(.91) rotateY(0) rotateX(0) translateZ(20px); }
 }
-@keyframes kitbag-card-hero { from { opacity: 1; transform: translate(-50%,-52px) scale(.91); } to { opacity: 1; transform: translate(-50%,-8px) scale(1); } }
+@keyframes kitbag-card-hero { from { opacity: 1; transform: translate(-50%,-52px) scale(.91) rotateY(0) translateZ(20px); } to { opacity: 1; transform: translate(-50%,-8px) scale(1) rotateY(0) translateZ(25px); } }
 @keyframes kitbag-spark { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.3); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(calc(-50% + var(--p-x)),calc(-50% + var(--p-y))) scale(.2) rotate(90deg); } }
 @media (max-width: 370px) {
   .kitbag-opening-stage { height: 252px; }

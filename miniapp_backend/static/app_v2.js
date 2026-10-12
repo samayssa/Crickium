@@ -224,11 +224,17 @@
     const teamA = esc(match.team_a_name || match.challenger_team_name || match.challenger_name || "Your match");
     const teamB = esc(match.team_b_name || match.opponent_team_name || match.opponent_name || "Opponent");
     const score = match.current_score || (match.runs != null ? `${number(match.runs)} runs · ${number(match.wickets)} wickets` : "Score not stored");
-    return `<button class="match-card ${active ? "is-active" : ""}" data-match-engine="${engine}" data-match-id="${Number(match.match_id || 0)}" aria-label="Open ${teamA} versus ${teamB}">
-      <div class="match-top"><span class="match-type">${engine} · ${esc(match.match_type || "Cricket")}</span><span class="match-status ${isLive ? "live" : won ? "won" : ""}">${esc(label)}</span></div>
-      <div class="match-versus"><div class="match-team"><b>${teamA}</b><small>${esc(match.challenger_username ? `@${match.challenger_username}` : "")}</small></div><span class="match-vs">VS</span><div class="match-team right"><b>${teamB}</b><small>${esc(match.opponent_username ? `@${match.opponent_username}` : "")}</small></div></div>
-      <div class="match-card-score"><b>${esc(score)}</b>${match.over_text ? `<span>${esc(match.over_text)} overs</span>` : ""}</div>
-      <div class="match-bottom"><span>${esc(match.batting_team ? `${match.batting_team} batting` : match.pitch || (match.target ? `Target ${number(match.target)}` : "Open match"))}</span><time>${esc(dateText(match.played_at || match.created_at))} ›</time></div>
+    const context = match.batting_team ? `${match.batting_team} batting` : match.pitch || (match.target ? `Target ${number(match.target)}` : (isLive ? "Live score available" : "Full match report"));
+    const matchDay = dateText(match.played_at || match.created_at);
+    const targetFact = match.target != null ? `<span class="match-fact">TARGET <b>${number(match.target)}</b></span>` : "";
+    const pitchFact = match.pitch ? `<span class="match-fact">PITCH <b>${esc(match.pitch)}</b></span>` : "";
+    const sourceFact = `<span class="match-fact">${isLive ? "LIVE CENTRE" : "SCORECARD"} <b>${isLive ? "●" : "↗"}</b></span>`;
+    return `<button class="match-card match-card-premium ${active ? "is-active" : ""} ${isLive ? "match-card-live" : "match-card-completed"}" data-match-engine="${engine}" data-match-id="${Number(match.match_id || 0)}" aria-label="Open ${teamA} versus ${teamB}">
+      <div class="match-top"><span class="match-type">${engine} · ${esc(match.match_type || "Cricket")}</span><span class="match-status ${isLive ? "live" : won ? "won" : ""}">${isLive ? '<i class="match-status-dot"></i>' : ""}${esc(label)}</span></div>
+      <div class="match-versus"><div class="match-team"><b>${teamA}</b><small>${esc(match.challenger_username ? `@${match.challenger_username}` : match.challenger_name || "")}</small></div><span class="match-vs">VS</span><div class="match-team right"><b>${teamB}</b><small>${esc(match.opponent_username ? `@${match.opponent_username}` : match.opponent_name || "")}</small></div></div>
+      <div class="match-card-score"><b>${esc(score)}</b>${match.over_text ? `<span>${esc(match.over_text)} overs</span>` : ""}${match.result_text ? `<small>${esc(match.result_text)}</small>` : ""}</div>
+      <div class="match-card-facts">${sourceFact}${pitchFact}${targetFact}</div>
+      <div class="match-bottom"><span>${esc(context)}</span><time>${esc(matchDay)} <b>›</b></time></div>
     </button>`;
   }
 
@@ -1268,13 +1274,34 @@
   function cricketBallLabel(ball) {
     if (typeof ball === "string" || typeof ball === "number") return String(ball || "•");
     if (!ball || typeof ball !== "object") return "•";
-    if (ball.wicket || ball.outcome === "wicket") return "W";
-    const kind = String(ball.extra_type || ball.outcome || "").toLowerCase();
-    if (kind.includes("wide")) return "WD";
-    if (kind.includes("no_ball") || kind === "noball") return "NB";
+    if (ball.wicket || String(ball.outcome || "").toLowerCase() === "wicket" || String(ball.symbol || "").toUpperCase() === "W") return "W";
+    const kind = String(ball.extra_type || ball.outcome || "").toLowerCase().replaceAll("-", "_");
+    const symbol = String(ball.symbol || "").toUpperCase();
+    if (kind.includes("wide") || kind === "wd" || symbol === "WD") return "WD";
+    if (kind.includes("no_ball") || kind === "noball" || kind === "nb" || symbol === "NB") return "NB";
+    if (kind.includes("leg_bye") || kind === "legbyes" || kind === "lb" || symbol === "LB") return "LB";
+    if (kind === "bye" || kind === "byes" || kind === "by" || symbol === "BY") return "BY";
+    if (symbol === "W") return "W";
     const runs = Number(ball.runs || 0);
+    if (symbol === "6" || runs === 6 || kind === "six" || kind === "six_runs") return "6";
+    if (symbol === "4" || runs === 4 || kind === "four" || (kind === "boundary" && runs !== 6)) return "4";
+    if (/^[0-6]$/.test(symbol)) return symbol;
     if (runs) return String(runs);
     return "•";
+  }
+
+  function cricketBallClass(ball) {
+    const label = cricketBallLabel(ball);
+    if (label === "6") return "outcome-six";
+    if (label === "4") return "outcome-four";
+    if (label === "W") return "outcome-wicket";
+    if (label === "NB") return "outcome-no-ball";
+    if (["WD", "LB", "BY"].includes(label)) return "outcome-extra";
+    return "outcome-normal";
+  }
+
+  function cricketBallToken(ball) {
+    return `<span class="ball-token ${cricketBallClass(ball)}">${esc(cricketBallLabel(ball))}</span>`;
   }
 
   function scoreValue(value) { return value == null || value === "" ? "—" : esc(value); }
@@ -1326,25 +1353,34 @@
     const teamA = data.team_a_name || data.challenger_name || "Team A";
     const teamB = data.team_b_name || data.opponent_name || "Team B";
     const score = current.runs == null && current.wickets == null ? null : `${number(current.runs)}/${number(current.wickets)}`;
-    const scoreHeader = data.scorecard_available && score ? `<section class="match-score-hero panel"><div class="match-meta-line"><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span><span>${esc(data.match_type || data.engine || "Cricket")} · ${esc(matchOverText(current))} overs</span></div><div class="match-hero-teams"><div><b>${esc(current.batting_team_display || teamA)}</b><small>Batting</small></div><div class="match-hero-score"><strong>${esc(score)}</strong><span>${esc(matchOverText(current))} overs</span><small>${currentNo === 1 ? "1st" : currentNo === 2 ? "2nd" : `${currentNo}th`} Innings</small></div><div class="team-away"><b>${esc(current.bowling_team_display || teamB)}</b><small>Bowling</small></div></div><div class="score-context"><span>CRR <b>${Number(current.legal_balls || 0) ? (Number(current.runs || 0) * 6 / Number(current.legal_balls)).toFixed(2) : "—"}</b></span><span>Target <b>${current.target == null ? "—" : number(current.target)}</b></span><span>Status <b>${esc(matchStatus)}</b></span></div></section>` : `<section class="match-score-hero panel"><div class="match-meta-line"><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span><span>${esc(data.match_type || data.engine || "Cricket")}</span></div><div class="match-hero-teams"><div><b>${esc(teamA)}</b></div><div class="match-hero-score"><strong>—</strong><span>Score not stored</span></div><div class="team-away"><b>${esc(teamB)}</b></div></div><p class="muted-copy">${esc(data.note || "Crickium has not stored enough data to display a live scorecard for this record.")}</p></section>`;
+    const matchFacts = `<div class="match-centre-facts">${data.stadium ? `<span>🏟️ <b>${esc(data.stadium)}</b></span>` : ""}${data.pitch ? `<span>🟩 <b>${esc(String(data.pitch).replaceAll("_", " "))} pitch</b></span>` : ""}${data.weather ? `<span>🌤️ <b>${esc(data.weather)}</b></span>` : ""}<span>🏏 <b>${esc(data.match_type || data.engine || "Cricket")}</b></span></div>`;
+    const currentRuns = Number(current.runs || 0);
+    const targetValue = current.target == null ? null : Number(current.target);
+    const runsNeeded = targetValue == null ? null : Math.max(0, targetValue - currentRuns);
+    const legalBalls = Number(current.legal_balls || 0);
+    const totalBalls = Math.max(0, Number(data.overs_limit || 20) * 6);
+    const ballsRemaining = Math.max(0, totalBalls - legalBalls);
+    const requiredRate = runsNeeded != null && ballsRemaining > 0 ? (runsNeeded * 6 / ballsRemaining).toFixed(2) : "—";
+    const scoreHeader = data.scorecard_available && score ? `<section class="match-score-hero match-score-hero-premium panel"><div class="match-meta-line"><span class="match-status ${live ? "live" : ""}">${live ? '<i class="match-status-dot"></i>' : ""}${esc(matchStatus)}</span><span>${esc(data.engine || "MATCH")} · ${esc(data.match_type || "Cricket")}</span></div><div class="match-hero-teams"><div><b>${esc(current.batting_team_display || teamA)}</b><small>Batting side</small></div><div class="match-hero-score"><strong>${esc(score)}</strong><span>${esc(matchOverText(current))} overs</span><small>${currentNo === 1 ? "1st" : currentNo === 2 ? "2nd" : `${currentNo}th`} Innings</small></div><div class="team-away"><b>${esc(current.bowling_team_display || teamB)}</b><small>Bowling side</small></div></div><div class="score-context"><span>CRR <b>${legalBalls ? (currentRuns * 6 / legalBalls).toFixed(2) : "—"}</b></span><span>Target <b>${targetValue == null ? "—" : number(targetValue)}</b></span><span>${targetValue != null && live ? "Need" : "Status"} <b>${targetValue != null && live ? number(runsNeeded) : esc(matchStatus)}</b></span>${targetValue != null && live ? `<span>RRR <b>${requiredRate}</b></span><span>Balls left <b>${number(ballsRemaining)}</b></span>` : ""}</div>${matchFacts}</section>` : `<section class="match-score-hero match-score-hero-premium panel"><div class="match-meta-line"><span class="match-status ${live ? "live" : ""}">${live ? '<i class="match-status-dot"></i>' : ""}${esc(matchStatus)}</span><span>${esc(data.engine || "MATCH")} · ${esc(data.match_type || "Cricket")}</span></div><div class="match-hero-teams"><div><b>${esc(teamA)}</b></div><div class="match-hero-score"><strong>—</strong><span>Scorecard unavailable</span></div><div class="team-away"><b>${esc(teamB)}</b></div></div>${matchFacts}<p class="muted-copy">${esc(data.note || "Crickium has not stored enough data to display a scorecard for this record.")}</p></section>`;
 
     const tabNames = [["live", "Live"], ["scorecard", "Scorecard"], ["commentary", "Commentary"], ["stats", "Stats"]];
     const tabs = `<div class="match-tabs" role="tablist">${tabNames.map(([key,label]) => `<button class="match-tab ${state.matchTab === key ? "selected" : ""}" role="tab" aria-selected="${state.matchTab === key}" data-action="match-tab" data-tab="${key}">${label}</button>`).join("")}</div>`;
     const innSwitch = innings.length > 1 ? `<div class="innings-switch">${innings.map((item) => `<button class="filter-chip ${Number(item.innings_number) === currentNo ? "selected" : ""}" data-action="match-innings" data-innings="${Number(item.innings_number || 1)}">${Number(item.innings_number) === 1 ? "1st" : Number(item.innings_number) === 2 ? "2nd" : `${Number(item.innings_number)}th`} Innings · ${esc(item.batting_team_display || "Team")} ${number(item.runs)}/${number(item.wickets)}</button>`).join("")}</div>` : "";
 
     const pairHtml = battingPair.length ? `<section class="panel"><div class="panel-heading"><h2>Current batting pair</h2><span class="muted-inline">${currentNo === 1 ? "1ST INNINGS" : `${currentNo}ND INNINGS`}</span></div><div class="batting-pair-grid">${battingPair.slice(0,2).map((batter, index) => `<div class="batting-pair-player"><span>${index === 0 ? "On strike" : "Non-striker"}</span><b>${esc(batter.name || "Batter")}</b><strong>${number(batter.runs)} <small>(${number(batter.balls)})</small></strong><small>4s ${number(batter.fours)} · 6s ${number(batter.sixes)} · SR ${batter.strike_rate == null ? "—" : Number(batter.strike_rate).toFixed(1)}</small></div>`).join("")}${partnership ? `<div class="partnership-tile"><span>Partnership</span><b>${number(partnership.runs)} <small>(${number(partnership.balls)} balls)</small></b></div>` : ""}</div></section>` : "";
-    const currentOver = data.this_over || current.this_over || [];
-    const bowlerHtml = bowler ? `<section class="panel"><div class="panel-heading"><h2>Current bowler</h2><span class="muted-inline">CURRENT</span></div><div class="current-bowler-line"><div><b>${esc(bowler.name || "Bowler")}</b><small>${esc(bowler.overs || (Number(bowler.balls || 0) ? `${Math.floor(Number(bowler.balls) / 6)}.${Number(bowler.balls) % 6}` : "0.0"))} overs · ${number(bowler.runs)} runs · ${number(bowler.wickets)} wickets</small></div><strong>${esc(bowler.overs || "0.0")} · ${number(bowler.runs)} · ${number(bowler.wickets)}</strong></div>${currentOver.length ? `<div class="current-over-line"><b>This over</b><div class="ball-strip">${currentOver.slice(-6).map((ball) => `<span class="ball-token ${cricketBallLabel(ball) === "W" ? "wicket" : ["4","6"].includes(cricketBallLabel(ball)) ? "boundary" : ""}">${esc(cricketBallLabel(ball))}</span>`).join("")}</div></div>` : ""}</section>` : "";
+    const latestOverRow = (current.analysis_overs || []).slice(-1)[0];
+    const currentOver = latestOverRow?.balls?.length ? latestOverRow.balls.slice(-6) : (data.this_over || current.this_over || []);
+    const bowlerHtml = bowler ? `<section class="panel"><div class="panel-heading"><h2>Current bowler</h2><span class="muted-inline">CURRENT</span></div><div class="current-bowler-line"><div><b>${esc(bowler.name || "Bowler")}</b><small>${esc(bowler.overs || (Number(bowler.balls || 0) ? `${Math.floor(Number(bowler.balls) / 6)}.${Number(bowler.balls) % 6}` : "0.0"))} overs · ${number(bowler.runs)} runs · ${number(bowler.wickets)} wickets</small></div><strong>${esc(bowler.overs || "0.0")} · ${number(bowler.runs)} · ${number(bowler.wickets)}</strong></div>${currentOver.length ? `<div class="current-over-line"><b>This over</b><div class="ball-strip">${currentOver.slice(-6).map((ball) => cricketBallToken(ball)).join("")}</div></div>` : ""}</section>` : "";
 
     const overRows = current.analysis_overs || [];
     const recentOvers = overRows.slice(-6).reverse();
-    const overHtml = recentOvers.length ? `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2><button class="text-button" data-action="match-tab" data-tab="commentary">Full commentary ›</button></div><div class="recent-over-list">${recentOvers.map((row) => `<div class="recent-over-row"><b>${Number(row.over) || "—"}</b><div class="ball-strip">${(row.balls || []).map((ball) => `<span class="ball-token ${ball.wicket ? "wicket" : [4,6].includes(Number(ball.runs)) ? "boundary" : ""}">${esc(cricketBallLabel(ball))}</span>`).join("")}</div><strong>${number(row.runs)} runs${row.wickets ? ` · ${number(row.wickets)} W` : ""}</strong></div>`).join("")}</div></section>` : `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2></div><p class="muted-copy">No over-by-over delivery log is stored for this match record.</p></section>`;
+    const overHtml = recentOvers.length ? `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2><button class="text-button" data-action="match-tab" data-tab="commentary">Full commentary ›</button></div><div class="recent-over-list">${recentOvers.map((row) => `<div class="recent-over-row"><b>${Number(row.over) || "—"}</b><div class="ball-strip">${(row.balls || []).map((ball) => cricketBallToken(ball)).join("")}</div><strong>${number(row.runs)} runs${row.wickets ? ` · ${number(row.wickets)} W` : ""}</strong></div>`).join("")}</div></section>` : `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2></div><p class="muted-copy">No over-by-over delivery log is stored for this match record.</p></section>`;
 
     const balls = (Array.isArray(current.analysis_balls) ? current.analysis_balls : []).slice().sort((a,b) => Number(a.over || 0) - Number(b.over || 0) || Number(a.ball || 0) - Number(b.ball || 0));
     const commentary = balls.length ? `<div class="commentary-list">${balls.map((ball) => {
       const ballLabel = cricketBallLabel(ball);
       const comment = ball.commentary || ball.text || ball.description || `${ball.bowler || "Bowler"} to ${ball.batter || "batter"}, ${ballLabel === "W" ? "wicket" : `${number(ball.runs)} run${Number(ball.runs || 0) === 1 ? "" : "s"}`}.`;
-      return `<div class="commentary-row"><span class="commentary-over">${Number(ball.over) || "—"}.${Number(ball.ball) || "—"}</span><span class="ball-token ${ball.wicket ? "wicket" : ["4","6"].includes(ballLabel) ? "boundary" : ""}">${esc(ballLabel)}</span><div><b>${esc(ball.bowler || "Bowler")} to ${esc(ball.batter || "Batter")}</b><p>${esc(comment)}</p>${ball.score_after ? `<small>${esc(ball.score_after)}</small>` : ""}</div></div>`;
+      return `<div class="commentary-row"><span class="commentary-over">${Number(ball.over) || "—"}.${Number(ball.ball) || "—"}</span>${cricketBallToken(ball)}<div><b>${esc(ball.bowler || "Bowler")} to ${esc(ball.batter || "Batter")}</b><p>${esc(comment)}</p>${ball.score_after ? `<small>${esc(ball.score_after)}</small>` : ""}</div></div>`;
     }).join("")}</div>` : `<p class="muted-copy">Ball-by-ball commentary is not stored for this match record. No commentary has been fabricated.</p>`;
 
     const resultSummary = `<section class="panel match-result-panel"><div class="panel-heading"><h2>${completed ? "Match summary" : "Match details"}</h2><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span></div>${data.result_text ? `<h3>${esc(data.result_text)}</h3>` : completed ? `<p class="muted-copy">${esc(data.note || "The final result was not recorded in a displayable format.")}</p>` : `<p class="muted-copy">${esc(data.note || "Match details are derived from the stored game session.")}</p>`}${data.potm?.name && data.potm.name !== "—" && completed ? `<div class="potm-row"><span>Player of the Match</span><b>${esc(data.potm.name)}</b><small>${number(data.potm.runs)} runs · ${number(data.potm.wickets)} wickets</small></div>` : ""}${innings.length ? `<div class="innings-summary-list">${innings.map((item) => `<div><span>${Number(item.innings_number) === 1 ? "1st" : Number(item.innings_number) === 2 ? "2nd" : `${Number(item.innings_number)}th`} innings · ${esc(item.batting_team_display || "Team")}</span><b>${number(item.runs)}/${number(item.wickets)}</b><small>${esc(matchOverText(item))} overs${item.target ? ` · target ${number(item.target)}` : ""}</small></div>`).join("")}</div>` : ""}</section>`;
@@ -1374,8 +1410,9 @@
 
   async function loadMatchDetail(engine, id, options = {}) {
     if (options.silent && state.matchRequestBusy) return;
-    if (!options.skipRoute && (!state.currentMatch || state.currentMatch.engine !== engine || String(state.currentMatch.id) !== String(id))) {
-      const nextMatch = { engine: String(engine || "MATCH").toUpperCase(), id: Number(id) };
+    const requestedShared = Boolean(options.shared ?? (state.currentMatch && state.currentMatch.engine === String(engine || "MATCH").toUpperCase() && String(state.currentMatch.id) === String(id) && state.currentMatch.shared));
+    if (!options.skipRoute && (!state.currentMatch || state.currentMatch.engine !== String(engine || "MATCH").toUpperCase() || String(state.currentMatch.id) !== String(id) || Boolean(state.currentMatch.shared) !== requestedShared)) {
+      const nextMatch = { engine: String(engine || "MATCH").toUpperCase(), id: Number(id), ...(requestedShared ? { shared: true } : {}) };
       pushRoute({ page: "match-detail", currentMatch: nextMatch, matchTab: "live", matchInnings: null });
       state.currentMatch = nextMatch; state.matchTab = "live"; state.matchInnings = null;
     }
@@ -1383,11 +1420,12 @@
     const seq = ++state.matchRequestSeq;
     state.matchRequestBusy = true;
     const scrollTop = Number(window.scrollY || 0);
-    const selected = { engine: String(engine).toUpperCase(), id: String(id) };
-    if (!options.silent) shell(`<div class="loading-line">Loading stored match events…</div>`, `Match #${id}`, "MATCH REPORT");
+    const selected = { engine: String(engine).toUpperCase(), id: String(id), shared: requestedShared };
+    if (!options.silent) shell(`<div class="loading-line">Loading match centre…</div>`, `Match #${id}`, "MATCH CENTRE");
     try {
-      const data = await api(`/api/matches/${encodeURIComponent(engine)}/${encodeURIComponent(id)}`);
-      if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id) return;
+      const endpoint = requestedShared ? `/api/matches/shared/${encodeURIComponent(engine)}/${encodeURIComponent(id)}` : `/api/matches/${encodeURIComponent(engine)}/${encodeURIComponent(id)}`;
+      const data = await api(endpoint);
+      if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id || Boolean(state.currentMatch.shared) !== selected.shared) return;
       renderMatchDetail(data);
       if (options.silent) window.scrollTo({ top: scrollTop, behavior: "auto" });
       if (state.matchTimer) clearInterval(state.matchTimer);
@@ -1398,7 +1436,7 @@
         }
       }, 12000);
     } catch (error) {
-      if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id) return;
+      if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id || Boolean(state.currentMatch.shared) !== selected.shared) return;
       if (options.silent) return;
       shell(`${errorState(error, "matches")}`, `Match #${id}`, "MATCH REPORT");
     } finally {
@@ -1406,14 +1444,14 @@
     }
   }
 
-  function openMatch(engine, id) {
+  function openMatch(engine, id, options = {}) {
     if (!engine || !Number(id)) return;
     clearInterval(state.matchTimer);
-    const match = { engine: String(engine).toUpperCase(), id: Number(id) };
+    const match = { engine: String(engine).toUpperCase(), id: Number(id), ...(options.shared ? { shared: true } : {}) };
     pushRoute({ page: "match-detail", currentMatch: match, matchTab: "live", matchInnings: null });
     state.currentMatch = match; state.currentMatchData = null; state.matchTab = "live"; state.matchInnings = null;
     state.page = "match-detail";
-    loadMatchDetail(match.engine, match.id, { skipRoute: true });
+    loadMatchDetail(match.engine, match.id, { skipRoute: true, shared: Boolean(options.shared) });
   }
 
   async function restoreRoute(route) {
@@ -2012,5 +2050,12 @@
   try { if (window.history && !window.history.state?.crickium) window.history.replaceState({ crickium: true, page: "home", currentMatch: null, matchTab: "live", matchInnings: null, index: 0 }, "", window.location.href); } catch (_) {}
   // Warm AdsGram on app start so the Watch Ad button is ready when eligible.
   ensureAdsgramSdk().catch(() => {});
-  loadHome();
+  const launchParams = new URLSearchParams(window.location.search || "");
+  const launchParam = String(tg?.initDataUnsafe?.start_param || launchParams.get("tgWebAppStartParam") || launchParams.get("startapp") || "");
+  const sharedScoreMatch = launchParam.match(/^score_([A-Z0-9]+)_(\d+)$/i);
+  if (sharedScoreMatch) {
+    openMatch(sharedScoreMatch[1].toUpperCase(), Number(sharedScoreMatch[2]), { shared: true });
+  } else {
+    loadHome();
+  }
 })();

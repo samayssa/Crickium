@@ -6,7 +6,7 @@
 (() => {
   "use strict";
 
-  const ART_URL = "/static/kitbag-crickium.svg?v=kitbag-animation-20261012-1";
+  const ART_URL = "/static/kitbag-crickium.svg?v=kitbag-3d-20261012-2";
   const OPENING_MS = 3020;
   let artPromise = null;
   let activeOverlay = null;
