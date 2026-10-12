@@ -1467,16 +1467,20 @@ def _simple_bowler(bowler: dict[str, Any], current_bowler_name: str | None = Non
     }
 
 
-async def _source_match_row(engine: str, match_id: int, user_id: int) -> dict[str, Any] | None:
+async def _source_match_row(engine: str, match_id: int, user_id: int, *, allow_shared: bool = False) -> dict[str, Any] | None:
     spec = MATCH_SOURCE_TABLES.get(str(engine or "").upper())
     if not spec:
         return None
     table, id_column = spec
     try:
-        row = await fetchrow(
-            f"SELECT * FROM {table} WHERE {id_column}=$1 AND (challenger_id=$2 OR opponent_id=$2);",
-            int(match_id), int(user_id),
-        )
+        if allow_shared:
+            # Table/identifier names are selected exclusively from MATCH_SOURCE_TABLES.
+            row = await fetchrow(f"SELECT * FROM {table} WHERE {id_column}=$1;", int(match_id))
+        else:
+            row = await fetchrow(
+                f"SELECT * FROM {table} WHERE {id_column}=$1 AND (challenger_id=$2 OR opponent_id=$2);",
+                int(match_id), int(user_id),
+            )
         return dict(row) if row else None
     except Exception as exc:
         print(f"[miniapp_backend] match detail source unavailable engine={str(engine).upper()} type={type(exc).__name__}")
@@ -1640,10 +1644,11 @@ def _summary_innings_from_rows(rows: list[dict[str, Any]], source_match: dict[st
                 continue
             if user_id and int(over.get("batting_team_id") or 0) not in {0, user_id}:
                 continue
+            over_balls = _json_list(over.get("balls_detail") or over.get("balls"))
             inning_over_rows.append({
                 "over": int(over.get("over_number") or 0), "runs": int(over.get("runs") or 0),
                 "wickets": int(over.get("wickets") or 0), "legal_balls": int(over.get("balls") or 0),
-                "balls": [],
+                "balls": over_balls,
             })
         legal_balls = sum(int(x.get("legal_balls") or 0) for x in inning_over_rows)
         runs = int(batting_row.get("batting_runs") or 0)
@@ -1652,6 +1657,7 @@ def _summary_innings_from_rows(rows: list[dict[str, Any]], source_match: dict[st
             wickets = sum(int(x.get("wickets") or 0) for x in inning_over_rows)
         batters = [_simple_batter(item) for item in batting]
         bowlers = [_simple_bowler(item) for item in bowling]
+        innings_analysis_balls = [ball for over_row in inning_over_rows for ball in (over_row.get("balls") or []) if isinstance(ball, dict)]
         innings_out.append({
             "innings_number": number,
             "batting_team_id": user_id,
@@ -1662,13 +1668,13 @@ def _summary_innings_from_rows(rows: list[dict[str, Any]], source_match: dict[st
             "over_text": _overs_from_balls(legal_balls),
             "target": int(batting_row.get("target") or 0) or None,
             "batters": batters, "bowlers": bowlers,
-            "analysis_overs": inning_over_rows, "analysis_balls": [],
+            "analysis_overs": inning_over_rows, "analysis_balls": innings_analysis_balls,
             "extras": {}, "source": "stored match summary",
         })
     return innings_out
 
 
-async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int) -> dict[str, Any] | None:
+async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int, *, allow_shared: bool = False) -> dict[str, Any] | None:
     engine = str(engine or "").upper()
     try:
         match_id = int(match_id)
@@ -1677,16 +1683,22 @@ async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int)
     if engine not in MATCH_SOURCE_TABLES:
         return None
 
-    # Gate all direct/guessable match IDs through participant ownership before
-    # returning the match record or its snapshots.
-    source_match = await _source_match_row(engine, match_id, int(viewer.id))
-    summary = await fetchrow(
-        """
-        SELECT * FROM quest_match_summaries
-        WHERE user_id=$1 AND LOWER(engine)=LOWER($2) AND match_id=$3
-        ORDER BY played_at DESC LIMIT 1;
-        """, int(viewer.id), engine, match_id,
-    )
+    # Regular match links are participant-gated. Only the explicit signed-in
+    # Mini App shared-score route exposes a read-only public score view.
+    source_match = await _source_match_row(engine, match_id, int(viewer.id), allow_shared=allow_shared)
+    if allow_shared:
+        summary = await fetchrow(
+            "SELECT * FROM quest_match_summaries WHERE LOWER(engine)=LOWER($1) AND match_id=$2 ORDER BY played_at DESC LIMIT 1;",
+            engine, match_id,
+        )
+    else:
+        summary = await fetchrow(
+            """
+            SELECT * FROM quest_match_summaries
+            WHERE user_id=$1 AND LOWER(engine)=LOWER($2) AND match_id=$3
+            ORDER BY played_at DESC LIMIT 1;
+            """, int(viewer.id), engine, match_id,
+        )
 
     active_status = str((source_match or {}).get("status") or "").lower()
     if source_match and active_status not in _TERMINAL_MATCH_STATUSES:
@@ -1705,6 +1717,8 @@ async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int)
                 "challenger_name": str(source_match.get("challenger_name") or first),
                 "opponent_name": str(source_match.get("opponent_name") or second),
                 "pitch": source_match.get("pitch"), "stadium": source_match.get("stadium"),
+                "weather": source_match.get("weather"),
+                "overs_limit": 1 if engine == "PLAYSO" else int(source_match.get("overs_limit") or source_match.get("overs") or 20),
                 "created_at": _iso(source_match.get("created_at")), "played_at": None,
                 "current_innings_number": current_no, "runs": int(current.get("runs") or 0),
                 "wickets": int(current.get("wickets") or 0), "over_text": current.get("over_text") or _overs_from_balls(balls),
@@ -1727,7 +1741,7 @@ async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int)
             row["over_history"] = _json_list(row.get("over_history"))
         innings = _summary_innings_from_rows(cleaned, source_match, engine, match_id)
         user_summary = dict(summary)
-        user_won = bool(user_summary.get("won"))
+        user_won = bool(user_summary.get("won")) if not allow_shared else False
         winner_name = None
         for row in cleaned:
             if bool(row.get("won")):
@@ -1757,12 +1771,14 @@ async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int)
             "opponent_name": str((source_match or {}).get("opponent_name") or second),
             "pitch": user_summary.get("pitch") or (source_match or {}).get("pitch"),
             "stadium": (source_match or {}).get("stadium"),
+            "weather": (source_match or {}).get("weather"),
+            "overs_limit": 1 if engine == "PLAYSO" else int((source_match or {}).get("overs_limit") or (source_match or {}).get("overs") or 20),
             "created_at": _iso((source_match or {}).get("created_at")),
             "played_at": _iso(user_summary.get("played_at")),
             "innings": innings, "scorecard_available": bool(innings),
             "current_innings_number": innings[-1].get("innings_number") if innings else None,
             "result_text": result_text, "winner_name": winner_name,
-            "won": user_won, "target": user_summary.get("target"),
+            "won": user_won if not allow_shared else None, "target": user_summary.get("target"),
             "runs": int(user_summary.get("batting_runs") or 0),
             "wickets": int(user_summary.get("bowling_wickets") or 0),
             "over_text": innings[-1].get("over_text") if innings else None,

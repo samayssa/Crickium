@@ -111,7 +111,7 @@ async def _send_static(send, path: str):
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
     # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
-    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css"}
+    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js"}
     cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
     await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
 
@@ -292,6 +292,20 @@ class CrickiumMiniApp:
             if path == "/api/matches":
                 await _send_json(send, await api.build_matches_response(viewer))
                 return
+            if path.startswith("/api/matches/shared/"):
+                parts = path.strip("/").split("/")
+                if len(parts) == 5 and parts[2] == "shared":
+                    try:
+                        shared_match_id = int(parts[4])
+                    except ValueError:
+                        await _send_json(send, {"detail": "Invalid match id"}, 400)
+                        return
+                    result = await api.build_match_detail(viewer, parts[3], shared_match_id, allow_shared=True)
+                    if result is None:
+                        await _send_json(send, {"detail": "Shared match score is not available"}, 404)
+                        return
+                    await _send_json(send, result)
+                    return
             if path.startswith("/api/matches/"):
                 parts = path.strip("/").split("/")
                 if len(parts) == 4:
