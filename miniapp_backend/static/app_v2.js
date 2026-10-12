@@ -17,7 +17,7 @@
     matchTimer: null,
     rewardTimer: null,
     adFlowBusy: false,
-    monetagSdkStatus: "loading",
+    adsgramSdkStatus: "loading",
     searchSeq: 0,
     marketSeq: 0,
     matchesSeq: 0,
@@ -370,11 +370,11 @@
     const button = document.querySelector('[data-action="watch-bonus-ad"]');
     const eligible = completed < limit && adSeconds <= 0 && !pendingAttempt && !replacementPending;
     if (button) {
-      button.disabled = !eligible || state.adFlowBusy || state.monetagSdkStatus === "loading";
+      button.disabled = !eligible || state.adFlowBusy || state.adsgramSdkStatus === "loading";
       if (!state.adFlowBusy) {
-        button.textContent = state.monetagSdkStatus === "loading"
+        button.textContent = state.adsgramSdkStatus === "loading"
           ? "Preparing ad service…"
-          : state.monetagSdkStatus === "failed"
+          : state.adsgramSdkStatus === "failed"
             ? "Retry Ad Connection"
             : "▶ Watch Ad & Get 1 Extra Kit Bag";
       }
@@ -1100,9 +1100,9 @@
           data-replacement-pending="${pending || ads.replacement_pending ? "true" : "false"}">
           <span class="timer-free">FREE KIT BAG: CHECKING</span><span class="timer-divider">•</span><span class="timer-ad">NEXT AD: CHECKING</span>
         </div>
-        <section class="panel reward-ad-panel"><div class="ad-panel-heading"><div class="ad-panel-icon">▶</div><div><span class="eyebrow">EXTRA KIT BAG</span><h2>Watch an Ad</h2><p>Earn one extra Kit Bag after a verified eligible Monetag ad. Up to three per day, with a one-hour gap between rewards.</p><span class="ad-usage" id="ad-usage">${esc(adUsage)}</span></div></div>
-          <button class="button gold full" data-action="watch-bonus-ad" ${ads.can_watch && !pending && state.monetagSdkStatus !== "loading" ? "" : "disabled"}>${state.monetagSdkStatus === "loading" ? "Preparing ad service…" : state.monetagSdkStatus === "failed" ? "Retry Ad Connection" : "▶ Watch Ad &amp; Get 1 Extra Kit Bag"}</button>
-          <small class="ad-disclaimer">Rewards are granted only after Monetag confirms an eligible ad event. Failed or unpaid events do not grant a Kit Bag.</small>
+        <section class="panel reward-ad-panel"><div class="ad-panel-heading"><div class="ad-panel-icon">▶</div><div><span class="eyebrow">EXTRA KIT BAG</span><h2>Watch an Ad</h2><p>Earn one extra Kit Bag after completing an AdsGram Reward ad. Up to three per day, with a one-hour gap between rewards.</p><span class="ad-usage" id="ad-usage">${esc(adUsage)}</span></div></div>
+          <button class="button gold full" data-action="watch-bonus-ad" ${ads.can_watch && !pending && state.adsgramSdkStatus !== "loading" ? "" : "disabled"}>${state.adsgramSdkStatus === "loading" ? "Preparing ad service…" : state.adsgramSdkStatus === "failed" ? "Retry Ad Connection" : "▶ Watch Ad &amp; Get 1 Extra Kit Bag"}</button>
+          <small class="ad-disclaimer">One Kit Bag is credited after AdsGram reports that the Reward ad was completed. Failed or skipped ads do not grant a Kit Bag.</small>
         </section>
         <section class="panel reward-panel"><div class="panel-heading"><div><span class="eyebrow">7-DAY STREAK</span><h2>${number(daily.streak)} claimed · ${number(daily.total_claimed)} total claims</h2></div><button class="button primary" data-action="daily-claim" ${daily.available ? "" : "disabled"}>${daily.available ? "Claim" : clock(daily.seconds_until_available)}</button></div>
           <div class="reward-list">${days.map((day) => `<div class="reward-row ${day.status}"><span class="day-mark">${number(day.day)}</span><span><b>Day ${number(day.day)}</b><small>${day.player_range ? `Random player · OVR ${day.player_range[0]}–${day.player_range[1]}` : "Coins"}${day.rubies ? ` + ${number(day.rubies)} rubies` : ""}</small></span><strong>${number(day.coins)} 🪙</strong><i>${day.status === "claimed" ? "✓" : day.status === "available" ? "CLAIM" : "LOCKED"}</i></div>`).join("")}</div>
@@ -1472,7 +1472,7 @@
     const rewardCopy = requiresReplacement
       ? `<p>Your squad is full at 25 players. This card is saved safely. Choose one player to replace and this card will take their squad slot.</p><button class="button primary full" data-action="open-kitbag-replace" data-claim-id="${esc(claimId)}">Choose player to replace</button>`
       : source === "ad"
-        ? `<p>Your extra Kit Bag was granted after Monetag confirmed the eligible ad event. The next-ad timer is shown below.</p><button class="button primary full" data-page="rewards">Back to Rewards</button>`
+        ? `<p>Your extra Kit Bag was granted after AdsGram confirmed the completed Reward ad. The next-ad timer is shown below.</p><button class="button primary full" data-page="rewards">Back to Rewards</button>`
         : `<p>Added to your squad. Come back in an hour for your next free Kit Bag.</p><button class="button primary full" data-page="squad">View squad</button>`;
     shell(`<section class="reveal-card"><div class="reveal-burst">✦</div><span class="eyebrow">KIT BAG OPENED</span><h2>Your new player</h2>${playerCard(player)}${adTimerMarkup}${rewardCopy}</section>`, "Player acquired", "REWARD UNLOCKED");
     hydrateImages();
@@ -1565,122 +1565,106 @@
   }
 
 
-  let monetagSdkLoadPromise = null;
-  const MONETAG_ZONE_ID = "12010515";
+  let adsgramSdkLoadPromise = null;
+  let adsgramController = null;
+  const ADSGRAM_BLOCK_ID = "53509";
 
-  function syncMonetagButtonState() {
-    const button = document.querySelector('[data-action="watch-bonus-ad"]');
+  function syncAdsgramButtonState() {
     const line = document.getElementById("reward-timer-line");
-    if (!button || !line) return;
-    const completed = Number(line.dataset.completed || 0);
-    const limit = Number(line.dataset.limit || 3);
+    if (!line) return;
+    const completed = Math.max(0, Number(line.dataset.completed || 0));
+    const limit = Math.max(1, Number(line.dataset.limit || 3));
     const adSeconds = Math.max(0, Number(line.dataset.adSeconds || 0));
-    const eligible = completed < limit
-      && adSeconds <= 0
-      && line.dataset.pendingAttempt !== "true"
-      && line.dataset.replacementPending !== "true";
-    button.disabled = !eligible || state.adFlowBusy || state.monetagSdkStatus === "loading";
+    const adState = line.dataset.adState || "ready";
+    const pendingAttempt = line.dataset.pendingAttempt === "true";
+    const replacementPending = line.dataset.replacementPending === "true";
+    const eligible = completed < limit && adSeconds <= 0 && !pendingAttempt && !replacementPending && adState !== "daily_limit";
+    const button = document.querySelector('[data-action="watch-bonus-ad"]');
+    if (!button) return;
+    button.disabled = !eligible || state.adFlowBusy || state.adsgramSdkStatus === "loading";
     if (!state.adFlowBusy) {
-      button.textContent = state.monetagSdkStatus === "loading"
+      button.textContent = state.adsgramSdkStatus === "loading"
         ? "Preparing ad service…"
-        : state.monetagSdkStatus === "failed"
+        : state.adsgramSdkStatus === "failed"
           ? "Retry Ad Connection"
           : "▶ Watch Ad & Get 1 Extra Kit Bag";
     }
   }
 
-  function waitForMonetagFunction(timeoutMs = 15000) {
-    return new Promise((resolve, reject) => {
-      const started = Date.now();
-      const poll = () => {
-        const fn = window.show_12010515;
-        if (typeof fn === "function") {
-          resolve(fn);
-          return;
-        }
-        if (Date.now() - started >= timeoutMs) {
-          reject(new Error("monetag_sdk_function_unavailable"));
-          return;
-        }
-        setTimeout(poll, 100);
-      };
-      poll();
-    });
+  function getAdsgramController() {
+    if (!window.Adsgram || typeof window.Adsgram.init !== "function") {
+      throw new Error("adsgram_sdk_not_available");
+    }
+    if (!adsgramController || typeof adsgramController.show !== "function") {
+      adsgramController = window.Adsgram.init({ blockId: ADSGRAM_BLOCK_ID });
+    }
+    if (!adsgramController || typeof adsgramController.show !== "function") {
+      adsgramController = null;
+      throw new Error("adsgram_controller_init_failed");
+    }
+    return adsgramController;
   }
 
-  async function ensureMonetagSdk() {
-    if (typeof window.show_12010515 === "function") {
-      state.monetagSdkStatus = "ready";
-      syncMonetagButtonState();
-      return window.show_12010515;
+  async function ensureAdsgramSdk() {
+    if (window.Adsgram && typeof window.Adsgram.init === "function") {
+      try {
+        const controller = getAdsgramController();
+        state.adsgramSdkStatus = "ready";
+        syncAdsgramButtonState();
+        return controller;
+      } catch (error) {
+        adsgramController = null;
+        state.adsgramSdkStatus = "failed";
+        syncAdsgramButtonState();
+        throw error;
+      }
     }
-    if (monetagSdkLoadPromise) return monetagSdkLoadPromise;
+    if (adsgramSdkLoadPromise) return adsgramSdkLoadPromise;
 
-    state.monetagSdkStatus = "loading";
-    syncMonetagButtonState();
-    monetagSdkLoadPromise = new Promise((resolve, reject) => {
-      let script = document.getElementById("monetag-sdk-script");
-      if (script?.dataset.loadFailed === "true") {
-        script.remove();
-        script = null;
-      }
-      if (!script) {
-        script = document.createElement("script");
-        script.id = "monetag-sdk-script";
-        script.src = "https://libtl.com/sdk.js";
-        script.dataset.zone = MONETAG_ZONE_ID;
-        script.dataset.sdk = `show_${MONETAG_ZONE_ID}`;
-        script.async = true;
-      }
-
+    state.adsgramSdkStatus = "loading";
+    syncAdsgramButtonState();
+    adsgramSdkLoadPromise = new Promise((resolve, reject) => {
+      // Load into <head> without blocking the whole Mini App. If a previous
+      // SDK request failed, remove its tag and retry without concurrent copies.
+      document.getElementById("adsgram-sdk-script")?.remove();
+      const script = document.createElement("script");
+      script.id = "adsgram-sdk-script";
+      script.src = "https://sad.adsgram.ai/js/sad.min.js";
+      script.async = true;
       let settled = false;
-      let pollTimer = null;
       const deadline = Date.now() + 15000;
-      const finish = (error, fn) => {
+      const pollTimer = setInterval(() => {
+        if (window.Adsgram && typeof window.Adsgram.init === "function") finish();
+        else if (Date.now() >= deadline) finish(new Error("adsgram_sdk_load_timeout"));
+      }, 150);
+      const finish = (error) => {
         if (settled) return;
         settled = true;
-        if (pollTimer) clearTimeout(pollTimer);
-        clearTimeout(timeoutTimer);
+        clearInterval(pollTimer);
         script.onload = null;
         script.onerror = null;
-        if (error) {
-          script.dataset.loadFailed = "true";
-          reject(error);
-        } else {
-          resolve(fn);
-        }
+        if (error) reject(error); else resolve();
       };
-      const poll = () => {
-        if (typeof window.show_12010515 === "function") {
-          finish(null, window.show_12010515);
-          return;
-        }
-        if (Date.now() >= deadline) {
-          finish(new Error("monetag_sdk_function_unavailable"));
-          return;
-        }
-        pollTimer = setTimeout(poll, 100);
+      script.onload = () => {
+        if (window.Adsgram && typeof window.Adsgram.init === "function") finish();
       };
-      const timeoutTimer = setTimeout(() => finish(new Error("monetag_sdk_load_timeout")), 16000);
-      script.onerror = () => finish(new Error("monetag_sdk_script_load_failed"));
-      script.onload = poll;
-      if (!script.isConnected) document.head.appendChild(script);
-      // Poll as well as listening for load: if the SDK finished before this
-      // listener was attached, the global function is still detected.
-      poll();
-    }).then((fn) => {
-      state.monetagSdkStatus = "ready";
-      console.info("[Crickium] Monetag SDK ready", MONETAG_ZONE_ID);
-      return fn;
+      script.onerror = () => finish(new Error("adsgram_sdk_script_load_failed"));
+      document.head.appendChild(script);
+    }).then(() => {
+      const controller = getAdsgramController();
+      state.adsgramSdkStatus = "ready";
+      console.info("[Crickium] AdsGram Reward SDK ready", ADSGRAM_BLOCK_ID);
+      return controller;
     }).catch((error) => {
-      state.monetagSdkStatus = "failed";
-      console.warn("[Crickium] Monetag SDK unavailable. Check the Monetag-generated tag, zone activation, Telegram WebView network access, and content blockers.", error?.message || "unknown error");
+      adsgramController = null;
+      state.adsgramSdkStatus = "failed";
+      console.warn("[Crickium] AdsGram SDK unavailable. Check block activation/moderation, the registered Web App URL, and Telegram WebView network access.", error?.message || "unknown error");
       throw error;
     }).finally(() => {
-      monetagSdkLoadPromise = null;
-      syncMonetagButtonState();
+      adsgramSdkLoadPromise = null;
+      syncAdsgramButtonState();
     });
-    return monetagSdkLoadPromise;
+    return adsgramSdkLoadPromise;
   }
 
   async function startBonusAd(button) {
@@ -1688,27 +1672,27 @@
     if (!initData) { toast("Open Crickium inside Telegram first.", true); return; }
 
     state.adFlowBusy = true;
-    if (button) { button.disabled = true; button.textContent = "Loading ad service…"; }
+    if (button) { button.disabled = true; button.textContent = "Preparing ad…"; }
     try {
-      let showMonetagAd;
+      let controller;
       try {
-        showMonetagAd = await ensureMonetagSdk();
+        controller = await ensureAdsgramSdk();
       } catch (sdkError) {
-        console.warn("[Crickium] Monetag SDK could not be loaded:", sdkError?.message || "unknown error");
-        toast("Monetag SDK could not load. Check your connection, Monetag zone activation, and whether libtl.com is blocked. The Rewards page has been kept open so you can retry.", true);
-        syncMonetagButtonState();
+        console.warn("[Crickium] AdsGram SDK could not be loaded:", sdkError?.message || "unknown error");
+        toast("AdsGram could not load. Check that the Reward block is active and approved, its Web App URL matches Crickium, and the connection is available. The Rewards page is still open; you can retry.", true);
+        syncAdsgramButtonState();
         return;
       }
 
       if (button) button.textContent = "Preparing ad…";
       const attempt = await api("/api/ads/attempt", { method: "POST", body: "{}" });
-      if (attempt.status !== "success" || !attempt.ymid) {
+      if (attempt.status !== "success" || !attempt.attempt_id) {
         const message = attempt.status === "daily_limit"
           ? `You have used all three bonus ads today. New ads reset in ${clockWithSeconds(attempt.seconds_until_available || 0)}.`
           : attempt.status === "cooldown"
             ? `Your next bonus ad will be available in ${clockWithSeconds(attempt.seconds_until_available || 0)}.`
             : attempt.status === "ad_pending"
-              ? "Your previous ad is still being verified. Please wait."
+              ? "Your previous ad attempt is still being processed. Please wait."
               : attempt.status === "replacement_pending"
                 ? "Resolve your pending Kit Bag player before watching another bonus ad."
                 : "A bonus ad is not available right now.";
@@ -1719,63 +1703,85 @@
 
       let adResult;
       try {
-        adResult = await showMonetagAd({ type: "end", timeout: 30, ymid: attempt.ymid, requestVar: "kitbag_bonus" });
+        adResult = await controller.show();
+        // AdsGram Reward format resolves show() only when the reward ad is
+        // completed. A resolved-but-not-done result is never rewarded.
+        if (adResult?.done !== true || adResult?.error === true) {
+          throw new Error(adResult?.description || "adsgram_reward_not_completed");
+        }
       } catch (adError) {
-        // This is only a client-side SDK outcome. The server-side Monetag
-        // postback remains authoritative and may arrive later, so the backend
-        // permits a later verified postback to recover a failed/expired attempt.
-        await api("/api/ads/attempt/finish", { method: "POST", body: JSON.stringify({ ymid: attempt.ymid, outcome: "failed" }) }).catch(() => {});
-        console.warn("[Crickium] Monetag ad failed:", adError?.message || "unknown error");
-        toast("Monetag could not show or confirm an ad just now. No reward has been assumed. Check the connection and retry when the button is available.", true);
+        await api("/api/ads/attempt/finish", {
+          method: "POST",
+          body: JSON.stringify({ attempt_id: attempt.attempt_id }),
+        }).catch(() => {});
+        console.warn("[Crickium] AdsGram Reward ad failed or was skipped:", adError?.description || adError?.message || "unknown error");
+        toast("AdsGram could not complete the Reward ad. No Kit Bag was granted; you can try again when the button is available.", true);
         const timerLine = document.getElementById("reward-timer-line");
         if (timerLine) {
           timerLine.dataset.pendingAttempt = "false";
           timerLine.dataset.adState = "ready";
         }
-        syncMonetagButtonState();
+        syncAdsgramButtonState();
         return;
       }
 
-      // The client callback is for UX only. The backend grants a Kit Bag only
-      // after the authenticated server-to-server valued impression postback.
-      toast(adResult?.reward_event_type === "non_valued"
-        ? "Ad finished. Checking Monetag's final confirmation…"
-        : "Ad finished. Verifying your extra Kit Bag…");
-      for (let tries = 0; tries < 20; tries += 1) {
-        let status;
+      toast("Ad completed. Crediting your extra Kit Bag…");
+      let completion = null;
+      let completionError = null;
+      for (let tries = 0; tries < 3; tries += 1) {
         try {
-          status = await api(`/api/ads/attempt/${encodeURIComponent(attempt.ymid)}`);
-        } catch (_) {
-          status = null;
+          completion = await api("/api/ads/attempt/complete", {
+            method: "POST",
+            body: JSON.stringify({ attempt_id: attempt.attempt_id }),
+          });
+          completionError = null;
+          break;
+        } catch (error) {
+          completionError = error;
+          const status = error?.payload?.status;
+          if (["daily_limit", "cooldown", "replacement_pending", "no_player", "expired", "failed"].includes(status)) break;
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
-        if (status?.status === "rewarded") {
-          ping("medium");
-          if (status.player && status.claim_id) {
-            pushRoute({ page: "kitbag-reveal", kitbagClaimId: status.claim_id });
-            renderKitbagReveal(status.player, status.claim_id, Boolean(status.requires_replacement), "ad");
-          } else {
-            toast("Your bonus Kit Bag was credited. Open Rewards to view the updated timer.");
-            await navigate("rewards", { history: false });
-          }
-          return;
-        }
-        if (["non_valued", "failed", "expired", "no_player", "daily_limit"].includes(status?.status)) {
-          const message = status.status === "non_valued"
-            ? "Monetag marked this ad as unpaid, so no Kit Bag was granted."
-            : status.status === "no_player"
-              ? "No eligible unowned Kit Bag player was available. Please try again later."
-              : status.status === "daily_limit"
-                ? "Your daily bonus Kit Bag limit has already been reached."
-                : status.status === "expired"
-                  ? "Ad verification timed out. Please open Rewards and check your updated status."
-                  : "The ad could not be verified. No Kit Bag was granted.";
-          toast(message, true);
-          await loadRewards();
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      toast("Monetag has not confirmed the reward yet. Refresh Rewards shortly; the server will not grant a duplicate Kit Bag.", true);
+
+      let resultStatus = completion;
+      if (!resultStatus || resultStatus.status !== "rewarded") {
+        try {
+          resultStatus = await api(`/api/ads/attempt/${encodeURIComponent(attempt.attempt_id)}`);
+        } catch (_) {
+          // If the network response was lost after the database commit, this
+          // status retry discovers the existing reward without minting twice.
+        }
+      }
+
+      if (resultStatus?.status === "rewarded") {
+        const details = resultStatus.player ? resultStatus : await api(`/api/ads/attempt/${encodeURIComponent(attempt.attempt_id)}`).catch(() => resultStatus);
+        ping("medium");
+        if (details.player && details.claim_id) {
+          pushRoute({ page: "kitbag-reveal", kitbagClaimId: details.claim_id });
+          renderKitbagReveal(details.player, details.claim_id, Boolean(details.requires_replacement), "ad");
+        } else {
+          toast("Your bonus Kit Bag was credited. Open Rewards to view the updated timer.");
+          await navigate("rewards", { history: false });
+        }
+        return;
+      }
+
+      const status = resultStatus?.status || completionError?.payload?.status || "verification_pending";
+      const message = status === "no_player"
+        ? "No eligible unowned Kit Bag player was available. Please try again later."
+        : status === "daily_limit"
+          ? "Your daily bonus Kit Bag limit has already been reached."
+          : status === "cooldown"
+            ? `Your next bonus ad will be available in ${clockWithSeconds(resultStatus?.seconds_until_available || 0)}.`
+            : status === "replacement_pending"
+              ? "Resolve your pending Kit Bag player before watching another bonus ad."
+              : status === "expired"
+                ? "The ad attempt expired before the reward could be recorded. Open Rewards and check the current status."
+                : status === "failed"
+                  ? "The completed ad could not be recorded. No Kit Bag was granted; please retry later."
+                  : "Your ad finished, but the server response is delayed. Reopen Rewards shortly to check the result; duplicate rewards are prevented.";
+      toast(message, true);
       await loadRewards();
     } catch (error) {
       const payload = error.payload || { status: error.message };
@@ -1784,7 +1790,7 @@
         : payload.status === "cooldown"
           ? `Next bonus ad in ${clockWithSeconds(payload.seconds_until_available || 0)}.`
           : payload.status === "ad_pending"
-            ? "Your previous ad is still being verified. Please wait."
+            ? "Your previous ad attempt is still being processed. Please wait."
             : payload.status === "replacement_pending"
               ? "Resolve your pending Kit Bag player before watching another bonus ad."
               : claimError(payload);
@@ -1992,8 +1998,7 @@
     try { tg.ready(); tg.expand(); tg.setHeaderColor?.("#071310"); tg.setBackgroundColor?.("#071310"); } catch (_) {}
   }
   try { if (window.history && !window.history.state?.crickium) window.history.replaceState({ crickium: true, page: "home", currentMatch: null, matchTab: "live", matchInnings: null, index: 0 }, "", window.location.href); } catch (_) {}
-  // Warm the single Monetag SDK early. The Watch Ad button is enabled only
-  // after the main-zone function is available, avoiding click-time script load.
-  ensureMonetagSdk().catch(() => {});
+  // Warm AdsGram on app start so the Watch Ad button is ready when eligible.
+  ensureAdsgramSdk().catch(() => {});
   loadHome();
 })();

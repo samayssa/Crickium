@@ -553,7 +553,7 @@ select.field { color: var(--text); }
 .support-link-card > strong { color: var(--lime); font-size: 16px; }
 
 
-/* Monetag bonus Kit Bag: deliberately reuses the existing Crickium gold button
+/* AdsGram bonus Kit Bag: deliberately reuses the existing Crickium gold button
    and evergreen panels so the new reward does not introduce a new visual theme. */
 .reward-timer-line {
   display: flex;
