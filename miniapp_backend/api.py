@@ -7,7 +7,10 @@ import asyncio
 import random
 import re
 import uuid
+import hmac
+import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from .auth import TelegramViewer
@@ -28,6 +31,11 @@ from utils.rarity import get_rarity
 MAX_SQUAD_SIZE = 25
 KITBAG_COOLDOWN_SECONDS = 60 * 60
 DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
+MONETAG_ZONE_ID = 12010515
+MONETAG_ADS_PER_DAY = 3
+MONETAG_AD_COOLDOWN_SECONDS = 60 * 60
+MONETAG_ATTEMPT_TIMEOUT_SECONDS = 20 * 60
+CRICKIUM_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 # Kit Bag OVR-tier odds total 100%. Higher-rated tiers become progressively
 # rarer. Odds apply to the tier first, then a random eligible card is selected
@@ -1809,10 +1817,313 @@ async def build_quests_response(viewer: TelegramViewer) -> dict[str, Any]:
     return output
 
 
+async def build_monetag_ad_status(viewer: TelegramViewer) -> dict[str, Any]:
+    """Return server-enforced bonus-ad allowance and countdown values."""
+    user_id = int(viewer.id)
+    local_now = datetime.now(CRICKIUM_TIMEZONE)
+    usage_date = local_now.date()
+
+    # Old abandoned SDK sessions must not lock the user's next attempt forever.
+    await execute(
+        """UPDATE miniapp_ad_attempts SET status='expired',updated_at=NOW()
+           WHERE user_id=$1 AND status='pending'
+             AND created_at < NOW() - ($2::int * INTERVAL '1 second');""",
+        user_id, MONETAG_ATTEMPT_TIMEOUT_SECONDS,
+    )
+    completed_today = int(await fetchval(
+        "SELECT COUNT(*) FROM miniapp_ad_attempts WHERE user_id=$1 AND usage_date=$2 AND status='rewarded';",
+        user_id, usage_date,
+    ) or 0)
+    last_reward = await fetchrow(
+        "SELECT rewarded_at FROM miniapp_ad_attempts WHERE user_id=$1 AND status='rewarded' ORDER BY rewarded_at DESC LIMIT 1;",
+        user_id,
+    )
+    active_attempt = await fetchrow(
+        "SELECT ymid,created_at FROM miniapp_ad_attempts WHERE user_id=$1 AND status='pending' ORDER BY created_at DESC LIMIT 1;",
+        user_id,
+    )
+    pending_claim = bool(await fetchval(
+        "SELECT EXISTS(SELECT 1 FROM miniapp_kitbag_claims WHERE user_id=$1 AND status='pending');",
+        user_id,
+    ))
+
+    now_utc = datetime.now(timezone.utc)
+    last_at = last_reward.get("rewarded_at") if last_reward else None
+    if last_at and last_at.tzinfo is None:
+        last_at = last_at.replace(tzinfo=timezone.utc)
+    cooldown = max(0, MONETAG_AD_COOLDOWN_SECONDS - int((now_utc - last_at).total_seconds())) if last_at else 0
+    next_midnight = (local_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    reset_seconds = max(0, int((next_midnight - local_now).total_seconds()))
+
+    if completed_today >= MONETAG_ADS_PER_DAY:
+        state = "daily_limit"
+        seconds_until_available = reset_seconds
+    elif active_attempt:
+        state = "pending"
+        seconds_until_available = 0
+    elif pending_claim:
+        state = "replacement_pending"
+        seconds_until_available = 0
+    elif cooldown > 0:
+        state = "cooldown"
+        seconds_until_available = cooldown
+    else:
+        state = "ready"
+        seconds_until_available = 0
+
+    return {
+        "status": state,
+        "daily_limit": MONETAG_ADS_PER_DAY,
+        "completed_today": completed_today,
+        "remaining_today": max(0, MONETAG_ADS_PER_DAY - completed_today),
+        "seconds_until_available": seconds_until_available,
+        "can_watch": state == "ready",
+        "pending_attempt": bool(active_attempt),
+        "pending_ymid": str(active_attempt["ymid"]) if active_attempt else None,
+        "replacement_pending": pending_claim,
+        "zone_id": MONETAG_ZONE_ID,
+    }
+
+
+async def create_monetag_ad_attempt(viewer: TelegramViewer) -> dict[str, Any]:
+    """Reserve one bonus-ad attempt; this endpoint never grants a reward."""
+    await _ensure_user(viewer)
+    user_id = int(viewer.id)
+    usage_date = datetime.now(CRICKIUM_TIMEZONE).date()
+    ymid = f"crickium-{user_id}-{uuid.uuid4().hex}"
+    now_utc = datetime.now(timezone.utc)
+    next_midnight = (datetime.now(CRICKIUM_TIMEZONE) + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    reset_seconds = max(0, int((next_midnight - datetime.now(CRICKIUM_TIMEZONE)).total_seconds()))
+
+    async with acquire() as conn:
+        async with conn.transaction():
+            user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE;", user_id)
+            if not user:
+                return {"status": "user_missing"}
+            await conn.execute(
+                """UPDATE miniapp_ad_attempts SET status='expired',updated_at=NOW()
+                   WHERE user_id=$1 AND status='pending'
+                     AND created_at < NOW() - ($2::int * INTERVAL '1 second');""",
+                user_id, MONETAG_ATTEMPT_TIMEOUT_SECONDS,
+            )
+            pending_attempt = await conn.fetchrow(
+                "SELECT ymid FROM miniapp_ad_attempts WHERE user_id=$1 AND status='pending' ORDER BY created_at DESC LIMIT 1;",
+                user_id,
+            )
+            if pending_attempt:
+                return {"status": "ad_pending"}
+            pending_claim = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM miniapp_kitbag_claims WHERE user_id=$1 AND status='pending');",
+                user_id,
+            )
+            if pending_claim:
+                return {"status": "replacement_pending"}
+            completed_today = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM miniapp_ad_attempts WHERE user_id=$1 AND usage_date=$2 AND status='rewarded';",
+                user_id, usage_date,
+            ) or 0)
+            if completed_today >= MONETAG_ADS_PER_DAY:
+                return {"status": "daily_limit", "seconds_until_available": reset_seconds}
+            last_reward = await conn.fetchrow(
+                "SELECT rewarded_at FROM miniapp_ad_attempts WHERE user_id=$1 AND status='rewarded' ORDER BY rewarded_at DESC LIMIT 1;",
+                user_id,
+            )
+            last_at = last_reward.get("rewarded_at") if last_reward else None
+            if last_at and last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=timezone.utc)
+            cooldown = max(0, MONETAG_AD_COOLDOWN_SECONDS - int((now_utc - last_at).total_seconds())) if last_at else 0
+            if cooldown > 0:
+                return {"status": "cooldown", "seconds_until_available": cooldown}
+            await conn.execute(
+                """INSERT INTO miniapp_ad_attempts(ymid,user_id,usage_date,status,request_var)
+                   VALUES($1,$2,$3,'pending','kitbag_bonus');""",
+                ymid, user_id, usage_date,
+            )
+    return {"status": "success", "ymid": ymid, "zone_id": MONETAG_ZONE_ID}
+
+
+async def finish_monetag_ad_attempt(viewer: TelegramViewer, ymid: str, outcome: str) -> dict[str, Any]:
+    """Mark an SDK failure/non-valued outcome; the client cannot mark success."""
+    ymid = str(ymid or "").strip()[:160]
+    if not ymid or outcome not in {"failed", "non_valued"}:
+        return {"status": "invalid"}
+    row = await fetchrow(
+        """UPDATE miniapp_ad_attempts SET status=$1, event_type='impression',
+                  reward_event_type=CASE WHEN $1='non_valued' THEN 'non_valued' ELSE reward_event_type END,
+                  updated_at=NOW()
+           WHERE ymid=$2 AND user_id=$3 AND status='pending'
+           RETURNING status;""",
+        outcome, ymid, int(viewer.id),
+    )
+    if row:
+        return {"status": str(row["status"])}
+    existing = await fetchrow(
+        "SELECT status FROM miniapp_ad_attempts WHERE ymid=$1 AND user_id=$2;",
+        ymid, int(viewer.id),
+    )
+    return {"status": str(existing["status"]) if existing else "not_found"}
+
+
+async def get_monetag_ad_attempt(viewer: TelegramViewer, ymid: str) -> dict[str, Any]:
+    ymid = str(ymid or "").strip()[:160]
+    attempt = await fetchrow(
+        "SELECT ymid,status,claim_id,reward_event_type FROM miniapp_ad_attempts WHERE ymid=$1 AND user_id=$2;",
+        ymid, int(viewer.id),
+    )
+    if not attempt:
+        return {"status": "not_found"}
+    result: dict[str, Any] = {"status": str(attempt["status"]), "ymid": ymid}
+    if attempt.get("claim_id"):
+        claim = await fetchrow(
+            "SELECT claim_id,player_id,player_kind,status FROM miniapp_kitbag_claims WHERE claim_id=$1 AND user_id=$2;",
+            attempt["claim_id"], int(viewer.id),
+        )
+        if claim:
+            player = await _select_player(str(claim.get("player_kind") or "global"), int(claim["player_id"]))
+            if player:
+                result.update({
+                    "claim_id": str(claim["claim_id"]),
+                    "player": _player_payload(player, owned=True),
+                    "requires_replacement": str(claim.get("status") or "") == "pending",
+                })
+    return result
+
+
+async def _grant_ad_kitbag_in_transaction(conn, user_id: int) -> dict[str, Any]:
+    """Grant one extra player using the normal Kit Bag pool/probability rules."""
+    squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", user_id)
+    squad = _squad(squad_row["squad"] if squad_row else None)
+    candidates = await conn.fetch(
+        """
+        SELECT p.*,'global'::text player_kind
+        FROM players p
+        WHERE GREATEST(COALESCE(p.bat_level,0),COALESCE(p.bowl_level,0)) BETWEEN 65 AND 85
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements($1::jsonb) e
+            WHERE e->>'player_id'=p.player_id::text
+          );
+        """,
+        json.dumps(squad, default=str),
+    )
+    player = _choose_kitbag_candidate([dict(candidate) for candidate in candidates])
+    if not player:
+        return {"status": "no_player"}
+    claim_id = uuid.uuid4()
+    needs_replacement = len(squad) >= MAX_SQUAD_SIZE
+    if not needs_replacement:
+        squad.append(player)
+        await conn.execute(
+            """INSERT INTO team_squads(user_id,squad,updated_at) VALUES($1,$2::jsonb,NOW())
+               ON CONFLICT(user_id) DO UPDATE SET squad=EXCLUDED.squad,updated_at=NOW();""",
+            user_id, json.dumps(squad, default=str),
+        )
+    await conn.execute(
+        """INSERT INTO miniapp_kitbag_claims(claim_id,user_id,player_id,player_kind,opened_at,status,source)
+           VALUES($1,$2,$3,'global',NOW(),$4,'ad');""",
+        claim_id, user_id, int(player["player_id"]), "pending" if needs_replacement else "added",
+    )
+    return {
+        "status": "success", "claim_id": claim_id, "player": dict(player),
+        "requires_replacement": needs_replacement, "squad_count": len(squad),
+    }
+
+
+async def process_monetag_postback(params: dict[str, str]) -> dict[str, Any]:
+    """Process Monetag's authenticated server-to-server postback idempotently."""
+    expected_secret = os.getenv("MONETAG_POSTBACK_SECRET", "").strip()
+    supplied_secret = str(params.get("secret") or "").strip()
+    if not expected_secret:
+        return {"_http_status": 503, "status": "postback_not_configured"}
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        return {"_http_status": 403, "status": "forbidden"}
+
+    ymid = str(params.get("ymid") or "").strip()[:160]
+    event_type = str(params.get("event_type") or "").strip().lower()
+    reward_event_type = str(params.get("reward_event_type") or "").strip().lower()
+    try:
+        zone_id = int(params.get("zone_id") or 0)
+        sub_zone_id = int(params.get("sub_zone_id") or 0) or None
+    except (TypeError, ValueError):
+        return {"status": "ignored_invalid_zone"}
+    if not ymid or event_type not in {"impression", "click"} or reward_event_type not in {"valued", "non_valued"}:
+        return {"status": "ignored_invalid_event"}
+    if zone_id != MONETAG_ZONE_ID:
+        return {"status": "ignored_wrong_zone"}
+    # A click is useful for Monetag analytics but must not independently mint a
+    # Kit Bag. Reward only a verified impression marked valued by Monetag.
+    if event_type != "impression":
+        return {"status": "ignored_click"}
+
+    try:
+        estimated_price = float(params.get("estimated_price") or 0)
+        if not math.isfinite(estimated_price) or estimated_price < 0:
+            estimated_price = 0.0
+    except (TypeError, ValueError):
+        estimated_price = 0.0
+    telegram_id = str(params.get("telegram_id") or "").strip()
+    quest_reward = False
+    final_status = "unknown_ymid"
+    async with acquire() as conn:
+        async with conn.transaction():
+            initial = await conn.fetchrow("SELECT user_id FROM miniapp_ad_attempts WHERE ymid=$1;", ymid)
+            if not initial:
+                return {"status": "unknown_ymid"}
+            user_id = int(initial["user_id"])
+            user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE;", user_id)
+            attempt = await conn.fetchrow("SELECT * FROM miniapp_ad_attempts WHERE ymid=$1 FOR UPDATE;", ymid)
+            if not user or not attempt:
+                return {"status": "unknown_ymid"}
+            if str(attempt.get("status") or "") != "pending":
+                return {"status": "duplicate_ignored", "attempt_status": str(attempt.get("status") or "")}
+            if telegram_id and telegram_id != str(user_id):
+                await conn.execute(
+                    "UPDATE miniapp_ad_attempts SET status='failed',event_type='impression',updated_at=NOW() WHERE ymid=$1;",
+                    ymid,
+                )
+                return {"status": "telegram_id_mismatch"}
+            if reward_event_type != "valued":
+                await conn.execute(
+                    """UPDATE miniapp_ad_attempts SET status='non_valued',event_type='impression',
+                              reward_event_type='non_valued',zone_id=$2,sub_zone_id=$3,
+                              request_var=$4,estimated_price=$5,updated_at=NOW() WHERE ymid=$1;""",
+                    ymid, zone_id, sub_zone_id, str(params.get("request_var") or "kitbag_bonus")[:100], estimated_price,
+                )
+                return {"status": "non_valued"}
+
+            grant = await _grant_ad_kitbag_in_transaction(conn, user_id)
+            if grant.get("status") != "success":
+                await conn.execute(
+                    """UPDATE miniapp_ad_attempts SET status='no_player',event_type='impression',
+                              reward_event_type='valued',zone_id=$2,sub_zone_id=$3,
+                              request_var=$4,estimated_price=$5,updated_at=NOW() WHERE ymid=$1;""",
+                    ymid, zone_id, sub_zone_id, str(params.get("request_var") or "kitbag_bonus")[:100], estimated_price,
+                )
+                final_status = "no_player"
+            else:
+                await conn.execute(
+                    """UPDATE miniapp_ad_attempts SET status='rewarded',event_type='impression',
+                              reward_event_type='valued',zone_id=$2,sub_zone_id=$3,
+                              request_var=$4,estimated_price=$5,claim_id=$6,rewarded_at=NOW(),updated_at=NOW()
+                       WHERE ymid=$1;""",
+                    ymid, zone_id, sub_zone_id, str(params.get("request_var") or "kitbag_bonus")[:100],
+                    estimated_price, grant["claim_id"],
+                )
+                quest_reward = True
+                final_status = "rewarded"
+
+    if quest_reward:
+        try:
+            from services.quest_engine import record_quest_event
+            await record_quest_event(user_id, "KITBAG_OPEN", metadata={"source": "monetag_rewarded_interstitial", "ymid": ymid})
+        except Exception as exc:
+            print(f"[miniapp_backend] rewarded-ad quest event failed: {type(exc).__name__}")
+    return {"status": final_status}
+
+
 async def build_rewards_response(viewer: TelegramViewer) -> dict[str, Any]:
     home = await build_home_response(viewer)
     last = await fetchrow(
-        "SELECT opened_at FROM miniapp_kitbag_claims WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 1;",
+        "SELECT opened_at FROM miniapp_kitbag_claims WHERE user_id=$1 AND source='free' ORDER BY opened_at DESC LIMIT 1;",
         int(viewer.id),
     )
     pending_row = await fetchrow(
@@ -1837,7 +2148,8 @@ async def build_rewards_response(viewer: TelegramViewer) -> dict[str, Any]:
         "daily": home["daily_reward"],
         "kitbag": {"available": seconds == 0 and pending is None, "seconds_until_available": seconds, "reward_overall": 85, "pending_replacement": pending is not None},
         "pending_kitbag": pending,
-        "available_systems": ["daily_streak", "hourly_kitbag", "quests"],
+        "ads": await build_monetag_ad_status(viewer),
+        "available_systems": ["daily_streak", "hourly_kitbag", "quests", "monetag_rewarded_interstitial"],
     }
 
 
@@ -2016,7 +2328,7 @@ async def claim_kitbag(viewer: TelegramViewer) -> dict[str, Any]:
             squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
             squad = _squad(squad_row["squad"] if squad_row else None)
             last = await conn.fetchrow(
-                "SELECT opened_at FROM miniapp_kitbag_claims WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 1;",
+                "SELECT opened_at FROM miniapp_kitbag_claims WHERE user_id=$1 AND source='free' ORDER BY opened_at DESC LIMIT 1;",
                 int(viewer.id),
             )
             now = datetime.now(timezone.utc)

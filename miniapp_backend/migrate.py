@@ -174,8 +174,38 @@ async def migrate() -> None:
     await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'added';")
     await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS replaced_player_id BIGINT;")
     await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;")
+    # Keep ad-earned Kit Bags separate from the existing hourly free-claim clock.
+    # Existing rows retain the 'free' default, preserving prior cooldown history.
+    await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'free';")
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_kitbag_claims_user_time ON miniapp_kitbag_claims(user_id, opened_at DESC);"
+    )
+    # Monetag rewarded-interstitial attempts are persisted before the SDK opens.
+    # Only a valued server-side impression postback may transition an attempt
+    # into a rewarded Kit Bag. ymid is the idempotency key for postback retries.
+    await execute("""
+        CREATE TABLE IF NOT EXISTS miniapp_ad_attempts(
+            ymid TEXT PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            usage_date DATE NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            event_type TEXT,
+            reward_event_type TEXT,
+            zone_id BIGINT,
+            sub_zone_id BIGINT,
+            request_var TEXT,
+            estimated_price NUMERIC(14,7),
+            claim_id UUID,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            rewarded_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+    await execute(
+        "CREATE INDEX IF NOT EXISTS idx_miniapp_ad_attempts_user_date ON miniapp_ad_attempts(user_id, usage_date, status);"
+    )
+    await execute(
+        "CREATE INDEX IF NOT EXISTS idx_miniapp_ad_attempts_user_rewarded_at ON miniapp_ad_attempts(user_id, rewarded_at DESC) WHERE status='rewarded';"
     )
     # Shared news storage; image file IDs stay server-side and are proxied to clients.
     await execute("""
