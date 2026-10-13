@@ -408,23 +408,38 @@ async def _rank_for_user(user_id: int) -> int:
 
 
 async def _runtime_session(engine: str, match_id: int):
-    """Load an internal engine snapshot if one exists; returns None on unsupported/unavailable state."""
+    """Return an active or saved session for any supported Crickium match engine."""
     engine = str(engine or "").upper()
-    if engine not in {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
+    if engine not in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
         return None
+    if engine == "MATCH":
+        # The legacy /match engine indexes sessions by chat_id, not challenge_id.
+        try:
+            from engines.match_engine import MATCH_ENGINE
+            for candidate in list(MATCH_ENGINE.sessions.values()):
+                if int(getattr(candidate, "challenge_id", 0) or 0) == int(match_id):
+                    return candidate
+        except Exception:
+            pass
+    session = None
     try:
         row = await fetchrow(
             "SELECT payload FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
             engine, int(match_id),
         )
-        if not row or not row.get("payload"):
-            return None
-        # Snapshots are produced and stored by this application's own game
-        # session recovery code; decode failures are treated as unavailable data.
-        import pickle
-        return pickle.loads(bytes(row["payload"]))
+        if row and row.get("payload"):
+            import pickle
+            session = pickle.loads(bytes(row["payload"]))
     except Exception as exc:
-        print(f"[miniapp_backend] runtime snapshot unavailable engine={engine} id={int(match_id)} type={type(exc).__name__}")
+        print(f"[miniapp_backend] direct runtime snapshot unavailable engine={engine} id={int(match_id)} type={type(exc).__name__}")
+    if session is not None:
+        return session
+    # Prefer the shared recovery registry fallback when available.
+    try:
+        from services.game_session_recovery import restore_session
+        return await restore_session(engine, int(match_id))
+    except Exception as exc:
+        print(f"[miniapp_backend] runtime recovery unavailable engine={engine} id={int(match_id)} type={type(exc).__name__}")
         return None
 
 
@@ -1437,6 +1452,151 @@ def _overs_from_balls(balls: Any) -> str:
     return f"{value // 6}.{value % 6}"
 
 
+def _enrich_match_innings(innings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize persisted scorecards from recorded deliveries without inventing balls."""
+    for inning in innings or []:
+        if not isinstance(inning, dict):
+            continue
+        raw_balls = [dict(ball) for ball in (inning.get("analysis_balls") or []) if isinstance(ball, dict)]
+        if not raw_balls:
+            raw_balls = [dict(ball) for over in (inning.get("analysis_overs") or []) if isinstance(over, dict)
+                         for ball in (over.get("balls") or []) if isinstance(ball, dict)]
+        def _ball_order(ball: dict[str, Any]) -> tuple[int, int]:
+            try:
+                over_no = int(ball.get("over") or 0)
+            except (TypeError, ValueError):
+                over_no = 0
+            try:
+                ball_no = int(ball.get("ball") or 0)
+            except (TypeError, ValueError):
+                ball_no = 0
+            return over_no, ball_no
+        raw_balls.sort(key=_ball_order)
+        score = wickets = legal_balls = 0
+        extras: dict[str, int] = {}
+        enriched: dict[tuple[int, int], dict[str, Any]] = {}
+        for ball in raw_balls:
+            score += max(0, int(ball.get("runs") or 0))
+            wicket = bool(ball.get("wicket") or str(ball.get("symbol") or "").upper() == "W")
+            wickets += 1 if wicket else 0
+            kind = str(ball.get("extra_type") or ball.get("outcome") or "").lower().replace("-", "_").replace(" ", "_")
+            if "wide" in kind or kind == "wd" or str(ball.get("symbol") or "").upper() == "WD":
+                key = "wides"
+            elif "no_ball" in kind or kind in {"noball", "nb"} or str(ball.get("symbol") or "").upper() == "NB":
+                key = "no_balls"
+            elif "leg_bye" in kind or kind in {"legbyes", "lb"} or str(ball.get("symbol") or "").upper() == "LB":
+                key = "leg_byes"
+            elif kind in {"bye", "byes", "by"} or str(ball.get("symbol") or "").upper() == "BY":
+                key = "byes"
+            elif "penalty" in kind:
+                key = "penalty"
+            else:
+                key = None
+            if key:
+                # The recorded team runs on an extra delivery are the only
+                # authoritative run value available in compact quest summaries.
+                extras[key] = extras.get(key, 0) + max(0, int(ball.get("runs") or 0))
+            legal = ball.get("legal")
+            if legal is None:
+                legal = ball.get("legal_delivery")
+            if legal is None:
+                legal = not key or key in {"byes", "leg_byes"}
+            legal_balls += 1 if bool(legal) else 0
+            ball["score_after"] = ball.get("score_after") or f"{score}/{wickets}"
+            ball["legal_balls_after"] = legal_balls
+            key_tuple = (int(ball.get("over") or 0), int(ball.get("ball") or 0))
+            enriched[key_tuple] = ball
+        if raw_balls:
+            inning["analysis_balls"] = raw_balls
+            for over in (inning.get("analysis_overs") or []):
+                if not isinstance(over, dict):
+                    continue
+                over_no = int(over.get("over") or 0)
+                updated_balls = []
+                for ball in (over.get("balls") or []):
+                    if not isinstance(ball, dict):
+                        continue
+                    key_tuple = (int(ball.get("over") or over_no), int(ball.get("ball") or 0))
+                    updated_balls.append(enriched.get(key_tuple, dict(ball)))
+                over["balls"] = updated_balls
+            if not inning.get("extras"):
+                inning["extras"] = extras
+            if not inning.get("legal_balls"):
+                inning["legal_balls"] = legal_balls
+            if inning.get("wickets") is None:
+                inning["wickets"] = wickets
+            if not inning.get("over_text"):
+                inning["over_text"] = _overs_from_balls(inning.get("legal_balls") or legal_balls)
+        # Ensure the scorecard always has consistently shaped arrays.
+        inning["batters"] = [dict(x) for x in (inning.get("batters") or []) if isinstance(x, dict)]
+        inning["bowlers"] = [dict(x) for x in (inning.get("bowlers") or []) if isinstance(x, dict)]
+        inning["analysis_overs"] = [dict(x) for x in (inning.get("analysis_overs") or []) if isinstance(x, dict)]
+        inning["analysis_balls"] = [dict(x) for x in (inning.get("analysis_balls") or []) if isinstance(x, dict)]
+    return innings
+
+
+def _completed_potm(engine: str, innings: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not innings:
+        return None
+    snapshots = list(innings)
+    player_name = None
+    module_name = {"PLAY": "engines.play_runtime", "PLAYINT": "engines.playint_runtime",
+                   "PLAYIPL": "engines.playipl_runtime", "PLAYWPL": "engines.playwpl_runtime"}.get(str(engine).upper())
+    if module_name and len(snapshots) >= 2:
+        try:
+            from importlib import import_module
+            player_name = import_module(module_name).player_of_the_match(snapshots[0], snapshots[1])
+        except Exception:
+            player_name = None
+    if not player_name:
+        try:
+            from services.match_analysis.collector import _pick_potm
+            picked = _pick_potm(snapshots)
+            player_name = str(picked.get("name") or "")
+        except Exception:
+            player_name = None
+    if not player_name:
+        return None
+    # Preserve the engine's actual existing award selection rule where it is
+    # exposed; attach the recorded player's real figures from this scorecard.
+    for inning in snapshots:
+        for batter in inning.get("batters") or []:
+            if str(batter.get("name") or "") == player_name:
+                return {"name": player_name, "runs": int(batter.get("runs") or 0), "balls": int(batter.get("balls") or 0), "wickets": 0}
+        for bowler in inning.get("bowlers") or []:
+            if str(bowler.get("name") or "") == player_name:
+                return {"name": player_name, "runs": 0, "balls": int(bowler.get("balls") or 0), "wickets": int(bowler.get("wickets") or 0)}
+    return {"name": player_name, "runs": 0, "balls": 0, "wickets": 0}
+
+
+def _result_text_from_scorecard(innings: list[dict[str, Any]], winner_name: str | None, rows: list[dict[str, Any]]) -> str | None:
+    if not innings:
+        return f"{winner_name} won" if winner_name else None
+    if len(innings) < 2:
+        return f"{winner_name} won" if winner_name else None
+    first_runs = int(innings[0].get("runs") or 0)
+    second_runs = int(innings[1].get("runs") or 0)
+    winner_row = next((row for row in rows if bool(row.get("won"))), None)
+    if not winner_row and first_runs == second_runs:
+        return "Match tied"
+    if winner_row and bool(winner_row.get("defending")) and first_runs > second_runs:
+        margin = first_runs - second_runs
+        return f"{winner_name or 'The defending team'} won by {margin} run{'s' if margin != 1 else ''}"
+    if winner_row and bool(winner_row.get("chasing")) and second_runs > first_runs:
+        batters_out = int(innings[1].get("wickets") or 0)
+        wickets_remaining = max(0, 10 - batters_out)
+        return f"{winner_name or 'The chasing team'} won by {wickets_remaining} wicket{'s' if wickets_remaining != 1 else ''}"
+    if winner_name:
+        if second_runs > first_runs:
+            wickets_remaining = max(0, 10 - int(innings[1].get("wickets") or 0))
+            return f"{winner_name} won by {wickets_remaining} wicket{'s' if wickets_remaining != 1 else ''}"
+        if first_runs > second_runs:
+            margin = first_runs - second_runs
+            return f"{winner_name} won by {margin} run{'s' if margin != 1 else ''}"
+        return f"{winner_name} won"
+    return "Result recorded; winner unavailable"
+
+
 def _simple_batter(batter: dict[str, Any], striker_name: str | None = None, non_striker_name: str | None = None) -> dict[str, Any]:
     name = str(batter.get("name") or "Player")
     runs = int(batter.get("runs") or 0)
@@ -1497,15 +1657,17 @@ def _attach_live_session_fields(payload: dict[str, Any], session: Any) -> dict[s
     def slot(value: Any, status: str) -> dict[str, Any] | None:
         if value is None:
             return None
+        runs = int(getattr(value, "runs", 0) or 0)
+        balls = int(getattr(value, "balls", 0) or 0)
         return {
+            "player_id": getattr(value, "player_id", None),
             "name": str(getattr(value, "name", None) or "Player"),
-            "runs": int(getattr(value, "runs", 0) or 0),
-            "balls": int(getattr(value, "balls", 0) or 0),
+            "runs": runs, "balls": balls,
             "fours": int(getattr(value, "fours", 0) or 0),
             "sixes": int(getattr(value, "sixes", 0) or 0),
             "dismissed": bool(getattr(value, "dismissed", False)),
             "dismissal_text": getattr(value, "dismissal_text", None),
-            "strike_rate": round(int(getattr(value, "runs", 0) or 0) * 100 / int(getattr(value, "balls", 0) or 1), 1) if int(getattr(value, "balls", 0) or 0) else 0.0,
+            "strike_rate": round(runs * 100 / balls, 1) if balls else 0.0,
             "status": status,
         }
 
@@ -1519,17 +1681,222 @@ def _attach_live_session_fields(payload: dict[str, Any], session: Any) -> dict[s
     bowler_stats_map = getattr(session, "bowler_stats", {}) or {}
     bowler_id = bowler.get("player_id")
     figures = (bowler_stats_map.get(int(bowler_id or 0)) or bowler_stats_map.get(str(bowler_id or 0)) or {}) if bowler_id is not None else {}
-    if bowler:
-        payload["current_bowler"] = _simple_bowler({"name": bowler.get("name") or "Bowler", **dict(figures)}, str(bowler.get("name") or "Bowler"))
-    else:
-        payload["current_bowler"] = None
+    current_bowler_name = str(bowler.get("name") or figures.get("name") or "Bowler")
+    payload["current_bowler"] = _simple_bowler({**dict(figures), "name": current_bowler_name}, current_bowler_name) if bowler or figures else None
     payload["current_batting_pair"] = [item for item in pair if item]
     payload["partnership"] = {
         "runs": int(getattr(session, "partnership_runs", 0) or 0),
         "balls": int(getattr(session, "partnership_balls", 0) or 0),
     }
     payload["this_over"] = list(getattr(session, "this_over", []) or [])
-    payload["current_innings_number"] = int(getattr(innings_obj, "innings_number", 1) or 1)
+    current_no = int(getattr(innings_obj, "innings_number", 1) or 1)
+    payload["current_innings_number"] = current_no
+
+    for inning in (payload.get("innings") or []):
+        if int(inning.get("innings_number") or 1) != current_no:
+            continue
+        inning["current_batting_pair"] = payload["current_batting_pair"]
+        inning["current_bowler"] = payload["current_bowler"]
+        inning["partnership"] = payload["partnership"]
+        score_obj = getattr(innings_obj, "score", None)
+        if score_obj is not None:
+            inning["extras"] = dict(getattr(score_obj, "extras", {}) or {})
+            inning["wickets_fallen"] = list(getattr(score_obj, "wickets_fallen", []) or [])
+
+        # Include every eligible bowling option, including bowlers who have not
+        # yet delivered a ball, while preserving figures stored by the engine.
+        bowling_candidates = getattr(session, "bowling_pool", None) or getattr(session, "bowling_squad", None) or []
+        full_bowlers = []
+        seen_ids = set()
+        for player in bowling_candidates:
+            if not isinstance(player, dict):
+                continue
+            pid = player.get("player_id")
+            key = str(pid if pid is not None else player.get("name") or "")
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
+            stats = (bowler_stats_map.get(pid) or bowler_stats_map.get(str(pid)) or {}) if pid is not None else {}
+            name = str(player.get("name") or stats.get("name") or "Bowler")
+            full_bowlers.append(_simple_bowler({**dict(stats), "name": name}, current_bowler_name))
+            if pid is not None:
+                full_bowlers[-1]["player_id"] = pid
+        for pid, stats in (bowler_stats_map.items() if isinstance(bowler_stats_map, dict) else []):
+            key = str(pid)
+            if key in seen_ids or str(stats.get("name") or "") in {str(x.get("name") or "") for x in full_bowlers}:
+                continue
+            full_bowlers.append(_simple_bowler(dict(stats), current_bowler_name))
+        if full_bowlers:
+            inning["bowlers"] = full_bowlers
+        break
+    return payload
+
+
+def _attach_legacy_session_fields(payload: dict[str, Any], session: Any) -> dict[str, Any]:
+    """Attach the legacy /match engine's authoritative lineup and live player figures."""
+    innings_obj = getattr(session, "innings", None)
+    if innings_obj is None:
+        return payload
+    meta = getattr(session, "meta", {}) or {}
+    batter_stats = meta.get("batter_stats") or {}
+    bowler_stats = meta.get("bowler_stats") or {}
+    current_striker = getattr(innings_obj, "striker", None)
+    current_non = getattr(innings_obj, "non_striker", None)
+    current_names = {
+        str(getattr(current_striker, "name", "") or ""),
+        str(getattr(current_non, "name", "") or ""),
+    }
+    current_pair = []
+    for slot, tag in ((current_striker, "on strike"), (current_non, "non-striker")):
+        if slot is None:
+            continue
+        name = str(getattr(slot, "name", None) or "Player")
+        stat = dict(batter_stats.get(name) or {})
+        current_pair.append({
+            "player_id": getattr(slot, "player_id", None), "name": name,
+            "runs": int(getattr(slot, "runs", stat.get("runs", 0)) or 0),
+            "balls": int(getattr(slot, "balls", stat.get("balls", 0)) or 0),
+            "fours": int(getattr(slot, "fours", stat.get("fours", 0)) or 0),
+            "sixes": int(getattr(slot, "sixes", stat.get("sixes", 0)) or 0),
+            "dismissed": bool(getattr(slot, "dismissed", False)),
+            "dismissal_text": getattr(slot, "dismissal_text", None),
+            "strike_rate": round(int(getattr(slot, "runs", stat.get("runs", 0)) or 0) * 100 / int(getattr(slot, "balls", stat.get("balls", 0)) or 1), 1) if int(getattr(slot, "balls", stat.get("balls", 0)) or 0) else 0.0,
+            "status": tag,
+        })
+
+    batting_slots = list(getattr(innings_obj, "batting_order", None) or [])
+    batters = []
+    if batting_slots:
+        for slot in batting_slots:
+            name = str(getattr(slot, "name", None) or "Player")
+            stat = dict(batter_stats.get(name) or {})
+            runs = int(getattr(slot, "runs", stat.get("runs", 0)) or 0)
+            balls = int(getattr(slot, "balls", stat.get("balls", 0)) or 0)
+            batters.append({
+                "player_id": getattr(slot, "player_id", None), "name": name,
+                "runs": runs, "balls": balls,
+                "fours": int(getattr(slot, "fours", stat.get("fours", 0)) or 0),
+                "sixes": int(getattr(slot, "sixes", stat.get("sixes", 0)) or 0),
+                "strike_rate": round(runs * 100 / balls, 1) if balls else 0.0,
+                "dismissed": bool(getattr(slot, "dismissed", False)),
+                "dismissal_text": getattr(slot, "dismissal_text", None),
+                "status": "out" if bool(getattr(slot, "dismissed", False)) else "at crease" if name in current_names else "not out" if balls or runs else "yet to bat",
+            })
+    else:
+        batters = [_simple_batter(dict(v, name=name)) for name, v in batter_stats.items() if isinstance(v, dict)]
+
+    batting_squad = meta.get("batting_squad") or []
+    if not batters and batting_squad:
+        batters = [_simple_batter({"name": p.get("name") or "Player", **dict(batter_stats.get(p.get("name")) or {})},
+                                  str(getattr(current_striker, "name", "") or ""),
+                                  str(getattr(current_non, "name", "") or ""))
+                   for p in batting_squad if isinstance(p, dict)]
+
+    current_bowler_raw = getattr(session, "current_bowler", None) or {}
+    current_bowler_raw = dict(current_bowler_raw) if isinstance(current_bowler_raw, dict) else {}
+    current_bowler_name = str(current_bowler_raw.get("name") or "")
+    current_bowler_stats = dict(bowler_stats.get(current_bowler_name) or {})
+    current_bowler = _simple_bowler({**current_bowler_stats, **current_bowler_raw,
+                                     "name": current_bowler_name or current_bowler_stats.get("name") or "Bowler"}, current_bowler_name) if current_bowler_name else None
+    full_bowlers = []
+    for player in (meta.get("bowling_squad") or []):
+        if not isinstance(player, dict):
+            continue
+        name = str(player.get("name") or "Bowler")
+        stats = dict(bowler_stats.get(name) or {})
+        full_bowlers.append(_simple_bowler({**stats, **player, "name": name}, current_bowler_name))
+    existing_names = {row.get("name") for row in full_bowlers}
+    for name, stats in bowler_stats.items():
+        if name not in existing_names and isinstance(stats, dict):
+            full_bowlers.append(_simple_bowler(dict(stats, name=name), current_bowler_name))
+
+    inning_no = int(getattr(innings_obj, "innings_number", 1) or 1)
+    balls = []
+    for inning in payload.get("innings") or []:
+        if int(inning.get("innings_number") or 1) == inning_no:
+            balls = list(inning.get("analysis_balls") or [])
+            inning["batters"] = batters or inning.get("batters") or []
+            inning["bowlers"] = full_bowlers or inning.get("bowlers") or []
+            inning["current_batting_pair"] = current_pair
+            inning["current_bowler"] = current_bowler
+            inning["extras"] = dict(getattr(getattr(innings_obj, "score", None), "extras", {}) or {})
+            wickets_fallen = list(getattr(getattr(innings_obj, "score", None), "wickets_fallen", []) or [])
+            inning["wickets_fallen"] = wickets_fallen
+            # Preserve the engine's dismissal records, while leaving unknown details blank.
+            dismissed_by_name = {str(item.get("batter") or ""): item for item in wickets_fallen if isinstance(item, dict)}
+            for batter in inning["batters"]:
+                dismissal = dismissed_by_name.get(str(batter.get("name") or ""))
+                if dismissal:
+                    batter["dismissed"] = True
+                    batter["dismissal_text"] = batter.get("dismissal_text") or str(dismissal.get("type") or "out").replace("_", " ").title()
+                    batter["status"] = "out"
+            inning["partnership"] = None
+            break
+    latest_over = max((int(ball.get("over") or 0) for ball in balls if isinstance(ball, dict)), default=0)
+    this_over = [ball for ball in balls if isinstance(ball, dict) and int(ball.get("over") or 0) == latest_over] if latest_over else balls[-6:]
+    payload["current_batting_pair"] = current_pair
+    payload["current_bowler"] = current_bowler
+    payload["partnership"] = None
+    payload["current_innings_number"] = inning_no
+    payload["this_over"] = this_over
+    return payload
+
+
+def _legacy_match_payload(session: Any, match_id: int, source_match: dict[str, Any] | None, *, force_completed: bool = False) -> dict[str, Any]:
+    """Build the Mini App scorecard from a live or saved legacy /match session."""
+    from services.match_analysis.collector import collect_legacy_session
+    meta = getattr(session, "meta", {}) or {}
+    is_completed = bool(force_completed or str(getattr(session, "stage", "")).lower() in {"completed", "ended", "finished"} or meta.get("result_plain"))
+    termination = "completed" if is_completed else "live"
+    payload = collect_legacy_session(
+        session, termination=termination,
+        winner_id=meta.get("result_winner_id"), loser_id=meta.get("result_loser_id"),
+        reason=meta.get("result_plain"),
+    )
+    _attach_legacy_session_fields(payload, session)
+    innings = _enrich_match_innings(payload.get("innings") or [])
+    current_no = int(payload.get("current_innings_number") or (innings[-1].get("innings_number") if innings else 1) or 1)
+    current = next((item for item in innings if int(item.get("innings_number") or 1) == current_no), innings[-1] if innings else {})
+    row = source_match or {}
+    first, second = _team_names_from_match(row)
+    winner_name = meta.get("result_winner_name") or payload.get("winner_name")
+    potm_name = str(meta.get("result_potm_name") or (payload.get("potm") or {}).get("name") or "")
+    potm = dict(payload.get("potm") or {})
+    if potm_name and potm_name != "—":
+        for inning in innings:
+            for player in (inning.get("batters") or []) + (inning.get("bowlers") or []):
+                if str(player.get("name") or "") == potm_name:
+                    potm = {"name": potm_name, "runs": int(player.get("runs") or 0), "balls": int(player.get("balls") or 0), "wickets": int(player.get("wickets") or 0)}
+                    break
+    result_text = meta.get("result_plain")
+    if is_completed and not result_text:
+        result_text = _result_text_from_scorecard(innings, str(winner_name) if winner_name else None, [])
+    payload.update({
+        "engine": "MATCH", "match_id": int(match_id),
+        "match_type": getattr(session, "format", None) or row.get("format") or "T20",
+        "status": "completed" if is_completed else str(row.get("status") or "live"),
+        "is_live": not is_completed, "is_completed": is_completed,
+        "team_a_name": str(row.get("challenger_name") or getattr(getattr(session, "challenger", None), "first_name", None) or first),
+        "team_b_name": str(row.get("opponent_name") or getattr(getattr(session, "opponent", None), "first_name", None) or second),
+        "challenger_name": str(row.get("challenger_name") or getattr(getattr(session, "challenger", None), "first_name", None) or first),
+        "opponent_name": str(row.get("opponent_name") or getattr(getattr(session, "opponent", None), "first_name", None) or second),
+        "pitch": meta.get("pitch") or row.get("pitch"), "stadium": meta.get("stadium") or row.get("stadium"),
+        "weather": meta.get("weather") or row.get("weather"),
+        "toss_winner_id": getattr(session, "toss_winner_id", None) or row.get("toss_winner_id"),
+        "toss_winner_name": payload.get("toss_winner_name"),
+        "decision": getattr(session, "decision", None) or row.get("decision") or row.get("toss_result"),
+        "overs_limit": int(row.get("overs_limit") or row.get("overs") or (1 if str(getattr(session, "format", "")).lower() == "super over" else 20)),
+        "created_at": _iso(row.get("created_at")), "played_at": _iso(row.get("updated_at") or row.get("created_at")),
+        "innings": innings, "scorecard_available": bool(innings),
+        "current_innings_number": current_no,
+        "runs": int(current.get("runs") or 0), "wickets": int(current.get("wickets") or 0),
+        "over_text": current.get("over_text") or _overs_from_balls(current.get("legal_balls") or 0),
+        "target": current.get("target"),
+        "result_text": result_text if is_completed else None,
+        "winner_name": winner_name if is_completed else None,
+        "potm": potm if is_completed else None,
+        "note": "Live scores and recorded commentary come from the current Crickium /match session." if not is_completed else "Completed scorecard is reconstructed from the saved Crickium /match session and recorded deliveries.",
+    })
     return payload
 
 
@@ -1537,6 +1904,11 @@ async def _live_engine_payload(engine: str, match_id: int, match_row: dict[str, 
     engine = str(engine or "").upper()
     try:
         from services.match_analysis.collector import collect_runtime_session, collect_playso_match
+        if engine == "MATCH":
+            session = await _runtime_session("MATCH", match_id)
+            if session is None:
+                return None
+            return _legacy_match_payload(session, match_id, match_row, force_completed=False)
         if engine == "PLAYSO":
             state = _as_mapping(match_row.get("state"))
             if not state:
@@ -1683,107 +2055,209 @@ async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int,
     if engine not in MATCH_SOURCE_TABLES:
         return None
 
-    # Regular match links are participant-gated. Only the explicit signed-in
-    # Mini App shared-score route exposes a read-only public score view.
+    # Regular match links are participant-gated. The explicit shared-score route
+    # permits read-only access to other users' scorecards from a signed-in Mini App.
     source_match = await _source_match_row(engine, match_id, int(viewer.id), allow_shared=allow_shared)
-    if allow_shared:
-        summary = await fetchrow(
-            "SELECT * FROM quest_match_summaries WHERE LOWER(engine)=LOWER($1) AND match_id=$2 ORDER BY played_at DESC LIMIT 1;",
-            engine, match_id,
-        )
-    else:
-        summary = await fetchrow(
-            """
-            SELECT * FROM quest_match_summaries
-            WHERE user_id=$1 AND LOWER(engine)=LOWER($2) AND match_id=$3
-            ORDER BY played_at DESC LIMIT 1;
-            """, int(viewer.id), engine, match_id,
-        )
 
+    # Live data is read before any completed-summary queries so a missing or
+    # temporarily unavailable quest summary table cannot break an active match.
     active_status = str((source_match or {}).get("status") or "").lower()
     if source_match and active_status not in _TERMINAL_MATCH_STATUSES:
         live_payload = await _live_engine_payload(engine, match_id, source_match, active_status)
         if live_payload:
             first, second = _team_names_from_match(source_match)
-            innings = live_payload.get("innings") or []
+            innings = _enrich_match_innings(live_payload.get("innings") or [])
+            live_payload["innings"] = innings
             current_no = int(live_payload.get("current_innings_number") or (innings[-1].get("innings_number") if innings else 1) or 1)
             current = next((item for item in innings if int(item.get("innings_number") or 1) == current_no), innings[-1] if innings else {})
             balls = int(current.get("legal_balls") or 0)
+            current_status = active_status or "live"
             live_payload.update({
                 "engine": engine, "match_id": match_id,
                 "match_type": source_match.get("format") or source_match.get("match_type") or engine,
-                "status": active_status or "live", "is_live": active_status in {"live", "playing", "innings_break", "chase", "in_progress"},
+                # When an actual runtime snapshot exists, keep this match polling
+                # even if the source table retains a setup status such as toss_done.
+                "status": current_status, "is_live": True,
                 "is_completed": False, "team_a_name": first, "team_b_name": second,
                 "challenger_name": str(source_match.get("challenger_name") or first),
                 "opponent_name": str(source_match.get("opponent_name") or second),
                 "pitch": source_match.get("pitch"), "stadium": source_match.get("stadium"),
                 "weather": source_match.get("weather"),
+                "toss_winner_id": source_match.get("toss_winner_id"),
+                "toss_winner_name": source_match.get("toss_winner_name"),
+                "decision": source_match.get("decision") or source_match.get("toss_result"),
                 "overs_limit": 1 if engine == "PLAYSO" else int(source_match.get("overs_limit") or source_match.get("overs") or 20),
                 "created_at": _iso(source_match.get("created_at")), "played_at": None,
                 "current_innings_number": current_no, "runs": int(current.get("runs") or 0),
                 "wickets": int(current.get("wickets") or 0), "over_text": current.get("over_text") or _overs_from_balls(balls),
                 "target": current.get("target"), "scorecard_available": bool(current),
                 "result_text": None, "winner_name": None,
+                "note": "Live score is read from the stored Crickium match session; this view refreshes while the session is active.",
             })
             return live_payload
 
+    # If the source table row is temporarily unavailable but this is an explicit
+    # shared link, try the authoritative runtime snapshot. Do not bypass the
+    # participant gate for ordinary match-detail requests.
+    if source_match is None and allow_shared and engine in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
+        try:
+            session = await _runtime_session(engine, match_id)
+            if session is not None and engine == "MATCH":
+                return _legacy_match_payload(session, match_id, None, force_completed=False)
+            if session is not None:
+                from services.match_analysis.collector import collect_runtime_session
+                source_match = dict(getattr(session, "match", {}) or {})
+                source_match.setdefault("match_id", match_id)
+                live_payload = collect_runtime_session(engine, session, termination="live")
+                _attach_live_session_fields(live_payload, session)
+                innings = _enrich_match_innings(live_payload.get("innings") or [])
+                live_payload.update({
+                    "engine": engine, "match_id": match_id,
+                    "match_type": source_match.get("format") or source_match.get("match_type") or engine,
+                    "status": "live", "is_live": True, "is_completed": False,
+                    "team_a_name": _team_names_from_match(source_match)[0],
+                    "team_b_name": _team_names_from_match(source_match)[1],
+                    "challenger_name": str(source_match.get("challenger_name") or "Challenger"),
+                    "opponent_name": str(source_match.get("opponent_name") or "Opponent"),
+                    "pitch": source_match.get("pitch"), "stadium": source_match.get("stadium"),
+                    "weather": source_match.get("weather"), "innings": innings,
+                    "scorecard_available": bool(innings), "overs_limit": int(source_match.get("overs_limit") or 20),
+                    "current_innings_number": int(getattr(getattr(session, "innings", None), "innings_number", 1) or 1),
+                    "created_at": _iso(source_match.get("created_at")), "played_at": None,
+                    "result_text": None, "winner_name": None,
+                    "note": "Live score recovered from the Crickium runtime snapshot.",
+                })
+                current_no = int(live_payload.get("current_innings_number") or 1)
+                current = next((item for item in innings if int(item.get("innings_number") or 1) == current_no), innings[-1] if innings else {})
+                live_payload.update({"runs": int(current.get("runs") or 0), "wickets": int(current.get("wickets") or 0),
+                                     "over_text": current.get("over_text") or _overs_from_balls(current.get("legal_balls") or 0),
+                                     "target": current.get("target")})
+                return live_payload
+        except Exception as exc:
+            print(f"[miniapp_backend] shared runtime fallback failed engine={engine} id={match_id} type={type(exc).__name__}")
+
+    # Completed score summaries may not exist on older deployments. Treat them as
+    # optional so the match's authoritative live/metadata route does not 500.
+    summary = None
+    try:
+        if allow_shared:
+            summary = await fetchrow(
+                "SELECT * FROM quest_match_summaries WHERE LOWER(engine)=LOWER($1) AND match_id=$2 ORDER BY played_at DESC LIMIT 1;",
+                engine, match_id,
+            )
+        else:
+            summary = await fetchrow(
+                "SELECT * FROM quest_match_summaries WHERE user_id=$1 AND LOWER(engine)=LOWER($2) AND match_id=$3 ORDER BY played_at DESC LIMIT 1;",
+                int(viewer.id), engine, match_id,
+            )
+    except Exception as exc:
+        print(f"[miniapp_backend] match summary lookup unavailable engine={engine} id={match_id} type={type(exc).__name__}")
+
     if summary:
-        # Existing score summaries are the entitlement check; only then load the
-        # other participant's summary, if present, to reconstruct both innings.
-        summary_rows = await fetch(
-            "SELECT user_id,engine,match_id,won,chasing,defending,target,batting_runs,bowling_wickets,batting,bowling,over_history,played_at FROM quest_match_summaries WHERE LOWER(engine)=LOWER($1) AND match_id=$2 ORDER BY played_at DESC;",
-            engine, match_id,
-        )
+        try:
+            summary_rows = await fetch(
+                "SELECT user_id,engine,match_id,won,chasing,defending,target,batting_runs,bowling_wickets,batting,bowling,over_history,played_at FROM quest_match_summaries WHERE LOWER(engine)=LOWER($1) AND match_id=$2 ORDER BY played_at DESC;",
+                engine, match_id,
+            )
+        except Exception as exc:
+            print(f"[miniapp_backend] match innings lookup unavailable engine={engine} id={match_id} type={type(exc).__name__}")
+            summary_rows = [summary]
         cleaned = [dict(row) for row in summary_rows]
         for row in cleaned:
             row["batting"] = _json_list(row.get("batting"))
             row["bowling"] = _json_list(row.get("bowling"))
             row["over_history"] = _json_list(row.get("over_history"))
-        innings = _summary_innings_from_rows(cleaned, source_match, engine, match_id)
+        innings = _enrich_match_innings(_summary_innings_from_rows(cleaned, source_match, engine, match_id))
         user_summary = dict(summary)
         user_won = bool(user_summary.get("won")) if not allow_shared else False
         winner_name = None
-        for row in cleaned:
-            if bool(row.get("won")):
-                uid = int(row.get("user_id") or 0)
-                if source_match:
-                    if uid == int(source_match.get("challenger_id") or 0):
-                        winner_name = source_match.get("challenger_team_name") or source_match.get("challenger_name")
-                    elif uid == int(source_match.get("opponent_id") or 0):
-                        winner_name = source_match.get("opponent_team_name") or source_match.get("opponent_name")
-                if not winner_name:
-                    winner_name = "Winner" if uid != 0 else None
-                break
+        winning_row = next((row for row in cleaned if bool(row.get("won"))), None)
+        if winning_row:
+            uid = int(winning_row.get("user_id") or 0)
+            if source_match:
+                if uid == int(source_match.get("challenger_id") or 0):
+                    winner_name = source_match.get("challenger_team_name") or source_match.get("challenger_team_code") or source_match.get("challenger_name")
+                elif uid == int(source_match.get("opponent_id") or 0):
+                    winner_name = source_match.get("opponent_team_name") or source_match.get("opponent_team_code") or source_match.get("opponent_name")
+            if not winner_name:
+                winner_name = "Winner"
         first, second = _team_names_from_match(source_match or {})
-        result_text = None
-        if user_won and winner_name:
-            result_text = f"{winner_name} won"
-        elif cleaned and any(bool(row.get("won")) for row in cleaned):
-            result_text = f"{winner_name} won" if winner_name else "Result recorded"
-        elif cleaned:
-            result_text = "Result recorded; winner unavailable"
+        result_text = _result_text_from_scorecard(innings, str(winner_name) if winner_name else None, cleaned)
+        if source_match:
+            stored_result = source_match.get("result_text") or source_match.get("result")
+            if stored_result and not result_text:
+                result_text = str(stored_result)
+        potm = _completed_potm(engine, innings)
         return {
             "engine": engine, "match_id": match_id,
-            "match_type": user_summary.get("match_type") or engine,
+            "match_type": user_summary.get("match_type") or (source_match or {}).get("format") or engine,
             "status": "completed", "is_live": False, "is_completed": True,
             "team_a_name": first, "team_b_name": second,
             "challenger_name": str((source_match or {}).get("challenger_name") or first),
             "opponent_name": str((source_match or {}).get("opponent_name") or second),
             "pitch": user_summary.get("pitch") or (source_match or {}).get("pitch"),
-            "stadium": (source_match or {}).get("stadium"),
-            "weather": (source_match or {}).get("weather"),
+            "stadium": (source_match or {}).get("stadium"), "weather": (source_match or {}).get("weather"),
+            "toss_winner_id": (source_match or {}).get("toss_winner_id"),
+            "toss_winner_name": (source_match or {}).get("toss_winner_name"),
+            "decision": (source_match or {}).get("decision") or (source_match or {}).get("toss_result"),
             "overs_limit": 1 if engine == "PLAYSO" else int((source_match or {}).get("overs_limit") or (source_match or {}).get("overs") or 20),
             "created_at": _iso((source_match or {}).get("created_at")),
             "played_at": _iso(user_summary.get("played_at")),
             "innings": innings, "scorecard_available": bool(innings),
             "current_innings_number": innings[-1].get("innings_number") if innings else None,
-            "result_text": result_text, "winner_name": winner_name,
+            "result_text": result_text, "winner_name": winner_name, "potm": potm,
             "won": user_won if not allow_shared else None, "target": user_summary.get("target"),
             "runs": int(user_summary.get("batting_runs") or 0),
             "wickets": int(user_summary.get("bowling_wickets") or 0),
             "over_text": innings[-1].get("over_text") if innings else None,
-            "note": "Completed match details are reconstructed only from the summaries stored by Crickium. Per-ball commentary is shown only where the engine persisted delivery records.",
+            "note": "Completed match details use Crickium's persisted scorecards and delivery commentary. Missing historical ball data is not fabricated.",
         }
+
+    # Super Over state is stored directly on playso_matches. Even if an older
+    # deployment did not write quest summaries, use this authoritative state for
+    # completed scorecards rather than rendering a metadata-only match.
+    if engine == "PLAYSO" and source_match:
+        try:
+            state_value = _as_mapping(source_match.get("state"))
+            if state_value:
+                from services.match_analysis.collector import collect_playso_match
+                final_payload = collect_playso_match(source_match, state_value, termination="completed")
+                innings = _enrich_match_innings(final_payload.get("innings") or [])
+                first, second = _team_names_from_match(source_match)
+                current = innings[-1] if innings else {}
+                winner_name = source_match.get("winner_name") or source_match.get("winner")
+                result_text = source_match.get("result_text") or _result_text_from_scorecard(innings, str(winner_name) if winner_name else None, [])
+                final_payload.update({
+                    "engine": "PLAYSO", "match_id": match_id, "match_type": "Super Over",
+                    "status": str(source_match.get("status") or "completed"), "is_live": False, "is_completed": True,
+                    "team_a_name": first, "team_b_name": second,
+                    "challenger_name": str(source_match.get("challenger_name") or first),
+                    "opponent_name": str(source_match.get("opponent_name") or second),
+                    "pitch": source_match.get("pitch"), "stadium": source_match.get("stadium"),
+                    "weather": source_match.get("weather"), "overs_limit": 1,
+                    "created_at": _iso(source_match.get("created_at")), "played_at": _iso(source_match.get("updated_at") or source_match.get("created_at")),
+                    "innings": innings, "scorecard_available": bool(innings),
+                    "current_innings_number": int(current.get("innings_number") or 1),
+                    "runs": int(current.get("runs") or 0), "wickets": int(current.get("wickets") or 0),
+                    "over_text": current.get("over_text") or _overs_from_balls(current.get("legal_balls") or 0),
+                    "result_text": result_text, "winner_name": winner_name, "potm": final_payload.get("potm"),
+                    "note": "Completed Super Over details use the saved match state; only recorded delivery data is displayed.",
+                })
+                return final_payload
+        except Exception as exc:
+            print(f"[miniapp_backend] completed Super Over snapshot unavailable id={match_id} type={type(exc).__name__}")
+
+    # The legacy /match engine does not write quest_match_summaries. Use its
+    # persisted runtime snapshot for full live/completed scorecards instead of
+    # falling back to a metadata-only record.
+    if engine == "MATCH":
+        try:
+            session = await _runtime_session("MATCH", match_id)
+            if session is not None:
+                terminal = str((source_match or {}).get("status") or "").lower() in _TERMINAL_MATCH_STATUSES
+                return _legacy_match_payload(session, match_id, source_match, force_completed=terminal)
+        except Exception as exc:
+            print(f"[miniapp_backend] legacy match snapshot unavailable id={match_id} type={type(exc).__name__}")
 
     if not source_match:
         return None
@@ -1792,15 +2266,19 @@ async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int,
     return {
         "engine": engine, "match_id": match_id,
         "match_type": source_match.get("format") or source_match.get("match_type") or engine,
-        "status": status, "is_live": status.lower() in {"live", "playing", "innings_break", "chase", "in_progress"},
+        "status": status, "is_live": False,
         "is_completed": status.lower() in _TERMINAL_MATCH_STATUSES,
         "team_a_name": first, "team_b_name": second,
         "challenger_name": str(source_match.get("challenger_name") or first),
         "opponent_name": str(source_match.get("opponent_name") or second),
         "pitch": source_match.get("pitch"), "stadium": source_match.get("stadium"),
+        "weather": source_match.get("weather"),
+        "toss_winner_id": source_match.get("toss_winner_id"),
+        "toss_winner_name": source_match.get("toss_winner_name"),
+        "decision": source_match.get("decision") or source_match.get("toss_result"),
         "created_at": _iso(source_match.get("created_at")), "played_at": None,
-        "innings": [], "scorecard_available": False, "result_text": None, "winner_name": None,
-        "note": "The match exists, but this engine has not persisted a detailed scorecard for this record. No score or commentary has been fabricated.",
+        "innings": [], "scorecard_available": False, "result_text": None, "winner_name": None, "potm": None,
+        "note": "The match record exists, but no live runtime snapshot or completed scorecard is available yet. Scores are not invented.",
     }
 
 
