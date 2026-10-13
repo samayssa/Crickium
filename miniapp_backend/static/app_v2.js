@@ -357,41 +357,58 @@
       ? "FREE KIT BAG: RESOLVE CARD"
       : freeSeconds > 0 ? `FREE KIT BAG IN ${clockWithSeconds(freeSeconds)}` : "FREE KIT BAG: READY";
     let adText;
-    if (completed >= limit) {
-      adText = `NEXT ADS IN ${clockWithSeconds(adSeconds)}`;
-    } else if (pendingAttempt || adState === "pending") {
+    if (pendingAttempt || adState === "pending") {
       adText = "AD REWARD VERIFYING";
     } else if (replacementPending || adState === "replacement_pending") {
       adText = "AD: RESOLVE KIT BAG";
+    } else if (completed >= limit) {
+      adText = `NEXT ADS IN ${clockWithSeconds(adSeconds)}`;
     } else if (adSeconds > 0) {
       adText = `NEXT AD IN ${clockWithSeconds(adSeconds)}`;
     } else {
-      adText = `AD READY · ${limit - completed} LEFT`;
+      adText = `AD READY · ${Math.max(0, limit - completed)} LEFT`;
     }
     const freeNode = line.querySelector(".timer-free");
     const adNode = line.querySelector(".timer-ad");
     if (freeNode) freeNode.textContent = freeText;
     if (adNode) adNode.textContent = adText;
 
+    // There is only one Kit Bag action slot. It renders either the free claim
+    // or the bonus-ad action, never a second standalone ad panel.
     const button = document.querySelector('[data-action="watch-bonus-ad"]');
-    const eligible = completed < limit && adSeconds <= 0 && !pendingAttempt && !replacementPending;
     if (button) {
+      const eligible = line.dataset.canWatch === "true" && completed < limit && adSeconds <= 0 && !pendingAttempt && !replacementPending;
       button.disabled = !eligible || state.adFlowBusy || state.adsgramSdkStatus === "loading";
       if (!state.adFlowBusy) {
         button.textContent = state.adsgramSdkStatus === "loading"
           ? "Preparing ad service…"
           : state.adsgramSdkStatus === "failed"
             ? "Retry Ad Connection"
-            : "▶ Watch Ad & Get 1 Extra Kit Bag";
+            : pendingAttempt || adState === "pending"
+              ? "Reward Processing…"
+              : replacementPending || adState === "replacement_pending"
+                ? "Resolve Kit Bag Player First"
+                : completed >= limit
+                  ? `Bonus Ads Reset · ${clockWithSeconds(adSeconds)}`
+                  : adSeconds > 0
+                    ? `Watch Ad · Available in ${clockWithSeconds(adSeconds)}`
+                    : "▶ Watch Ad & Get 1 Extra Kit Bag";
       }
     }
 
+    const previousFreeSeconds = freeSeconds;
+    const previousAdSeconds = adSeconds;
     freeSeconds = Math.max(0, freeSeconds - 1);
     adSeconds = Math.max(0, adSeconds - 1);
     line.dataset.freeSeconds = String(freeSeconds);
     line.dataset.adSeconds = String(adSeconds);
-    if (completed >= limit && adSeconds === 0 && state.page === "rewards" && !line.dataset.reloaded) {
+
+    const freeJustBecameReady = line.dataset.freeRefresh === "true" && previousFreeSeconds > 0 && freeSeconds === 0;
+    const adJustBecameReady = line.dataset.adRefresh === "true" && previousAdSeconds > 0 && adSeconds === 0;
+    if ((freeJustBecameReady || adJustBecameReady) && state.page === "rewards" && !line.dataset.reloaded) {
       line.dataset.reloaded = "true";
+      line.dataset.freeRefresh = "false";
+      line.dataset.adRefresh = "false";
       clearInterval(state.rewardTimer);
       state.rewardTimer = null;
       loadRewards();
@@ -1093,23 +1110,40 @@
       state.pendingKitbagClaimId = pending?.claim_id || null;
       const days = daily.days || [];
       const pendingMarkup = pending ? `<section class="panel pending-reward-panel"><span class="eyebrow">REPLACEMENT REQUIRED</span><h2>Your Kit Bag player is waiting</h2><p class="muted-copy">Your squad was full when this card was claimed. Choose one squad player to replace it. The reward is safely saved until you finish.</p><div class="pending-reward-card">${playerCard(pending.player, true)}</div><button class="button primary full" data-action="open-kitbag-replace" data-claim-id="${esc(pending.claim_id)}">Choose player to replace</button></section>` : "";
-      const adUsage = `${number(ads.completed_today)} / ${number(ads.daily_limit)} bonus ads claimed today · ${number(ads.remaining_today)} remaining`;
+      const freeAvailable = Boolean(bag.available) && !pending;
+      const adSeconds = Math.max(0, Number(ads.seconds_until_available || 0));
+      const adLimited = Number(ads.completed_today || 0) >= Math.max(1, Number(ads.daily_limit || 3));
+      const adPending = Boolean(ads.pending_attempt) || ads.status === "pending";
+      const replacementPending = Boolean(pending || ads.replacement_pending || ads.status === "replacement_pending");
+      const initialAdText = state.adsgramSdkStatus === "loading"
+        ? "Preparing ad service…"
+        : state.adsgramSdkStatus === "failed"
+          ? "Retry Ad Connection"
+          : adPending ? "Reward Processing…"
+            : replacementPending ? "Resolve Kit Bag Player First"
+              : adLimited ? `Bonus Ads Reset · ${clockWithSeconds(adSeconds)}`
+                : adSeconds > 0 ? `Watch Ad · Available in ${clockWithSeconds(adSeconds)}`
+                  : "▶ Watch Ad & Get 1 Extra Kit Bag";
+      const kitbagAction = pending
+        ? `<button class="button gold full" disabled>Finish Kit Bag replacement</button>`
+        : freeAvailable
+          ? `<button class="button gold full" data-action="kitbag-claim">Open free Kit Bag</button>`
+          : `<button class="button gold full" data-action="watch-bonus-ad" ${(ads.can_watch && !adPending && !replacementPending && state.adsgramSdkStatus !== "loading") ? "" : "disabled"}>${esc(initialAdText)}</button>`;
       document.getElementById("rewards-content").innerHTML = `${pendingMarkup}
-        <section class="kitbag-banner large"><div class="kitbag-emblem kitbag-art-emblem is-ready"><img src="/static/kitbag-crickium.svg?v=kitbag-animation-20261012-1" alt="Crickium green Kit Bag" /></div><div><span class="eyebrow">HOURLY DROP · 85 OVR</span><h2>Free Kit Bag</h2><p>One real, unowned OVR 85 player from the global catalog. Claim cooldown is enforced by the server.</p><small>${pending ? "FINISH YOUR PENDING REPLACEMENT" : bag.available ? "READY TO OPEN" : `AVAILABLE IN ${clock(bag.seconds_until_available)}`}</small></div></section>
-        <button class="button gold full" data-action="kitbag-claim" ${bag.available ? "" : "disabled"}>${pending ? "Replace pending player first" : bag.available ? "Open free Kit Bag" : "Kit Bag cooling down"}</button>
+        <section class="kitbag-banner large"><div class="kitbag-emblem kitbag-art-emblem is-ready"><img src="/static/kitbag-crickium.svg?v=kitbag-animation-20261012-1" alt="Crickium green Kit Bag" /></div><div><span class="eyebrow">HOURLY DROP · 85 OVR</span><h2>Free Kit Bag</h2><p>One real, unowned player from the global catalog. Claim cooldown is enforced by the server.</p><small>${pending ? "FINISH YOUR PENDING REPLACEMENT" : bag.available ? "READY TO OPEN" : `AVAILABLE IN ${clock(bag.seconds_until_available)}`}</small></div></section>
+        ${kitbagAction}
         <div class="reward-timer-line" id="reward-timer-line"
           data-free-seconds="${Math.max(0, Number(bag.seconds_until_available || 0))}"
-          data-ad-seconds="${Math.max(0, Number(ads.seconds_until_available || 0))}"
+          data-ad-seconds="${adSeconds}"
           data-completed="${Math.max(0, Number(ads.completed_today || 0))}"
           data-limit="${Math.max(1, Number(ads.daily_limit || 3))}"
-          data-ad-state="${esc(ads.status || "ready")}" data-pending-attempt="${ads.pending_attempt ? "true" : "false"}"
-          data-replacement-pending="${pending || ads.replacement_pending ? "true" : "false"}">
+          data-ad-state="${esc(ads.status || "ready")}" data-pending-attempt="${adPending ? "true" : "false"}"
+          data-replacement-pending="${replacementPending ? "true" : "false"}"
+          data-can-watch="${ads.can_watch ? "true" : "false"}"
+          data-free-refresh="${!bag.available && Number(bag.seconds_until_available || 0) > 0 ? "true" : "false"}"
+          data-ad-refresh="${adSeconds > 0 ? "true" : "false"}">
           <span class="timer-free">FREE KIT BAG: CHECKING</span><span class="timer-divider">•</span><span class="timer-ad">NEXT AD: CHECKING</span>
         </div>
-        <section class="panel reward-ad-panel"><div class="ad-panel-heading"><div class="ad-panel-icon">▶</div><div><span class="eyebrow">EXTRA KIT BAG</span><h2>Watch an Ad</h2><p>Earn one extra Kit Bag after completing an AdsGram Reward ad. Up to three per day, with a one-hour gap between rewards.</p><span class="ad-usage" id="ad-usage">${esc(adUsage)}</span></div></div>
-          <button class="button gold full" data-action="watch-bonus-ad" ${ads.can_watch && !pending && state.adsgramSdkStatus !== "loading" ? "" : "disabled"}>${state.adsgramSdkStatus === "loading" ? "Preparing ad service…" : state.adsgramSdkStatus === "failed" ? "Retry Ad Connection" : "▶ Watch Ad &amp; Get 1 Extra Kit Bag"}</button>
-          <small class="ad-disclaimer">One Kit Bag is credited after AdsGram reports that the Reward ad was completed. Failed or skipped ads do not grant a Kit Bag.</small>
-        </section>
         <section class="panel reward-panel"><div class="panel-heading"><div><span class="eyebrow">7-DAY STREAK</span><h2>${number(daily.streak)} claimed · ${number(daily.total_claimed)} total claims</h2></div><button class="button primary" data-action="daily-claim" ${daily.available ? "" : "disabled"}>${daily.available ? "Claim" : clock(daily.seconds_until_available)}</button></div>
           <div class="reward-list">${days.map((day) => `<div class="reward-row ${day.status}"><span class="day-mark">${number(day.day)}</span><span><b>Day ${number(day.day)}</b><small>${day.player_range ? `Random player · OVR ${day.player_range[0]}–${day.player_range[1]}` : "Coins"}${day.rubies ? ` + ${number(day.rubies)} rubies` : ""}</small></span><strong>${number(day.coins)} 🪙</strong><i>${day.status === "claimed" ? "✓" : day.status === "available" ? "CLAIM" : "LOCKED"}</i></div>`).join("")}</div>
         </section>
@@ -1438,7 +1472,8 @@
     } catch (error) {
       if (seq !== state.matchRequestSeq || state.page !== "match-detail" || !state.currentMatch || state.currentMatch.engine !== selected.engine || String(state.currentMatch.id) !== selected.id || Boolean(state.currentMatch.shared) !== selected.shared) return;
       if (options.silent) return;
-      shell(`${errorState(error, "matches")}`, `Match #${id}`, "MATCH REPORT");
+      const detailMessage = String(error?.message || "The live score endpoint did not return match data.");
+      shell(`<section class="panel"><span class="eyebrow">MATCH CENTRE</span><h2>Couldn't load the match</h2><p class="muted-copy">${esc(detailMessage)}</p><p class="muted-copy">The score page will retry the same match without changing your selected match.</p><button class="button primary full" data-action="retry-current-match">Try again</button><button class="button secondary full" data-action="match-back">Back to Matches</button></section>`, `Match #${id}`, "MATCH REPORT");
     } finally {
       if (seq === state.matchRequestSeq) state.matchRequestBusy = false;
     }
@@ -1506,58 +1541,15 @@
     state.page = "kitbag-reveal";
     state.pendingKitbagClaimId = claimId || null;
     state.pendingKitbag = requiresReplacement ? { claim_id: claimId, player } : null;
-    const adTimerMarkup = source === "ad" ? `<div class="reward-timer-line" id="ad-reveal-timer"><span class="timer-free">FREE KIT BAG: CHECKING</span><span class="timer-divider">•</span><span class="timer-ad">NEXT AD: CHECKING</span></div>` : "";
     const rewardCopy = requiresReplacement
       ? `<p>Your squad is full at 25 players. This card is saved safely. Choose one player to replace and this card will take their squad slot.</p><button class="button primary full" data-action="open-kitbag-replace" data-claim-id="${esc(claimId)}">Choose player to replace</button>`
       : source === "ad"
-        ? `<p>Your extra Kit Bag was granted after AdsGram confirmed the completed Reward ad. The next-ad timer is shown below.</p><button class="button primary full" data-page="rewards">Back to Rewards</button>`
-        : `<p>Added to your squad. Come back in an hour for your next free Kit Bag.</p><button class="button primary full" data-page="squad">View squad</button>`;
-    shell(`<section class="reveal-card"><div class="reveal-burst">✦</div><span class="eyebrow">KIT BAG OPENED</span><h2>Your new player</h2>${playerCard(player)}${adTimerMarkup}${rewardCopy}</section>`, "Player acquired", "REWARD UNLOCKED");
+        ? `<p>Your extra Kit Bag was credited after AdsGram confirmed the completed Reward ad. Claim your card to return to Rewards.</p><button class="button primary full" data-action="claim-kitbag-card">Claim Card</button>`
+        : `<p>Your player has been added to your squad. Claim your card to return to Rewards.</p><button class="button primary full" data-action="claim-kitbag-card">Claim Card</button>`;
+    shell(`<section class="reveal-card"><div class="reveal-burst">✦</div><span class="eyebrow">KIT BAG OPENED</span><h2>Your new player</h2>${playerCard(player)}${rewardCopy}</section>`, "Player acquired", "REWARD UNLOCKED");
     hydrateImages();
-    if (source === "ad") startRevealAdTimer();
   }
 
-  async function startRevealAdTimer() {
-    clearInterval(state.rewardTimer);
-    state.rewardTimer = null;
-    const apply = (ads, bag) => {
-      const line = document.getElementById("ad-reveal-timer");
-      if (!line) return;
-      const free = line.querySelector(".timer-free");
-      const ad = line.querySelector(".timer-ad");
-      if (free) free.textContent = bag.seconds_until_available > 0 ? `FREE KIT BAG IN ${clockWithSeconds(bag.seconds_until_available)}` : "FREE KIT BAG: READY";
-      if (ad) ad.textContent = ads.completed_today >= ads.daily_limit
-        ? `NEXT ADS IN ${clockWithSeconds(ads.seconds_until_available)}`
-        : ads.seconds_until_available > 0 ? `NEXT AD IN ${clockWithSeconds(ads.seconds_until_available)}` : `AD READY · ${ads.remaining_today} LEFT`;
-      line.dataset.freeSeconds = String(Math.max(0, Number(bag.seconds_until_available || 0)));
-      line.dataset.adSeconds = String(Math.max(0, Number(ads.seconds_until_available || 0)));
-      line.dataset.limitReached = ads.completed_today >= ads.daily_limit ? "true" : "false";
-    };
-    try {
-      const data = await api("/api/rewards");
-      apply(data.ads || { completed_today: 0, daily_limit: 3, remaining_today: 3, seconds_until_available: 3600 }, data.kitbag || { seconds_until_available: 0 });
-      state.rewardTimer = setInterval(() => {
-        const line = document.getElementById("ad-reveal-timer");
-        if (!line) { clearInterval(state.rewardTimer); state.rewardTimer = null; return; }
-        let free = Math.max(0, Number(line.dataset.freeSeconds || 0));
-        let ad = Math.max(0, Number(line.dataset.adSeconds || 0));
-        free = Math.max(0, free - 1); ad = Math.max(0, ad - 1);
-        line.dataset.freeSeconds = String(free); line.dataset.adSeconds = String(ad);
-        const freeNode = line.querySelector(".timer-free");
-        const adNode = line.querySelector(".timer-ad");
-        if (freeNode) freeNode.textContent = free > 0 ? `FREE KIT BAG IN ${clockWithSeconds(free)}` : "FREE KIT BAG: READY";
-        if (adNode) adNode.textContent = line.dataset.limitReached === "true"
-          ? `NEXT ADS IN ${clockWithSeconds(ad)}` : ad > 0 ? `NEXT AD IN ${clockWithSeconds(ad)}` : "AD READY";
-        if (line.dataset.limitReached === "true" && ad === 0) {
-          clearInterval(state.rewardTimer); state.rewardTimer = null;
-          if (state.page === "kitbag-reveal") navigate("rewards", { history: false });
-        }
-      }, 1000);
-    } catch (_) {
-      const line = document.getElementById("ad-reveal-timer");
-      if (line) line.querySelector(".timer-ad").textContent = "OPEN REWARDS TO CHECK TIMER";
-    }
-  }
 
   async function restoreKitbagReveal(claimId) {
     try {
@@ -1848,8 +1840,6 @@
       await loadRewards();
     } finally {
       state.adFlowBusy = false;
-      const currentButton = document.querySelector('[data-action="watch-bonus-ad"]');
-      if (currentButton) currentButton.textContent = "▶ Watch Ad & Get 1 Extra Kit Bag";
       const timerLine = document.getElementById("reward-timer-line");
       if (timerLine) updateRewardTimerLine();
     }
@@ -1973,8 +1963,10 @@
       if (action === "daily-claim") performClaim("daily");
       if (action === "kitbag-claim") performClaim("kitbag");
       if (action === "watch-bonus-ad") startBonusAd(actionButton);
+      if (action === "claim-kitbag-card") { pushRoute({ page: "rewards", currentMatch: null, matchTab: "live", matchInnings: null }); navigate("rewards", { history: false }); return; }
       if (action === "match-filter") { state.matchesFilter = actionButton.dataset.filter || "ongoing"; loadMatches(); }
       if (action === "match-back") backInApp();
+      if (action === "retry-current-match" && state.currentMatch) { loadMatchDetail(state.currentMatch.engine, state.currentMatch.id, { skipRoute: true, shared: Boolean(state.currentMatch.shared) }); return; }
       if (action === "match-tab") {
         state.matchTab = actionButton.dataset.tab || "live";
         if (state.currentMatchData) renderMatchDetail(state.currentMatchData);
