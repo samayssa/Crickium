@@ -3,6 +3,7 @@ from __future__ import annotations
 print("match.py loaded")
 
 import asyncio
+import time
 from typing import Any
 
 from handlers.registry import register, register_callback
@@ -270,6 +271,12 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
     try:
         cards = [first_card, second_card] if first_card else [second_card, second_card]
         potm_name = best_player(cards)
+        session.meta["result_potm_name"] = potm_name
+        try:
+            from services.game_session_recovery import persist_session
+            await persist_session("MATCH", session)
+        except Exception:
+            pass
         await send_match_summary(
             app, chat_id, cards, winner=winner_name or "MATCH TIED",
             margin=margin, potm=player_details(cards, potm_name),
@@ -282,12 +289,29 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
     except Exception as exc:
         print(f"[match] Failed to update challenge status to completed: {exc!r}")
 
+    winner_id = None
+    loser_id = None
+    if winner_name and loser_name:
+        winner_id = session.meta.get("batting_team_id") if str(winner_name) == str(batting_display) else session.meta.get("bowling_team_id")
+        loser_id = session.meta.get("bowling_team_id") if winner_id == session.meta.get("batting_team_id") else session.meta.get("batting_team_id")
+    plain_result = (f"{winner_name} won by {margin}" if winner_name and loser_name else "Match tied" if margin == "a tie" else str(result_text).replace("*", "").replace("_", ""))
+    session.stage = "completed"
+    session.meta.update({
+        "result_plain": plain_result,
+        "result_winner_name": winner_name,
+        "result_loser_name": loser_name,
+        "result_winner_id": winner_id,
+        "result_loser_id": loser_id,
+        "result_margin": margin,
+        "finished_at": time.time(),
+    })
     try:
-        winner_id = None
-        loser_id = None
-        if winner_name and loser_name:
-            winner_id = session.meta.get("batting_team_id") if str(winner_name) == str(batting_display) else session.meta.get("bowling_team_id")
-            loser_id = session.meta.get("bowling_team_id") if winner_id == session.meta.get("batting_team_id") else session.meta.get("batting_team_id")
+        from services.game_session_recovery import persist_session
+        await persist_session("MATCH", session)
+    except Exception as exc:
+        print(f"[match] final Mini App snapshot failed for challenge_id={challenge.get('challenge_id')}: {exc!r}")
+
+    try:
         await send_report(
             app,
             collect_legacy_session(
@@ -366,6 +390,14 @@ async def _get_session(chat_id: int, challenge: dict[str, Any]):
             challenge_id=challenge["challenge_id"],
             format_=challenge.get("format") or "T20",
         )
+    # Start the existing shared checkpoint task and save the first legacy
+    # session snapshot, so the Mini App can read match scores during setup/play.
+    try:
+        from services.game_session_recovery import ensure_background_saver, persist_session
+        ensure_background_saver()
+        await persist_session("MATCH", session)
+    except Exception as exc:
+        print(f"[match] initial Mini App snapshot failed for challenge_id={challenge.get('challenge_id')}: {exc!r}")
     return session
 
 
