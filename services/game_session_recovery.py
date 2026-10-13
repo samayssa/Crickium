@@ -58,7 +58,9 @@ async def persist_session(engine: str, session: Any) -> bool:
     if session is None:
         return False
     try:
-        match_id = int(getattr(session, "match_id"))
+        engine_key = str(engine).upper()
+        raw_id = getattr(session, "challenge_id", None) if engine_key == "MATCH" else getattr(session, "match_id", None)
+        match_id = int(raw_id)
     except Exception:
         return False
     try:
@@ -101,8 +103,13 @@ async def _load_snapshot(engine: str, match_id: int) -> Any | None:
 
 
 def _inject(engine: str, session: Any) -> Any | None:
-    mid = int(getattr(session, "match_id"))
-    if engine == "PLAY":
+    raw_id = getattr(session, "challenge_id", None) if engine == "MATCH" else getattr(session, "match_id", None)
+    mid = int(raw_id)
+    if engine == "MATCH":
+        from engines.match_engine import MATCH_ENGINE
+        chat_id = int(getattr(session, "chat_id", 0) or 0)
+        MATCH_ENGINE.sessions[chat_id] = session
+    elif engine == "PLAY":
         from engines.play_runtime import _SESSIONS
         _SESSIONS[mid] = session
     elif engine == "PLAYINT":
@@ -124,7 +131,11 @@ async def restore_session(engine: str, match_id: int) -> Any | None:
     engine = str(engine).upper()
     mid = int(match_id)
     try:
-        if engine == "PLAY":
+        if engine == "MATCH":
+            from engines.match_engine import MATCH_ENGINE
+            live = next((candidate for candidate in MATCH_ENGINE.sessions.values()
+                         if int(getattr(candidate, "challenge_id", 0) or 0) == mid), None)
+        elif engine == "PLAY":
             from engines.play_runtime import get_session
             live = get_session(mid)
         elif engine == "PLAYINT":
@@ -173,6 +184,12 @@ def _active_runtime_sessions() -> list[tuple[str, Any]]:
     try:
         from engines.playwpl_runtime import _PLAYWPL_SESSIONS
         out.extend(("PLAYWPL", s) for s in list(_PLAYWPL_SESSIONS.values()))
+    except Exception:
+        pass
+    try:
+        from engines.match_engine import MATCH_ENGINE
+        out.extend(("MATCH", session) for session in list(MATCH_ENGINE.sessions.values())
+                   if getattr(session, "challenge_id", None) is not None)
     except Exception:
         pass
     return out
