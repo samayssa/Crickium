@@ -14,6 +14,7 @@ OUTCOMES = [
     "four",
     "six",
     "wicket",
+    "run_out",
     "wide",
     "no_ball",
     "bye",
@@ -28,6 +29,7 @@ OUTCOME_RUNS = {
     "four": 4,
     "six": 6,
     "wicket": 0,
+    "run_out": 0,
     "wide": 1,
     "no_ball": 1,
     "bye": 1,
@@ -42,6 +44,7 @@ OUTCOME_SYMBOL = {
     "four": "4",
     "six": "6",
     "wicket": "W",
+    "run_out": "W",
     "wide": "wd",
     "no_ball": "nb",
     "bye": "b",
@@ -90,6 +93,10 @@ class BallOutcome:
     extra_type: str | None = None
     batter_runs: int = 0
     bowler_runs: int = 0
+    dismissal_type: str | None = None
+    fielder_name: str | None = None
+    dismissal_text: str | None = None
+    bowler_credited: bool = True
 
     @property
     def symbol(self) -> str:
