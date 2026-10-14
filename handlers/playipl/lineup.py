@@ -26,6 +26,15 @@ def _chosen_in_order(players, selected_ids):
 def _xi_keyboard(match_id, code, players, selected_ids, is_challenger):
     return (challenger_xi_keyboard if is_challenger else opponent_xi_keyboard)(match_id, code, players, selected_ids)
 
+def _role_emoji(player):
+    role=str(player.get('role') or player.get('player_role') or '').strip().lower().replace('-', '').replace(' ', '')
+    if 'keeper' in role or role in {'wk','wicketkeeper'}: return '🧤'
+    if 'allround' in role or role in {'ar','allrounder'}: return '🔄'
+    if 'bowl' in role: return '🎯'
+    if 'bat' in role: return '🏏'
+    bat=int(player.get('bat_level') or 0); bowl=int(player.get('bowl_level') or 0)
+    return '🎯' if bowl > bat + 3 else '🏏' if bat > bowl + 3 else '🔄'
+
 def _role_counts(players):
     c={'Batsman':0,'AllRounder':0,'Bowler':0,'Wicketkeeper':0}
     for p in players:
@@ -53,7 +62,7 @@ def _build_text(code,players,selected):
     team_display=f"{ipl_team_emoji_html(code)} {team_name(code).upper()}"
     lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_display} ({code})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
     chosen=_chosen_in_order(players, selected)
-    lines.extend([p.get('name','Player') for p in chosen])
+    lines.extend([f"{_role_emoji(p)} {p.get('name','Player')}" for p in chosen])
     lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",f"🌍 Overseas: {overseas_count}/{MAX_OVERSEAS_PLAYERS}",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
     return '\n'.join(lines)
 
