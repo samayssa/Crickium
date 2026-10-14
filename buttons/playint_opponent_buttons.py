@@ -26,6 +26,21 @@ def _b(text, data, style='primary'):
     return InlineKeyboardButton(f"{_HINT.get(style,'')} {text}".strip(), callback_data=data)
 
 
+def _role_emoji(player):
+    role = str(player.get('role') or player.get('player_role') or '').strip().lower().replace('-', '').replace(' ', '')
+    if 'keeper' in role or role in {'wk', 'wicketkeeper'}:
+        return '🧤'
+    if 'allround' in role or role in {'ar', 'allrounder'}:
+        return '🔄'
+    if 'bowl' in role:
+        return '🎯'
+    if 'bat' in role:
+        return '🏏'
+    bat = int(player.get('bat_level') or 0)
+    bowl = int(player.get('bowl_level') or 0)
+    return '🎯' if bowl > bat + 3 else '🏏' if bat > bowl + 3 else '🔄'
+
+
 def _build(match_id, team_code, player_list, selected_ids, button_style):
     selected = set(int(x) for x in (selected_ids or []))
     rows=[[_b('▶️ Play with your last Playing 11',f'playint_recent_xi:{match_id}:{team_code}',button_style)]]
@@ -38,7 +53,7 @@ def _build(match_id, team_code, player_list, selected_ids, button_style):
             ovr=max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))
             mark='✅ ' if pid in selected else ''
             style='success' if pid in selected else button_style
-            row.append(_b(f'{mark}{flag} {name} • {ovr}', f'playint_xi:{match_id}:{team_code}:{pid}', style))
+            row.append(_b(f'{mark}{flag} {_role_emoji(p)} {name} • {ovr}', f'playint_xi:{match_id}:{team_code}:{pid}', style))
         rows.append(row)
     rows.append([_b('✅ CONFIRM PLAYING XI',f'playint_xi_confirm:{match_id}:{team_code}',button_style)])
     return InlineKeyboardMarkup(rows)
