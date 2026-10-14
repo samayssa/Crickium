@@ -65,8 +65,33 @@ def _json_default(value):
     return str(value)
 
 
+def _json_safe(value):
+    """Normalize nested data structures before JSON encoding.
+
+    The match-analysis collector includes ``analytics.phase_map`` with tuple
+    keys such as ``(1, 'middle')``. Python's JSON encoder accepts custom values
+    in *values* via ``default=`` but raises TypeError for tuple dictionary keys,
+    turning every otherwise-valid live-score response into HTTP 500. Preserve
+    the data while converting non-JSON object keys to stable strings.
+    """
+    if isinstance(value, dict):
+        safe = {}
+        for key, item in value.items():
+            if isinstance(key, (str, int, float, bool)) or key is None:
+                safe_key = key
+            else:
+                safe_key = str(key)
+            safe[safe_key] = _json_safe(item)
+        return safe
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return [_json_safe(item) for item in sorted(value, key=str)]
+    return value
+
+
 async def _send_json(send, payload, status: int = 200):
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=_json_default).encode("utf-8")
+    body = json.dumps(_json_safe(payload), ensure_ascii=False, separators=(",", ":"), default=_json_default).encode("utf-8")
     await send({
         "type": "http.response.start", "status": status,
         "headers": [
