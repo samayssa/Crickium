@@ -66,3 +66,11 @@
   .match-score-hero-premium .match-hero-teams { gap: 4px; }
   .match-centre-facts span { font-size: 7px; }
 }
+
+/* Compact dismissal trail, using the existing Crickium scorecard palette. */
+.fall-of-wickets { padding: 12px 14px 14px; border-top: 1px solid var(--line, rgba(255,255,255,.08)); }
+.fall-of-wickets > b { display: block; margin-bottom: 8px; color: var(--muted, #91a29a); font-size: 11px; letter-spacing: .09em; text-transform: uppercase; }
+.fall-of-wickets > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.fall-of-wickets span { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; border: 1px solid var(--line, rgba(255,255,255,.08)); background: rgba(255,255,255,.025); border-radius: 9px; padding: 6px 8px; font-size: 12px; }
+.fall-of-wickets span strong { color: var(--accent, #c9f36c); font-variant-numeric: tabular-nums; }
+.fall-of-wickets span small { color: var(--muted, #91a29a); font-size: 11px; }

@@ -1350,7 +1350,9 @@
       return `<tr class="${currentNames.includes(batter.name) ? "current-player" : ""}"><td><b>${esc(batter.name || "Player")}</b><small>${esc(statusText)}</small></td><td>${number(batter.runs)}</td><td>${number(batter.balls)}</td><td>${number(batter.fours)}</td><td>${number(batter.sixes)}</td><td>${batter.strike_rate != null ? Number(batter.strike_rate).toFixed(1) : "—"}</td></tr>`;
     }).join("");
     const extras = innings.extras && typeof innings.extras === "object" ? Object.values(innings.extras).reduce((sum, value) => sum + (Number(value) || 0), 0) : null;
-    return `<div class="score-table-wrap"><table class="score-table"><thead><tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead><tbody>${rows}</tbody></table><div class="score-table-total"><span>Extras ${extras == null ? "—" : number(extras)}</span><b>Total ${number(innings.runs)}/${number(innings.wickets)} · ${esc(matchOverText(innings))} ov</b></div></div>`;
+    const dismissals = Array.isArray(innings.wickets_fallen) ? innings.wickets_fallen.filter((item) => item && typeof item === "object") : [];
+    const falls = dismissals.length ? `<div class="fall-of-wickets"><b>Fall of wickets</b><div>${dismissals.map((item, index) => { const text = item.text || item.dismissal_text || item.type || "Wicket"; const batter = item.batter || item.name || "Batter"; const over = item.over != null ? ` · ${esc(item.over)} ov` : ""; return `<span><strong>${index + 1}-${number(index + 1)}</strong> ${esc(batter)} <small>${esc(text)}${over}</small></span>`; }).join("")}</div></div>` : "";
+    return `<div class="score-table-wrap"><table class="score-table"><thead><tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead><tbody>${rows}</tbody></table><div class="score-table-total"><span>Extras ${extras == null ? "—" : number(extras)}</span><b>Total ${number(innings.runs)}/${number(innings.wickets)} · ${esc(matchOverText(innings))} ov</b></div>${falls}</div>`;
   }
 
   function renderBowlerTable(innings) {
