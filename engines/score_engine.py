@@ -55,6 +55,9 @@ def register_wicket(
     batter_name: str | None = None,
     wicket_type: str = "caught",
     fielder_name: str | None = None,
+    bowler_name: str | None = None,
+    dismissal_text: str | None = None,
+    bowler_credited: bool = True,
 ) -> None:
     state.wickets += 1
     state.wickets_fallen.append(
@@ -62,6 +65,9 @@ def register_wicket(
             "batter": batter_name,
             "type": wicket_type,
             "fielder": fielder_name,
+            "bowler": bowler_name,
+            "text": dismissal_text or wicket_type,
+            "bowler_credited": bool(bowler_credited),
             "over": state.over_text,
         }
     )
@@ -84,10 +90,14 @@ def update_score_from_ball(
     fielder_name: str | None = None,
     extra_type: str | None = None,
     legal_delivery: bool = True,
+    bowler_name: str | None = None,
+    dismissal_text: str | None = None,
+    bowler_credited: bool = True,
 ) -> ScoreCard:
     outcome = _normalize_outcome(outcome)
     is_extra = bool(extra_type) or outcome in {"wide", "no_ball", "leg_bye", "bye", "penalty"}
 
+    wicket_recorded = False
     if is_extra:
         # Extras are scored ONCE here. They must never also fall through
         # to the normal-runs block below - that was double-counting every
@@ -95,8 +105,13 @@ def update_score_from_ball(
         # added 2 runs instead of 1), which is what was throwing off the
         # score/over math whenever extras came up.
         register_extra(state, extra_type or outcome, runs=max(1, runs))
-    elif wicket or outcome == "out":
-        register_wicket(state, batter_name=batter_name, wicket_type=wicket_type, fielder_name=fielder_name)
+    elif wicket or outcome in {"out", "run_out"}:
+        register_wicket(
+            state, batter_name=batter_name, wicket_type=wicket_type,
+            fielder_name=fielder_name, bowler_name=bowler_name,
+            dismissal_text=dismissal_text, bowler_credited=bowler_credited,
+        )
+        wicket_recorded = True
     else:
         score_runs = runs
         if outcome == "single":
@@ -119,6 +134,10 @@ def update_score_from_ball(
 
     if legal_delivery and outcome not in {"wide", "no_ball"} and not (extra_type in {"wide", "no_ball"}):
         _apply_legal_delivery(state)
+    # Store the fall-of-wicket over after applying the current ball, so a
+    # wicket on ball four is shown as 0.4 rather than the previous 0.3.
+    if wicket_recorded and state.wickets_fallen:
+        state.wickets_fallen[-1]["over"] = state.over_text
 
     return state
 

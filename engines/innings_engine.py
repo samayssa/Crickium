@@ -138,6 +138,9 @@ def register_ball(
     legal_delivery: bool = True,
     max_legal_balls: int = 120,
     max_wickets: int = 10,
+    dismissal_text: str | None = None,
+    bowler_name: str | None = None,
+    bowler_credited: bool = True,
 ) -> dict[str, Any]:
     before_balls = state.score.legal_balls
     before_over = state.score.over_text
@@ -153,6 +156,9 @@ def register_ball(
         fielder_name=fielder_name,
         extra_type=extra_type,
         legal_delivery=legal_delivery,
+        bowler_name=bowler_name,
+        dismissal_text=dismissal_text,
+        bowler_credited=bowler_credited,
     )
 
     normalized = str(outcome or "").strip().lower()
@@ -169,7 +175,7 @@ def register_ball(
             striker_before.runs += 0
         if wicket:
             striker_before.dismissed = True
-            striker_before.dismissal_text = wicket_type
+            striker_before.dismissal_text = dismissal_text or wicket_type
 
     if normalized not in {"wide", "no_ball"} and should_rotate_strike(runs):
         state.striker, state.non_striker = state.non_striker, state.striker

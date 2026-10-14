@@ -8,7 +8,7 @@ from engines.approaches import BallContext, BallOutcome
 from engines.innings_engine import BatterSlot, InningsState, create_innings, register_ball
 from engines.lineup_engine import bowling_candidates
 from engines.play_engine import playing_xi
-from engines.strategy_engine import resolve as resolve_strategy
+from engines.strategy_engine import decorate_dismissal, resolve as resolve_strategy
 from engines.commentary_play_engine import get_commentary
 from utils.PremiumEmoji import ipl_team_emoji_html, wicket_out_emoji_html
 from services.milestones import schedule_milestone_notifications
@@ -442,7 +442,8 @@ def _update_bowler_stats(session: PlaySession, outcome: BallOutcome) -> None:
     if outcome.legal:
         bs["balls"] += 1
     bs["runs"] += int(outcome.bowler_runs or 0)
-    if outcome.wicket:
+    # Run-outs count as team wickets but are not credited to the bowler.
+    if outcome.wicket and bool(getattr(outcome, "bowler_credited", True)):
         bs["wickets"] += 1
 
 
@@ -472,7 +473,7 @@ def _confidence_delta(outcome_name: str, current_confidence: float, streak_befor
 
 def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     context = _ball_context(session, strategy)
-    outcome = resolve_strategy(strategy, context)
+    outcome = decorate_dismissal(session, resolve_strategy(strategy, context))
     try:
         from services.match_analysis.collector import record_runtime_ball
         record_runtime_ball(session, context, outcome)
@@ -504,8 +505,13 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
         runs=int(outcome.runs or 0),
         wicket=bool(outcome.wicket),
         batter_name=striker_before.name if striker_before else None,
+        wicket_type=outcome.dismissal_type or "caught",
+        fielder_name=outcome.fielder_name,
         extra_type=outcome.extra_type,
         legal_delivery=bool(outcome.legal),
+        dismissal_text=outcome.dismissal_text,
+        bowler_name=(session.current_bowler or {}).get("name"),
+        bowler_credited=bool(getattr(outcome, "bowler_credited", True)),
     )
     if outcome.wicket:
         consume_planned_batsman_after_wicket(session)
@@ -524,16 +530,23 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     # never interrupt scoring or the active game simulation.
     schedule_milestone_notifications(session, outcome, striker_before, partnership_id=partnership_id_before_ball, partnership_players=partnership_players_before_ball)
 
-    commentary = get_commentary(
-        outcome.outcome,
-        over_number=int(context.over_number),
-        balls_faced=int(context.batsman_balls_faced),
-        result={
-            "outcome": outcome.outcome,
-            "runs": int(outcome.runs or 0),
-            "batter_name": striker_before.name if striker_before else None,
-            "bowler_name": (session.current_bowler or {}).get("name"),
-        },
+    commentary = (
+        f"{striker_before.name if striker_before else 'The batter'} is out: {outcome.dismissal_text}."
+        if outcome.wicket and outcome.dismissal_text
+        else get_commentary(
+            outcome.outcome,
+            over_number=int(context.over_number),
+            balls_faced=int(context.batsman_balls_faced),
+            result={
+                "outcome": outcome.outcome,
+                "runs": int(outcome.runs or 0),
+                "batter_name": striker_before.name if striker_before else None,
+                "bowler_name": (session.current_bowler or {}).get("name"),
+                "dismissal_type": outcome.dismissal_type,
+                "fielder_name": outcome.fielder_name,
+                "dismissal_text": outcome.dismissal_text,
+            },
+        )
     )
     try:
         from services.match_analysis.collector import add_runtime_commentary

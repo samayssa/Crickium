@@ -45,6 +45,11 @@ from typing import Any
 
 OUTCOMES = [0, 1, 2, 3, 4, 6, "W", "WD", "NB", "LB", "BY"]
 
+# A run-out is a rare event that can happen only while attempting a run.
+# It is deliberately applied after the existing probability model so all current
+# tactical, pitch, form, and upgrade weighting remains unchanged.
+RUN_OUT_ON_RUNNING_BALL_PROBABILITY = 0.001
+
 BOWLER_TACTICS = [
     "defensive", "swinging", "pace_up", "back_of_length", "variation",
     # Off-spin family
@@ -1539,4 +1544,9 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
         bowling_upgrade_context=bowling_upgrade_context,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
-    return random.choices(OUTCOMES, weights=values, k=1)[0]
+    sampled = random.choices(OUTCOMES, weights=values, k=1)[0]
+    # Very rare run-outs occur only on running outcomes, never on boundaries or
+    # extras. The existing weighted outcome is otherwise returned unchanged.
+    if sampled in {1, 2, 3} and random.random() < RUN_OUT_ON_RUNNING_BALL_PROBABILITY:
+        return "RO"
+    return sampled
