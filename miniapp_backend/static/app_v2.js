@@ -578,7 +578,7 @@
     const packMarkup = packs.map((pack) => {
       const enough = Number(wallet.sigils || 0) >= Number(pack.price_sigils || 0);
       const owned = Number(pack.quantity || 0);
-      return `<article class="pack-store-card panel"><div class="pack-store-head"><span class="pack-emblem ${esc(pack.key)}">${esc(pack.key.slice(0, 1).toUpperCase())}</span><div><h2>${esc(pack.name)}</h2><p>${esc(pack.description || "Pack details provided by Crickium catalogue.")}</p></div><span class="pack-price">${number(pack.price_sigils)} SG</span></div>
+      return `<article class="pack-store-card panel ${esc(pack.key)}"><div class="pack-store-head has-art"><span class="pack-art">${window.CrickiumPacks ? window.CrickiumPacks.art(pack.key) : esc(pack.key.slice(0, 1).toUpperCase())}</span><div><h2>${esc(pack.name)}</h2><p>${esc(pack.description || "Pack details provided by Crickium catalogue.")}</p></div><span class="pack-price">${number(pack.price_sigils)} SG</span></div>
         <div class="pack-spec-grid"><div><small>CARDS</small><b>${number(pack.cards)}</b></div><div><small>CORE OVR</small><b>${number(pack.core_ovr?.[0])}–${number(pack.core_ovr?.[1])}</b></div><div><small>BONUS OVR</small><b>${number(pack.bonus_ovr?.[0])}–${number(pack.bonus_ovr?.[1])}</b></div></div>
         <div class="pack-rewards-line"><span>🪙 ${number(pack.coins_reward)} coins</span><span>◆ ${number(pack.rubies_reward)} rubies</span><b>Owned · ${number(owned)}</b></div>
         <div class="pack-actions"><button class="button primary" data-action="buy-pack" data-pack-key="${esc(pack.key)}" ${!pack.enabled || !enough ? "disabled" : ""}>${!pack.enabled ? "Unavailable" : !enough ? "Insufficient Sigils" : "Buy pack"}</button><button class="button secondary" data-action="open-pack" data-pack-key="${esc(pack.key)}" ${owned < 1 ? "disabled" : ""}>Open${owned ? ` · ${number(owned)}` : ""}</button></div>
@@ -643,16 +643,23 @@
     state.packBusy = true;
     state.openingRequestIds = state.openingRequestIds || {};
     const requestKey = state.openingRequestIds[packKey] || (state.openingRequestIds[packKey] = persistedRequestId("pack-opening", packKey));
+    const ui = window.CrickiumPacks ? window.CrickiumPacks.begin(packKey, { playerCard, number, hydrate: hydrateImages }) : null;
     try {
       const opening = await api("/api/packs/open", { method: "POST", body: JSON.stringify({ pack_key: packKey, client_request_id: requestKey }) });
       if (opening.status !== "success") throw Object.assign(new Error(opening.detail || opening.status || "Pack opening failed"), { payload: opening, status: 409 });
       delete state.openingRequestIds[packKey];
       clearPersistedRequestId("pack-opening", packKey);
-      state.packOpening = opening;
+      state.packOpening = null;
       ping("heavy");
-      toast(opening.replayed ? "Loaded your saved pack reveal." : "Pack opened. Your cards and rewards are saved.");
-      await loadPacks({ opening });
+      if (ui) {
+        await ui.reveal(opening, () => {});
+        await loadPacks({ opening: null });
+      } else {
+        toast(opening.replayed ? "Loaded your saved pack reveal." : "Pack opened. Your cards and rewards are saved.");
+        await loadPacks({ opening });
+      }
     } catch (error) {
+      if (ui) ui.close();
       if ([400, 401, 403, 404, 409].includes(Number(error.status))) {
         delete state.openingRequestIds[packKey];
         clearPersistedRequestId("pack-opening", packKey);
