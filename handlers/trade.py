@@ -244,14 +244,85 @@ async def _used_trade_today(user_id: int) -> bool:
     return bool(row)
 
 
-async def _pending_for_user(user_id: int) -> bool:
+async def _sweep_expired_trades() -> int:
+    """Expire every active trade whose deadline passed.
+
+    Expiry used to be applied lazily (only when someone pressed a button),
+    so an abandoned trade kept both users locked in "already in active trade"
+    forever. Run before every guard so abandoned rows can never block anyone.
+    """
+    from database.query import execute
+    result = await execute(
+        """UPDATE trade_requests SET status='expired'
+           WHERE status = ANY($1::text[]) AND expires_at <= NOW();""",
+        list(ACTIVE_TRADE_STATUSES),
+    )
+    try:
+        return int(str(result).split()[-1])
+    except Exception:
+        return 0
+
+
+async def _pending_trade(user_id: int) -> dict | None:
     row = await fetchrow(
-        """SELECT 1 FROM trade_requests
-           WHERE status = ANY($2::text[]) AND (sender_id=$1 OR recipient_id=$1)
-           LIMIT 1;""",
+        """SELECT * FROM trade_requests
+           WHERE status = ANY($2::text[]) AND expires_at > NOW()
+             AND (sender_id=$1 OR recipient_id=$1)
+           ORDER BY trade_id DESC LIMIT 1;""",
         int(user_id), list(ACTIVE_TRADE_STATUSES),
     )
+    return dict(row) if row else None
+
+
+async def _pending_for_user(user_id: int) -> bool:
+    return bool(await _pending_trade(user_id))
+
+
+async def _transition(trade_id: int, from_statuses, to_status: str) -> bool:
+    """Atomic compare-and-set status change; False if someone else won the race."""
+    row = await fetchrow(
+        """UPDATE trade_requests SET status=$3
+           WHERE trade_id=$1 AND status = ANY($2::text[]) RETURNING trade_id;""",
+        int(trade_id), list(from_statuses), to_status,
+    )
     return bool(row)
+
+
+async def _is_expired(trade_id: int) -> bool:
+    row = await fetchrow("SELECT (expires_at <= NOW()) AS e FROM trade_requests WHERE trade_id=$1;", int(trade_id))
+    return bool(row and row["e"])
+
+
+async def _guard_active(callback_query, trade: dict, uid: int, status: str) -> bool:
+    """Common callback guard: ownership, status and expiry. True when OK."""
+    cid = callback_query["id"]
+    if trade["status"] != status or (status == "awaiting_sender" and int(trade["sender_id"]) != uid) \
+            or (status == "awaiting_recipient" and int(trade["recipient_id"]) != uid):
+        await app.answer_callback_query(cid, "This trade is no longer active.", show_alert=True)
+        return False
+    if await _is_expired(int(trade["trade_id"])):
+        await _transition(int(trade["trade_id"]), ACTIVE_TRADE_STATUSES, "expired")
+        chat_id, message_id = _chat_message(callback_query)
+        try:
+            await app.edit_message_text(chat_id, message_id, _expired_text(), parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        except Exception:
+            pass
+        await app.answer_callback_query(cid, "This trade has expired.", show_alert=True)
+        return False
+    return True
+
+
+async def _send_or_cancel(trade_id: int, chat_id: int, text: str, markup) -> bool:
+    """Send the trade message; if Telegram refuses, cancel the row so the
+    users are never locked behind an invisible trade."""
+    try:
+        sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+        await _set_message_id(trade_id, int((sent or {}).get("message_id") or 0))
+        return True
+    except Exception as exc:
+        print(f"[trade] send failed for trade {trade_id}: {exc!r}")
+        await _transition(trade_id, ACTIVE_TRADE_STATUSES, "cancelled")
+        return False
 
 
 async def expire_all_active_trades_for_refresh() -> int:
@@ -358,12 +429,9 @@ async def _get_trade_for_callback(trade_id: int, uid: int, allowed_statuses: set
         return trade, actor_status
     if allowed_statuses is not None and trade.get("status") not in allowed_statuses:
         return trade, "inactive"
-    expires_at = trade.get("expires_at")
-    if expires_at is not None:
-        expiry = expires_at if getattr(expires_at, "tzinfo", None) else expires_at.replace(tzinfo=timezone.utc)
-        if expiry <= datetime.now(timezone.utc):
-            await _update_trade(trade_id, status="expired")
-            return trade, "expired"
+    if await _is_expired(trade_id):
+        await _transition(trade_id, ACTIVE_TRADE_STATUSES, "expired")
+        return trade, "expired"
     return trade, "ok"
 
 
@@ -394,6 +462,8 @@ async def _update_trade(trade_id: int, **fields):
         cast = "::jsonb" if key.endswith("_json") else ""
         parts.append(f"{key}=${len(args)+1}{cast}")
         args.append(json.dumps(value, default=str) if key.endswith("_json") else value)
+    if parts and fields.get("status") not in {"completed", "declined", "cancelled", "expired"}:
+        parts.append("expires_at=NOW()+INTERVAL '5 minutes'")
     if parts:
         args.append(int(trade_id))
         await execute(
@@ -427,14 +497,26 @@ async def _create_trade(sender_id: int, recipient_id: int, chat_id: int, player:
 
 
 async def _ensure_creation_guards(sender_id: int, recipient_id: int) -> str | None:
+    await _sweep_expired_trades()
     if sender_id == recipient_id:
         return "You cannot trade with yourself."
     if await _active_match(sender_id) or await _active_match(recipient_id):
         return "Trade is unavailable while either user is in an active match. Finish the match first."
     if DAILY_TRADE_LIMIT_ENABLED and (await _used_trade_today(sender_id) or await _used_trade_today(recipient_id)):
         return "Daily trade limit reached. Each user can complete only one trade per day."
-    if await _pending_for_user(sender_id) or await _pending_for_user(recipient_id):
-        return "One of these users already has a pending trade. Finish it before starting another."
+    mine = await _pending_trade(sender_id)
+    if mine and int(mine["sender_id"]) == sender_id and mine["status"] == "awaiting_sender":
+        # Own unfinished setup screen: replace it instead of blocking the user.
+        await _transition(int(mine["trade_id"]), {"awaiting_sender"}, "cancelled")
+        try:
+            if mine.get("message_id"):
+                await app.edit_message_text(int(mine["chat_id"]), int(mine["message_id"]), "<b>❌ Trade setup replaced by a new trade.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        except Exception:
+            pass
+    if await _pending_for_user(sender_id):
+        return "You already have an active trade. Finish or cancel it first (it auto-expires in 5 minutes)."
+    if await _pending_for_user(recipient_id):
+        return "That user is already in an active trade. Try again once it finishes or expires (max 5 minutes)."
     return None
 
 
@@ -473,13 +555,8 @@ async def trade_command(message):
     # No player specified: open the full sender squad picker.
     if not offered_query:
         trade_id = await _create_trade(sender_id, recipient_id, chat_id, {"player_id": 0, "name": "Pending Selection", "bat_level": 0, "bowl_level": 0})
-        sent = await app.send_message(
-            chat_id,
-            _choose_sender_text(dict(sender_row), target),
-            parse_mode="HTML",
-            reply_markup=squad_player_keyboard(trade_id, sender_squad, "s"),
-        )
-        await _set_message_id(trade_id, int(sent["message_id"]))
+        if not await _send_or_cancel(trade_id, chat_id, _choose_sender_text(dict(sender_row), target), squad_player_keyboard(trade_id, sender_squad, "s")):
+            return
         return
 
     offered_matches, _ = await _find_player_matches(sender_id, offered_query)
@@ -497,13 +574,8 @@ async def trade_command(message):
         if len(offered_matches) > 1:
             trade_id = await _create_trade(sender_id, recipient_id, chat_id, {"player_id": 0, "name": "Pending Selection", "bat_level": 0, "bowl_level": 0})
             await _update_trade(trade_id, sender_player_json={"pending_query": offered_query})
-            sent = await app.send_message(
-                chat_id,
-                _multiple_sender_text(dict(sender_row), target, offered_query),
-                parse_mode="HTML",
-                reply_markup=squad_player_keyboard(trade_id, offered_matches, "s", confirm=True),
-            )
-            await _set_message_id(trade_id, int(sent["message_id"]))
+            if not await _send_or_cancel(trade_id, chat_id, _multiple_sender_text(dict(sender_row), target, offered_query), squad_player_keyboard(trade_id, offered_matches, "s", confirm=True)):
+                return
             # Requested query is stored inside the placeholder JSON.
             await _update_trade(trade_id, sender_player_json={"pending_query": offered_query, "selection_pending_confirm": True}, recipient_player_json={"pending_query": requested_query})
             return
@@ -514,13 +586,8 @@ async def trade_command(message):
         else:
             requested = requested_matches[0]
         trade_id = await _create_trade(sender_id, recipient_id, chat_id, offered, requested)
-        sent = await app.send_message(
-            chat_id,
-            _sender_confirm_text(offered, target, requested_query if requested else requested_query),
-            parse_mode="HTML",
-            reply_markup=direct_offer_keyboard(trade_id),
-        )
-        await _set_message_id(trade_id, int(sent["message_id"]))
+        if not await _send_or_cancel(trade_id, chat_id, _sender_confirm_text(offered, target, requested_query if requested else requested_query), direct_offer_keyboard(trade_id)):
+            return
         # Preserve ambiguous requested query for recipient selection.
         if requested is None:
             await _update_trade(trade_id, recipient_player_json={"pending_query": requested_query})
@@ -530,24 +597,14 @@ async def trade_command(message):
     if len(offered_matches) > 1:
         trade_id = await _create_trade(sender_id, recipient_id, chat_id, {"player_id": 0, "name": "Pending Selection", "bat_level": 0, "bowl_level": 0})
         await _update_trade(trade_id, sender_player_json={"pending_query": offered_query, "selection_pending_confirm": True}, recipient_player_json=( {"pending_query": requested_query} if requested_query else None ))
-        sent = await app.send_message(
-            chat_id,
-            _multiple_sender_text(dict(sender_row), target, offered_query),
-            parse_mode="HTML",
-            reply_markup=squad_player_keyboard(trade_id, offered_matches, "s", confirm=True),
-        )
-        await _set_message_id(trade_id, int(sent["message_id"]))
+        if not await _send_or_cancel(trade_id, chat_id, _multiple_sender_text(dict(sender_row), target, offered_query), squad_player_keyboard(trade_id, offered_matches, "s", confirm=True)):
+            return
         return
 
     offered = offered_matches[0]
     trade_id = await _create_trade(sender_id, recipient_id, chat_id, offered)
-    sent = await app.send_message(
-        chat_id,
-        _sender_confirm_text(offered, target),
-        parse_mode="HTML",
-        reply_markup=direct_offer_keyboard(trade_id),
-    )
-    await _set_message_id(trade_id, int(sent["message_id"]))
+    if not await _send_or_cancel(trade_id, chat_id, _sender_confirm_text(offered, target), direct_offer_keyboard(trade_id)):
+        return
 
 
 @register_callback("trade_pick")
@@ -743,6 +800,32 @@ async def trade_confirm_pick(callback_query):
     await app.answer_callback_query(callback_query["id"], "Player confirmed.")
 
 
+async def _handoff(callback_query, trade_id: int, text: str, markup, answer: str) -> None:
+    """Move a trade from the sender's setup screen to the recipient.
+
+    Atomically claims awaiting_sender -> awaiting_recipient (double-click safe),
+    sends the new message FIRST and only then removes the old one, so a failed
+    send can never leave the sender with no screen at all.
+    """
+    cid = callback_query["id"]
+    if not await _transition(trade_id, {"awaiting_sender"}, "awaiting_recipient"):
+        await app.answer_callback_query(cid, "This trade is no longer active.", show_alert=True)
+        return
+    chat_id, message_id = _chat_message(callback_query)
+    if not await _send_or_cancel(trade_id, chat_id, text, markup):
+        try:
+            await app.edit_message_text(chat_id, message_id, _failure_text("Could not send the trade request. Please try /trade again."), parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        except Exception:
+            pass
+        await app.answer_callback_query(cid, "Could not send the trade request.", show_alert=True)
+        return
+    try:
+        await app.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+    await app.answer_callback_query(cid, answer)
+
+
 @register_callback("trade_sender_yes")
 async def trade_sender_yes(callback_query):
     parts = _callback_parts(callback_query)
@@ -758,8 +841,15 @@ async def trade_sender_yes(callback_query):
     if actor_status == "not_for_user":
         await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
         return
-    if trade["status"] != "awaiting_sender" or int(trade["sender_id"]) != uid:
-        await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
+    if not await _guard_active(callback_query, trade, uid, "awaiting_sender"):
+        return
+    if int(trade["sender_player_id"] or 0) == 0:
+        await app.answer_callback_query(callback_query["id"], "Please select a player first.", show_alert=True)
+        return
+    if await _active_match(int(trade["sender_id"])) or await _active_match(int(trade["recipient_id"])):
+        await _transition(trade_id, ACTIVE_TRADE_STATUSES, "cancelled")
+        await _finalize_trade_message(callback_query, _failure_text("Trade blocked because a participant is in an active match."))
+        await app.answer_callback_query(callback_query["id"], "A participant is in an active match.", show_alert=True)
         return
 
     sender, recipient = await _load_users(trade)
@@ -801,57 +891,22 @@ async def trade_sender_yes(callback_query):
             requested = matches[0]
             await _update_trade(trade_id, recipient_player_id=int(requested["player_id"]), recipient_player_kind=_kind(requested), recipient_player_json=requested)
         else:
-            # Keep the request query in the persisted trade row so the next
-            # screen contains only matching recipient cards.
+            # Keep the request query so the next screen lists only matching cards.
             await _update_trade(trade_id, recipient_player_json={"pending_query": requested_query})
-            await _update_trade(trade_id, status="awaiting_recipient")
-            chat_id, message_id = _chat_message(callback_query)
-            try:
-                await app.delete_message(chat_id, message_id)
-            except Exception:
-                pass
-            sent = await app.send_message(
-                chat_id,
-                _multiple_recipient_text(sender, recipient, offered, requested_query),
-                parse_mode="HTML",
-                reply_markup=squad_player_keyboard(trade_id, matches, "r", confirm=True),
-            )
-            await _set_message_id(trade_id, int(sent["message_id"]))
-            await app.answer_callback_query(callback_query["id"], "Choose the return player.")
+            await _handoff(callback_query, trade_id, _multiple_recipient_text(sender, recipient, offered, requested_query),
+                           squad_player_keyboard(trade_id, matches, "r", confirm=True), "Choose the return player.")
             return
 
     if requested is not None:
-        await _update_trade(trade_id, status="awaiting_recipient")
-        chat_id, message_id = _chat_message(callback_query)
-        # Delete sender's setup message and create a fresh recipient request.
-        try:
-            await app.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-        sent = await app.send_message(chat_id, _request_text(sender, recipient, offered, requested), parse_mode="HTML", reply_markup=recipient_request_keyboard(trade_id))
-        await _set_message_id(trade_id, int(sent["message_id"]))
-        await app.answer_callback_query(callback_query["id"], "Trade request sent.")
+        await _handoff(callback_query, trade_id, _request_text(sender, recipient, offered, requested),
+                       recipient_request_keyboard(trade_id), "Trade request sent.")
         return
 
-    await _update_trade(trade_id, status="awaiting_recipient")
-    chat_id, message_id = _chat_message(callback_query)
-    try:
-        await app.delete_message(chat_id, message_id)
-    except Exception:
-        pass
     recipient_squad = await get_team_squad(int(recipient["user_id"])) or []
     if requested_query:
-        # This branch is defensive. A multi-match requested query is normally
-        # handled above; never show a misleading full-squad list here.
         recipient_squad, _ = await _find_player_matches(int(recipient["user_id"]), requested_query)
-    sent = await app.send_message(
-        chat_id,
-        _recipient_choose_text(sender, recipient, offered, requested_query),
-        parse_mode="HTML",
-        reply_markup=squad_player_keyboard(trade_id, recipient_squad, "r", confirm=bool(requested_query)),
-    )
-    await _set_message_id(trade_id, int(sent["message_id"]))
-    await app.answer_callback_query(callback_query["id"], "Trade request sent.")
+    await _handoff(callback_query, trade_id, _recipient_choose_text(sender, recipient, offered, requested_query),
+                   squad_player_keyboard(trade_id, recipient_squad, "r", confirm=bool(requested_query)), "Trade request sent.")
 
 
 @register_callback("trade_sender_cancel")
@@ -868,10 +923,9 @@ async def trade_sender_cancel(callback_query):
     if actor_status == "not_for_user":
         await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
         return
-    if trade["status"] != "awaiting_sender" or int(trade["sender_id"]) != uid:
+    if int(trade["sender_id"]) != uid or not await _transition(trade_id, {"awaiting_sender"}, "cancelled"):
         await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
-    await _update_trade(trade_id, status="cancelled")
     actor = (await _load_users(trade))[0]
     chat_id, message_id = _chat_message(callback_query)
     await app.edit_message_text(chat_id, message_id, _cancelled_text(actor), parse_mode="HTML", reply_markup=NO_KEYBOARD)
@@ -929,8 +983,7 @@ async def trade_recipient_accept(callback_query):
     if actor_status == "not_for_user":
         await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
         return
-    if trade["status"] != "awaiting_recipient" or int(trade["recipient_id"]) != uid:
-        await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
+    if not await _guard_active(callback_query, trade, uid, "awaiting_recipient"):
         return
     # A fixed return card has already been selected. "Accept Trade" still
     # advances to the recipient's final confirmation step; the actual swap is
@@ -1014,8 +1067,7 @@ async def trade_recipient_yes(callback_query):
     if actor_status == "not_for_user":
         await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
         return
-    if trade["status"] != "awaiting_recipient" or int(trade["recipient_id"]) != uid:
-        await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
+    if not await _guard_active(callback_query, trade, uid, "awaiting_recipient"):
         return
     if not trade.get("recipient_player_id"):
         await app.answer_callback_query(callback_query["id"], "Select your return player first.", show_alert=True)
@@ -1030,13 +1082,19 @@ async def trade_recipient_yes(callback_query):
     sender, recipient = await _load_users(trade)
 
     async def _tx(conn):
-        row = await conn.fetchrow("SELECT * FROM trade_requests WHERE trade_id=$1 FOR UPDATE;", trade_id)
+        row = await conn.fetchrow("SELECT *, (expires_at <= NOW()) AS is_expired FROM trade_requests WHERE trade_id=$1 FOR UPDATE;", trade_id)
         if not row or row["status"] != "awaiting_recipient":
             return "stale"
-        expires_at = row["expires_at"]
-        expiry = expires_at if getattr(expires_at, "tzinfo", None) else expires_at.replace(tzinfo=timezone.utc)
-        if expiry <= datetime.now(timezone.utc):
+        if row["is_expired"]:
+            await conn.execute("UPDATE trade_requests SET status='expired' WHERE trade_id=$1;", trade_id)
             return "expired"
+        done = await conn.fetchrow(
+            """SELECT 1 FROM trade_requests WHERE status='completed' AND completed_at::date=CURRENT_DATE
+               AND (sender_id=ANY($1::bigint[]) OR recipient_id=ANY($1::bigint[])) LIMIT 1;""",
+            [int(row["sender_id"]), int(row["recipient_id"])],
+        ) if DAILY_TRADE_LIMIT_ENABLED else None
+        if done:
+            return "daily_limit"
 
         first_id, second_id = sorted((int(row["sender_id"]), int(row["recipient_id"])))
         first = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", first_id)
@@ -1059,6 +1117,10 @@ async def trade_recipient_yes(callback_query):
         received = next((dict(p) for p in recipient_squad if int(p.get("player_id") or 0) == rpid and _kind(p) == rkind), None)
         if not sent or not received:
             return "card_missing"
+
+        if any(int(p.get("player_id") or 0) == spid and _kind(p) == skind for p in recipient_squad) \
+                or any(int(p.get("player_id") or 0) == rpid and _kind(p) == rkind for p in sender_squad):
+            return "duplicate"
 
         sender_squad = [p for p in sender_squad if not (int(p.get("player_id") or 0) == spid and _kind(p) == skind)]
         recipient_squad = [p for p in recipient_squad if not (int(p.get("player_id") or 0) == rpid and _kind(p) == rkind)]
@@ -1090,12 +1152,14 @@ async def trade_recipient_yes(callback_query):
         return
 
     chat_id, message_id = _chat_message(callback_query)
-    if isinstance(result, str) and result in {"stale", "expired", "squad_missing", "card_missing"}:
+    if isinstance(result, str) and result in {"stale", "expired", "squad_missing", "card_missing", "duplicate", "daily_limit"}:
         reason = {
             "stale": "This trade has already been processed.",
             "expired": "The trade offer has expired.",
             "squad_missing": "A required squad is unavailable.",
             "card_missing": "One of the selected players is no longer available.",
+            "duplicate": "A card in this trade is already owned by the other user, so it cannot be swapped.",
+            "daily_limit": "Daily trade limit has been reached.",
         }[result]
         await app.edit_message_text(chat_id, message_id, _failure_text(reason), parse_mode="HTML", reply_markup=NO_KEYBOARD)
         await app.answer_callback_query(callback_query["id"], reason, show_alert=True)
@@ -1127,7 +1191,7 @@ async def trade_recipient_cancel(callback_query):
     if actor_status == "not_for_user":
         await app.answer_callback_query(callback_query["id"], "This trade is not for you.", show_alert=True)
         return
-    if int(trade["recipient_id"]) != uid or trade["status"] != "awaiting_recipient":
+    if int(trade["recipient_id"]) != uid or not await _transition(trade_id, {"awaiting_recipient"}, "declined"):
         await app.answer_callback_query(callback_query["id"], "This trade is no longer active.", show_alert=True)
         return
     sender, recipient = await _load_users(trade)
@@ -1139,7 +1203,6 @@ async def trade_recipient_cancel(callback_query):
         requested = json.loads(trade.get("recipient_player_json") or "{}") if trade.get("recipient_player_json") else None
     except Exception:
         requested = None
-    await _update_trade(trade_id, status="declined")
     chat_id, message_id = _chat_message(callback_query)
     await app.edit_message_text(chat_id, message_id, _declined_text(sender, recipient, offered, requested if requested and requested.get("player_id") else None), parse_mode="HTML", reply_markup=NO_KEYBOARD)
     await app.answer_callback_query(callback_query["id"], "Trade declined.")
@@ -1152,8 +1215,9 @@ async def trade_recipient_back(callback_query):
         await app.answer_callback_query(callback_query["id"], "Invalid trade action.", show_alert=True)
         return
     trade_id = int(parts[1]); uid = int((callback_query.get("from") or {}).get("id") or 0); trade = await _get_trade(trade_id)
-    if not trade or int(trade["recipient_id"]) != uid or trade["status"] != "awaiting_recipient":
-        await app.answer_callback_query(callback_query["id"], "This trade step is no longer active.", show_alert=True)
+    if not trade or int(trade["recipient_id"]) != uid or not await _guard_active(callback_query, trade, uid, "awaiting_recipient"):
+        if not trade or int(trade["recipient_id"]) != uid:
+            await app.answer_callback_query(callback_query["id"], "This trade step is no longer active.", show_alert=True)
         return
     sender, recipient = await _load_users(trade)
     offered = _find_exact_identity(await get_team_squad(int(sender["user_id"])) or [], int(trade["sender_player_id"]), trade["sender_player_kind"])
