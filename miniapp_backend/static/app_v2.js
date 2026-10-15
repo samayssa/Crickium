@@ -1340,31 +1340,79 @@
 
   function scoreValue(value) { return value == null || value === "" ? "—" : esc(value); }
 
+  function extrasBreakdown(extras) {
+    const src = extras && typeof extras === "object" ? extras : {};
+    const pick = (...keys) => keys.reduce((sum, key) => sum + (Number(src[key]) || 0), 0);
+    const parts = { b: pick("byes", "bye"), lb: pick("leg_byes", "leg_bye", "legbye"), w: pick("wides", "wide"), nb: pick("no_balls", "no_ball"), pen: pick("penalty") };
+    const total = Object.values(parts).reduce((sum, value) => sum + value, 0);
+    const text = [["b", parts.b], ["lb", parts.lb], ["w", parts.w], ["nb", parts.nb], ["pen", parts.pen]].filter(([, value]) => value).map(([label, value]) => `${label} ${value}`).join(", ");
+    return { total, text };
+  }
+
+  function fallOfWickets(innings) {
+    const balls = (Array.isArray(innings.analysis_balls) ? innings.analysis_balls : []).slice().sort((a, b) => Number(a.over || 0) - Number(b.over || 0) || Number(a.ball || 0) - Number(b.ball || 0));
+    const out = [];
+    balls.forEach((ball) => {
+      if (!(ball.wicket || String(ball.symbol || "").toUpperCase() === "W")) return;
+      out.push({ no: out.length + 1, batter: ball.batter || "Batter", score: String(ball.score_after || "").split("/")[0] || "—", over: `${Number(ball.over) ? Number(ball.over) - 1 : 0}.${Number(ball.ball) || 0}` });
+    });
+    if (out.length) return out;
+    return (Array.isArray(innings.wickets_fallen) ? innings.wickets_fallen : []).map((item, index) => ({ no: index + 1, batter: item.batter || "Batter", score: "—", over: String(item.over || "—") }));
+  }
+
   function renderBatterTable(innings) {
     const batters = Array.isArray(innings.batters) ? innings.batters : [];
     if (!batters.length) return emptyState("Batting details unavailable", "The source has not stored a batting lineup for this innings.");
-    const currentNames = (state.currentMatchData?.current_batting_pair || []).map((item) => item.name);
-    const rows = batters.map((batter) => {
-      const status = currentNames.includes(batter.name) ? (state.currentMatchData?.current_batting_pair?.find((x) => x.name === batter.name)?.status || "at crease") : (batter.dismissed ? "out" : batter.status || (Number(batter.balls || 0) || Number(batter.runs || 0) ? "not out" : "yet to bat"));
-      const statusText = batter.dismissal_text || status;
-      return `<tr class="${currentNames.includes(batter.name) ? "current-player" : ""}"><td><b>${esc(batter.name || "Player")}</b><small>${esc(statusText)}</small></td><td>${number(batter.runs)}</td><td>${number(batter.balls)}</td><td>${number(batter.fours)}</td><td>${number(batter.sixes)}</td><td>${batter.strike_rate != null ? Number(batter.strike_rate).toFixed(1) : "—"}</td></tr>`;
+    const pair = state.currentMatchData?.current_batting_pair || [];
+    const currentNames = pair.map((item) => item.name);
+    const isLiveInnings = Boolean(state.currentMatchData?.is_live) && Number(innings.innings_number) === Number(state.currentMatchData?.current_innings_number);
+    const played = [];
+    const yetToBat = [];
+    batters.forEach((batter) => {
+      const atCrease = isLiveInnings && currentNames.includes(batter.name);
+      const appeared = Boolean(batter.dismissed) || atCrease || Number(batter.balls || 0) > 0 || Number(batter.runs || 0) > 0 || (batter.status && batter.status !== "yet to bat");
+      (appeared ? played : yetToBat).push({ batter, atCrease });
+    });
+    const rows = played.map(({ batter, atCrease }) => {
+      const onStrike = atCrease && pair[0] && pair[0].name === batter.name;
+      const status = batter.dismissed ? "out" : atCrease ? "batting" : "not out";
+      const statusText = batter.dismissed ? (batter.dismissal_text || "out") : status;
+      const sr = batter.strike_rate != null ? Number(batter.strike_rate).toFixed(1) : (Number(batter.balls || 0) ? (Number(batter.runs || 0) * 100 / Number(batter.balls)).toFixed(1) : "0.0");
+      return `<tr class="${atCrease ? "current-player" : ""}"><td><b>${esc(batter.name || "Player")}${onStrike ? " *" : ""}</b><small>${esc(statusText)}</small></td><td><b>${number(batter.runs)}</b></td><td>${number(batter.balls)}</td><td>${number(batter.fours)}</td><td>${number(batter.sixes)}</td><td>${sr}</td></tr>`;
     }).join("");
-    const extras = innings.extras && typeof innings.extras === "object" ? Object.values(innings.extras).reduce((sum, value) => sum + (Number(value) || 0), 0) : null;
-    const dismissals = Array.isArray(innings.wickets_fallen) ? innings.wickets_fallen.filter((item) => item && typeof item === "object") : [];
-    const falls = dismissals.length ? `<div class="fall-of-wickets"><b>Fall of wickets</b><div>${dismissals.map((item, index) => { const text = item.text || item.dismissal_text || item.type || "Wicket"; const batter = item.batter || item.name || "Batter"; const over = item.over != null ? ` · ${esc(item.over)} ov` : ""; return `<span><strong>${index + 1}-${number(index + 1)}</strong> ${esc(batter)} <small>${esc(text)}${over}</small></span>`; }).join("")}</div></div>` : "";
-    return `<div class="score-table-wrap"><table class="score-table"><thead><tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead><tbody>${rows}</tbody></table><div class="score-table-total"><span>Extras ${extras == null ? "—" : number(extras)}</span><b>Total ${number(innings.runs)}/${number(innings.wickets)} · ${esc(matchOverText(innings))} ov</b></div>${falls}</div>`;
+    const extras = extrasBreakdown(innings.extras);
+    const balls = Number(innings.legal_balls || 0);
+    const runRate = balls ? (Number(innings.runs || 0) * 6 / balls).toFixed(2) : null;
+    const wickets = fallOfWickets(innings);
+    const yetHtml = yetToBat.length ? `<div class="score-note-row"><span>Yet to bat</span><p>${yetToBat.map(({ batter }) => esc(batter.name || "Player")).join(", ")}</p></div>` : "";
+    const fowHtml = wickets.length ? `<div class="score-note-row"><span>Fall of wickets</span><p>${wickets.map((item) => `${item.no}-${esc(item.score)} (${esc(item.batter)}, ${esc(item.over)} ov)`).join(", ")}</p></div>` : "";
+    return `<div class="score-table-wrap"><table class="score-table"><thead><tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead><tbody>${rows || `<tr><td colspan="6">No batter has faced a ball yet.</td></tr>`}</tbody></table><div class="score-extras-row"><span>Extras</span><b>${number(extras.total)}${extras.text ? ` <small>(${esc(extras.text)})</small>` : ""}</b></div><div class="score-table-total"><span>Total${runRate ? ` · RR ${runRate}` : ""}</span><b>${number(innings.runs)}/${number(innings.wickets)} · ${esc(matchOverText(innings))} ov</b></div>${yetHtml}${fowHtml}</div>`;
   }
 
-  function renderBowlerTable(innings) {
-    const bowlers = Array.isArray(innings.bowlers) ? innings.bowlers : [];
-    if (!bowlers.length) return emptyState("Bowling details unavailable", "No bowling figures were stored for this innings.");
+  function renderBowlerTable(innings, onlyCurrent = false) {
+    let bowlers = Array.isArray(innings.bowlers) ? innings.bowlers : [];
     const currentName = state.currentMatchData?.current_bowler?.name;
+    // The scorecard lists everyone who has bowled; the live view keeps the same rule.
+    bowlers = bowlers.filter((bowler) => Number(bowler.balls || 0) > 0 || (currentName && currentName === bowler.name));
+    if (onlyCurrent) bowlers = bowlers.slice().sort((a, b) => (b.name === currentName) - (a.name === currentName)).slice(0, 2);
+    if (!bowlers.length) return emptyState("Bowling details unavailable", "No bowling figures were stored for this innings.");
     return `<div class="score-table-wrap"><table class="score-table bowling-table"><thead><tr><th>Bowler</th><th>O</th><th>M</th><th>R</th><th>W</th><th>Econ</th></tr></thead><tbody>${bowlers.map((bowler) => {
       const balls = Number(bowler.balls || 0); const overs = bowler.overs || `${Math.floor(balls / 6)}.${balls % 6}`;
-      const econ = bowler.economy == null ? (balls ? (Number(bowler.runs || 0) * 6 / balls).toFixed(2) : "—") : Number(bowler.economy).toFixed(2);
-      const isCurrent = Boolean(bowler.is_current || (currentName && currentName === bowler.name));
-      return `<tr class="${isCurrent ? "current-player" : ""}"><td><b>${esc(bowler.name || "Bowler")}</b>${isCurrent ? "<small>currently bowling</small>" : ""}</td><td>${esc(overs)}</td><td>${number(bowler.maidens)}</td><td>${number(bowler.runs)}</td><td>${number(bowler.wickets)}</td><td>${esc(econ)}</td></tr>`;
+      const econ = bowler.economy == null ? (balls ? (Number(bowler.runs || 0) * 6 / balls).toFixed(2) : "0.00") : Number(bowler.economy).toFixed(2);
+      const isCurrent = Boolean(bowler.is_current || (currentName && currentName === bowler.name)) && Boolean(state.currentMatchData?.is_live);
+      return `<tr class="${isCurrent ? "current-player" : ""}"><td><b>${esc(bowler.name || "Bowler")}${isCurrent ? " *" : ""}</b></td><td>${esc(overs)}</td><td>${number(bowler.maidens)}</td><td>${number(bowler.runs)}</td><td><b>${number(bowler.wickets)}</b></td><td>${esc(econ)}</td></tr>`;
     }).join("")}</tbody></table></div>`;
+  }
+
+  function renderLiveBatters(pair, innings) {
+    if (!pair.length) return "";
+    const rows = pair.slice(0, 2).map((batter, index) => {
+      const full = (innings.batters || []).find((item) => item.name === batter.name) || batter;
+      const runs = Number(full.runs ?? batter.runs ?? 0); const balls = Number(full.balls ?? batter.balls ?? 0);
+      const sr = balls ? (runs * 100 / balls).toFixed(1) : "0.0";
+      return `<tr class="current-player"><td><b>${esc(batter.name || "Batter")}${index === 0 ? " *" : ""}</b><small>${index === 0 ? "on strike" : "non-striker"}</small></td><td><b>${number(runs)}</b></td><td>${number(balls)}</td><td>${number(full.fours ?? batter.fours)}</td><td>${number(full.sixes ?? batter.sixes)}</td><td>${sr}</td></tr>`;
+    }).join("");
+    return `<div class="score-table-wrap"><table class="score-table"><thead><tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
   function inningsForDetail(data) {
@@ -1403,27 +1451,30 @@
     const tabs = `<div class="match-tabs" role="tablist">${tabNames.map(([key,label]) => `<button class="match-tab ${state.matchTab === key ? "selected" : ""}" role="tab" aria-selected="${state.matchTab === key}" data-action="match-tab" data-tab="${key}">${label}</button>`).join("")}</div>`;
     const innSwitch = innings.length > 1 ? `<div class="innings-switch">${innings.map((item) => `<button class="filter-chip ${Number(item.innings_number) === currentNo ? "selected" : ""}" data-action="match-innings" data-innings="${Number(item.innings_number || 1)}">${Number(item.innings_number) === 1 ? "1st" : Number(item.innings_number) === 2 ? "2nd" : `${Number(item.innings_number)}th`} Innings · ${esc(item.batting_team_display || "Team")} ${number(item.runs)}/${number(item.wickets)}</button>`).join("")}</div>` : "";
 
-    const pairHtml = battingPair.length ? `<section class="panel"><div class="panel-heading"><h2>Current batting pair</h2><span class="muted-inline">${currentNo === 1 ? "1ST INNINGS" : `${currentNo}ND INNINGS`}</span></div><div class="batting-pair-grid">${battingPair.slice(0,2).map((batter, index) => `<div class="batting-pair-player"><span>${index === 0 ? "On strike" : "Non-striker"}</span><b>${esc(batter.name || "Batter")}</b><strong>${number(batter.runs)} <small>(${number(batter.balls)})</small></strong><small>4s ${number(batter.fours)} · 6s ${number(batter.sixes)} · SR ${batter.strike_rate == null ? "—" : Number(batter.strike_rate).toFixed(1)}</small></div>`).join("")}${partnership ? `<div class="partnership-tile"><span>Partnership</span><b>${number(partnership.runs)} <small>(${number(partnership.balls)} balls)</small></b></div>` : ""}</div></section>` : "";
+    const pairHtml = battingPair.length ? `<section class="panel"><div class="panel-heading"><h2>Batting</h2><span class="muted-inline">${currentNo === 1 ? "1ST INNINGS" : `${currentNo}ND INNINGS`}</span></div>${renderLiveBatters(battingPair, current)}${partnership ? `<div class="score-note-row"><span>Partnership</span><p><b>${number(partnership.runs)}</b> runs (${number(partnership.balls)} balls)</p></div>` : ""}${(() => { const last = fallOfWickets(current).slice(-1)[0]; return last ? `<div class="score-note-row"><span>Last wicket</span><p>${esc(last.batter)} · ${esc(last.score)} (${esc(last.over)} ov)</p></div>` : ""; })()}</section>` : "";
     const latestOverRow = (current.analysis_overs || []).slice(-1)[0];
     const currentOver = latestOverRow?.balls?.length ? latestOverRow.balls.slice(-6) : (data.this_over || current.this_over || []);
-    const bowlerHtml = bowler ? `<section class="panel"><div class="panel-heading"><h2>Current bowler</h2><span class="muted-inline">CURRENT</span></div><div class="current-bowler-line"><div><b>${esc(bowler.name || "Bowler")}</b><small>${esc(bowler.overs || (Number(bowler.balls || 0) ? `${Math.floor(Number(bowler.balls) / 6)}.${Number(bowler.balls) % 6}` : "0.0"))} overs · ${number(bowler.runs)} runs · ${number(bowler.wickets)} wickets</small></div><strong>${esc(bowler.overs || "0.0")} · ${number(bowler.runs)} · ${number(bowler.wickets)}</strong></div>${currentOver.length ? `<div class="current-over-line"><b>This over</b><div class="ball-strip">${currentOver.slice(-6).map((ball) => cricketBallToken(ball)).join("")}</div></div>` : ""}</section>` : "";
+    const bowlerHtml = bowler ? `<section class="panel"><div class="panel-heading"><h2>Bowling</h2><span class="muted-inline">CURRENT</span></div>${renderBowlerTable(current, true)}${currentOver.length ? `<div class="current-over-line"><b>This over</b><div class="ball-strip">${currentOver.slice(-6).map((ball) => cricketBallToken(ball)).join("")}</div></div>` : ""}</section>` : "";
 
     const overRows = current.analysis_overs || [];
     const recentOvers = overRows.slice(-6).reverse();
     const overHtml = recentOvers.length ? `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2><button class="text-button" data-action="match-tab" data-tab="commentary">Full commentary ›</button></div><div class="recent-over-list">${recentOvers.map((row) => `<div class="recent-over-row"><b>${Number(row.over) || "—"}</b><div class="ball-strip">${(row.balls || []).map((ball) => cricketBallToken(ball)).join("")}</div><strong>${number(row.runs)} runs${row.wickets ? ` · ${number(row.wickets)} W` : ""}</strong></div>`).join("")}</div></section>` : `<section class="panel"><div class="panel-heading"><h2>Over-by-over</h2></div><p class="muted-copy">No over-by-over delivery log is stored for this match record.</p></section>`;
 
     const balls = (Array.isArray(current.analysis_balls) ? current.analysis_balls : []).slice().sort((a,b) => Number(a.over || 0) - Number(b.over || 0) || Number(a.ball || 0) - Number(b.ball || 0));
-    const commentary = balls.length ? `<div class="commentary-list">${balls.map((ball) => {
+    // Newest delivery first, like live-scoring apps.
+    const renderCommentary = (list) => list.length ? `<div class="commentary-list">${list.slice().reverse().map((ball) => {
       const ballLabel = cricketBallLabel(ball);
       const comment = ball.commentary || ball.text || ball.description || `${ball.bowler || "Bowler"} to ${ball.batter || "batter"}, ${ballLabel === "W" ? "wicket" : `${number(ball.runs)} run${Number(ball.runs || 0) === 1 ? "" : "s"}`}.`;
-      return `<div class="commentary-row"><span class="commentary-over">${Number(ball.over) || "—"}.${Number(ball.ball) || "—"}</span>${cricketBallToken(ball)}<div><b>${esc(ball.bowler || "Bowler")} to ${esc(ball.batter || "Batter")}</b><p>${esc(comment)}</p>${ball.score_after ? `<small>${esc(ball.score_after)}</small>` : ""}</div></div>`;
+      return `<div class="commentary-row"><span class="commentary-over">${Number(ball.over) ? Number(ball.over) - 1 : "—"}.${Number(ball.ball) || "—"}</span>${cricketBallToken(ball)}<div><b>${esc(ball.bowler || "Bowler")} to ${esc(ball.batter || "Batter")}</b><p>${esc(comment)}</p>${ball.dismissal ? `<small class="wicket-note">OUT · ${esc(ball.dismissal)}</small>` : ""}${ball.score_after ? `<small>${esc(ball.score_after)}</small>` : ""}</div></div>`;
     }).join("")}</div>` : `<p class="muted-copy">Ball-by-ball commentary is not stored for this match record. No commentary has been fabricated.</p>`;
+    const commentary = renderCommentary(balls);
+    const latestCommentary = renderCommentary(balls.slice(-6));
 
-    const resultSummary = `<section class="panel match-result-panel"><div class="panel-heading"><h2>${completed ? "Match summary" : "Match details"}</h2><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span></div>${data.result_text ? `<h3>${esc(data.result_text)}</h3>` : completed ? `<p class="muted-copy">${esc(data.note || "The final result was not recorded in a displayable format.")}</p>` : `<p class="muted-copy">${esc(data.note || "Match details are derived from the stored game session.")}</p>`}${data.potm?.name && data.potm.name !== "—" && completed ? `<div class="potm-row"><span>Player of the Match</span><b>${esc(data.potm.name)}</b><small>${number(data.potm.runs)} runs · ${number(data.potm.wickets)} wickets</small></div>` : ""}${innings.length ? `<div class="innings-summary-list">${innings.map((item) => `<div><span>${Number(item.innings_number) === 1 ? "1st" : Number(item.innings_number) === 2 ? "2nd" : `${Number(item.innings_number)}th`} innings · ${esc(item.batting_team_display || "Team")}</span><b>${number(item.runs)}/${number(item.wickets)}</b><small>${esc(matchOverText(item))} overs${item.target ? ` · target ${number(item.target)}` : ""}</small></div>`).join("")}</div>` : ""}</section>`;
+    const resultSummary = `<section class="panel match-result-panel"><div class="panel-heading"><h2>${completed ? "Match summary" : "Match details"}</h2><span class="match-status ${live ? "live" : ""}">${esc(matchStatus)}</span></div>${data.result_text ? `<h3>${esc(data.result_text)}</h3>` : live && targetValue != null ? `<h3>${esc(current.batting_team_display || teamA)} need ${number(runsNeeded)} run${runsNeeded === 1 ? "" : "s"} in ${number(ballsRemaining)} ball${ballsRemaining === 1 ? "" : "s"}</h3>` : live && legalBalls ? `<h3>${esc(current.batting_team_display || teamA)} ${esc(score || "")} · CRR ${(currentRuns * 6 / legalBalls).toFixed(2)}</h3>` : completed ? `<p class="muted-copy">${esc(data.note || "The final result was not recorded in a displayable format.")}</p>` : `<p class="muted-copy">${esc(data.note || "Match details are derived from the stored game session.")}</p>`}${data.potm?.name && data.potm.name !== "—" && completed ? `<div class="potm-row"><span>Player of the Match</span><b>${esc(data.potm.name)}</b><small>${number(data.potm.runs)} runs · ${number(data.potm.wickets)} wickets</small></div>` : ""}${innings.length ? `<div class="innings-summary-list">${innings.map((item) => `<div><span>${Number(item.innings_number) === 1 ? "1st" : Number(item.innings_number) === 2 ? "2nd" : `${Number(item.innings_number)}th`} innings · ${esc(item.batting_team_display || "Team")}</span><b>${number(item.runs)}/${number(item.wickets)}</b><small>${esc(matchOverText(item))} overs${item.target ? ` · target ${number(item.target)}` : ""}</small></div>`).join("")}</div>` : ""}</section>`;
 
     let tabContent = "";
     if (state.matchTab === "live") {
-      tabContent = `${resultSummary}${live ? pairHtml : ""}${live ? bowlerHtml : ""}${overHtml}<section class="panel"><div class="panel-heading"><h2>Latest commentary</h2><button class="text-button" data-action="match-tab" data-tab="commentary">View all ›</button></div>${commentary}</section>`;
+      tabContent = `${resultSummary}${live ? pairHtml : ""}${live ? bowlerHtml : ""}${overHtml}<section class="panel"><div class="panel-heading"><h2>Latest commentary</h2><button class="text-button" data-action="match-tab" data-tab="commentary">View all ›</button></div>${latestCommentary}</section>`;
     } else if (state.matchTab === "scorecard") {
       tabContent = `${innSwitch}<section class="panel"><div class="panel-heading"><h2>Batting · ${esc(current.batting_team_display || teamA)}</h2><b class="rating-mini">${number(current.runs)}/${number(current.wickets)}</b></div>${renderBatterTable(current)}</section><section class="panel"><div class="panel-heading"><h2>Bowling · ${esc(current.bowling_team_display || teamB)}</h2></div>${renderBowlerTable(current)}</section>`;
     } else if (state.matchTab === "commentary") {

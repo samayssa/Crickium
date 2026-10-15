@@ -67,10 +67,12 @@
   .match-centre-facts span { font-size: 7px; }
 }
 
-/* Compact dismissal trail, using the existing Crickium scorecard palette. */
-.fall-of-wickets { padding: 12px 14px 14px; border-top: 1px solid var(--line, rgba(255,255,255,.08)); }
-.fall-of-wickets > b { display: block; margin-bottom: 8px; color: var(--muted, #91a29a); font-size: 11px; letter-spacing: .09em; text-transform: uppercase; }
-.fall-of-wickets > div { display: flex; flex-wrap: wrap; gap: 7px; }
-.fall-of-wickets span { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; border: 1px solid var(--line, rgba(255,255,255,.08)); background: rgba(255,255,255,.025); border-radius: 9px; padding: 6px 8px; font-size: 12px; }
-.fall-of-wickets span strong { color: var(--accent, #c9f36c); font-variant-numeric: tabular-nums; }
-.fall-of-wickets span small { color: var(--muted, #91a29a); font-size: 11px; }
+/* Live-scoring style scorecard rows (same palette and type scale as the rest of the app). */
+.score-extras-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; }
+.score-extras-row b { color: var(--text); font-size: 10px; text-align: right; }
+.score-extras-row b small { color: var(--muted); font-size: 8px; font-weight: 600; }
+.score-note-row { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+.score-note-row > span { color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding-top: 2px; }
+.score-note-row > p { margin: 0; color: var(--text); font-size: 9px; line-height: 1.6; overflow-wrap: anywhere; }
+.commentary-row small.wicket-note { color: #ff8f96; font-weight: 800; font-size: 9px; }
+.score-table td b + small { color: var(--muted); }
