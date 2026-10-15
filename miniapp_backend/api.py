@@ -407,6 +407,33 @@ async def _rank_for_user(user_id: int) -> int:
     return int(rank or 0)
 
 
+_SNAPSHOT_FIRST = True
+_SNAPSHOT_CACHE: dict[tuple[str, int], tuple[float, Any]] = {}
+_SNAPSHOT_TTL_SECONDS = 2.0
+
+
+async def _fresh_snapshot(engine: str, match_id: int):
+    """Load the latest persisted runtime snapshot (cached for a couple of seconds)."""
+    import time as _time
+    key = (engine, int(match_id))
+    now = _time.monotonic()
+    cached = _SNAPSHOT_CACHE.get(key)
+    if cached and now - cached[0] < _SNAPSHOT_TTL_SECONDS:
+        return cached[1]
+    try:
+        from services.game_session_recovery import _load_snapshot
+        session = await _load_snapshot(engine, int(match_id))
+    except Exception as exc:
+        print(f"[miniapp_backend] fresh snapshot unavailable engine={engine} id={int(match_id)} type={type(exc).__name__}")
+        return None
+    if session is not None:
+        _SNAPSHOT_CACHE[key] = (now, session)
+        if len(_SNAPSHOT_CACHE) > 200:
+            for old_key in sorted(_SNAPSHOT_CACHE, key=lambda k: _SNAPSHOT_CACHE[k][0])[:100]:
+                _SNAPSHOT_CACHE.pop(old_key, None)
+    return session
+
+
 async def _runtime_session(engine: str, match_id: int):
     """Return the current in-memory session first, then its persisted snapshot.
 
@@ -419,6 +446,16 @@ async def _runtime_session(engine: str, match_id: int):
     numeric_id = int(match_id)
     if engine not in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
         return None
+
+    # The Mini App web process never owns a live game: the bot process does.
+    # Anything found in THIS process's registries was injected by an earlier
+    # snapshot restore and is stale (the score would freeze on the first
+    # snapshot that was ever read). Always read the newest persisted snapshot
+    # first; the in-memory registry is only a fallback.
+    if _SNAPSHOT_FIRST:
+        fresh = await _fresh_snapshot(engine, numeric_id)
+        if fresh is not None:
+            return fresh
 
     # The /match runtime is keyed by chat_id, so resolve it using challenge_id.
     if engine == "MATCH":
@@ -1547,8 +1584,39 @@ def _enrich_match_innings(innings: list[dict[str, Any]]) -> list[dict[str, Any]]
             if not inning.get("over_text"):
                 inning["over_text"] = _overs_from_balls(inning.get("legal_balls") or legal_balls)
 
-        inning["batters"] = [dict(x) for x in (inning.get("batters") or []) if isinstance(x, dict)]
-        inning["bowlers"] = [dict(x) for x in (inning.get("bowlers") or []) if isinstance(x, dict)]
+        # Scorecard rows: always carry SR / dismissal text for batters and
+        # economy for bowlers, whichever engine produced the snapshot.
+        fallen_text: dict[str, str] = {}
+        for fall in (inning.get("wickets_fallen") or []):
+            if isinstance(fall, dict) and fall.get("batter"):
+                text = fall.get("text") or _legacy_dismissal_text(fall)
+                if text:
+                    fallen_text[str(fall["batter"])] = text
+        # Maidens: a bowler's over of six legal balls with no runs charged.
+        maiden_count: dict[str, int] = {}
+        over_groups: dict[tuple[Any, Any, Any], list[dict[str, Any]]] = {}
+        for ball in (inning.get("analysis_balls") or []):
+            if isinstance(ball, dict) and ball.get("bowler"):
+                over_groups.setdefault((ball.get("innings_number"), ball.get("over"), ball.get("bowler")), []).append(ball)
+        for (_inn_no, _ov, bowler_name), group in over_groups.items():
+            legal_in_over = sum(1 for b in group if b.get("legal"))
+            charged = sum(_safe_match_int(b.get("bowler_runs", b.get("runs"))) for b in group)
+            if legal_in_over >= 6 and charged == 0:
+                maiden_count[str(bowler_name)] = maiden_count.get(str(bowler_name), 0) + 1
+        batters_out = []
+        for x in (inning.get("batters") or []):
+            if not isinstance(x, dict):
+                continue
+            row = {**x, **_simple_batter(x)}
+            if row.get("dismissed") and (not row.get("dismissal_text") or str(row["dismissal_text"]).lower() in _GENERIC_DISMISSALS):
+                row["dismissal_text"] = fallen_text.get(str(row.get("name"))) or row.get("dismissal_text") or "out"
+            if x.get("status") in {"on strike", "non-striker", "at crease"} and not row.get("dismissed"):
+                row["status"] = x["status"]
+            batters_out.append(row)
+        inning["batters"] = batters_out
+        inning["bowlers"] = [{**x, **_simple_bowler({**x, "maidens": x.get("maidens") or maiden_count.get(str(x.get("name")), 0)}),
+                              "is_current": bool(x.get("is_current"))}
+                             for x in (inning.get("bowlers") or []) if isinstance(x, dict)]
         inning["analysis_overs"] = [dict(x) for x in (inning.get("analysis_overs") or []) if isinstance(x, dict)]
         inning["analysis_balls"] = [dict(x) for x in (inning.get("analysis_balls") or []) if isinstance(x, dict)]
     return normalized
@@ -1614,6 +1682,27 @@ def _result_text_from_scorecard(innings: list[dict[str, Any]], winner_name: str 
             return f"{winner_name} won by {margin} run{'s' if margin != 1 else ''}"
         return f"{winner_name} won"
     return "Result recorded; winner unavailable"
+
+
+_GENERIC_DISMISSALS = {"caught", "bowled", "lbw", "stumped", "run_out", "run out", "wicket", "out"}
+
+
+def _legacy_dismissal_text(fall: dict[str, Any]) -> str | None:
+    """Build "c X b Y" style text for older wicket records that lack `text`."""
+    kind = str(fall.get("type") or "").lower()
+    bowler = fall.get("bowler")
+    fielder = fall.get("fielder")
+    if kind == "bowled" and bowler:
+        return f"b {bowler}"
+    if kind == "lbw" and bowler:
+        return f"lbw b {bowler}"
+    if kind == "caught" and bowler:
+        return f"c {fielder} b {bowler}" if fielder and fielder != bowler else f"c & b {bowler}"
+    if kind == "stumped" and bowler and fielder:
+        return f"st †{fielder} b {bowler}"
+    if kind == "run_out":
+        return f"run out ({fielder})" if fielder else "run out"
+    return None
 
 
 def _simple_batter(batter: dict[str, Any], striker_name: str | None = None, non_striker_name: str | None = None) -> dict[str, Any]:

@@ -65,28 +65,31 @@ def _json_default(value):
     return str(value)
 
 
-def _json_safe(value):
-    """Normalize nested data structures before JSON encoding.
+def _json_safe(value, _depth: int = 0):
+    """Make a payload JSON-serialisable.
 
-    The match-analysis collector includes ``analytics.phase_map`` with tuple
-    keys such as ``(1, 'middle')``. Python's JSON encoder accepts custom values
-    in *values* via ``default=`` but raises TypeError for tuple dictionary keys,
-    turning every otherwise-valid live-score response into HTTP 500. Preserve
-    the data while converting non-JSON object keys to stable strings.
+    json.dumps(default=...) is NOT consulted for dict *keys*, so a payload
+    that contains a tuple/other non-primitive key raised TypeError and the
+    whole request became "Internal server error" (the Mini App then showed
+    "Couldn't load match").  Live/completed match analytics carry such a dict
+    (``analytics.phase_map`` is keyed by (innings, phase)), which is why every
+    live match failed to open.  Keys are stringified here; values untouched.
     """
+    if _depth > 40:
+        return str(value)
     if isinstance(value, dict):
-        safe = {}
+        out = {}
         for key, item in value.items():
             if isinstance(key, (str, int, float, bool)) or key is None:
                 safe_key = key
+            elif isinstance(key, (tuple, list)):
+                safe_key = "|".join(str(part) for part in key)
             else:
                 safe_key = str(key)
-            safe[safe_key] = _json_safe(item)
-        return safe
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        return [_json_safe(item) for item in sorted(value, key=str)]
+            out[safe_key] = _json_safe(item, _depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(item, _depth + 1) for item in value]
     return value
 
 
