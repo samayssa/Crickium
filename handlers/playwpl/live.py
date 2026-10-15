@@ -895,7 +895,14 @@ async def on_playwpl_impact_confirm_in(callback_query):
         await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True)
         return
     new_ids = [int(p.get('player_id') or 0) for p in current_xi(session, owner)]
-    session.match.setdefault('_selected_xis', {})[code] = new_ids
+    # Impact callbacks carry the Telegram user id in ``code``; the selected-XI
+    # map used when innings two is built is keyed by TEAM code. Writing it under
+    # the user id left the old XI in place, so the Impact IN player was missing
+    # (and the OUT player still present) in the second-innings Playing XI.
+    team_code = _impact_team_code(session, owner) or code
+    selected_map = session.match.setdefault('_selected_xis', {})
+    selected_map.pop(str(code), None) if str(code).isdigit() else None
+    selected_map[team_code] = new_ids
     await set_xi(session.match_id, owner, new_ids, is_challenger=is_challenger)
     st['used'] = True
     context = st.get('context') or 'runtime'
