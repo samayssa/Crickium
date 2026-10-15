@@ -557,7 +557,8 @@ def move_batting_player_to_position(session: Any, player_id: int, target_positio
 
 def apply_entry_role_after_wicket(session: Any) -> None:
     """Apply a saved striker/non-striker preference when a planned batter enters."""
-    for state in session.impact_state.values():
+    # /playint sessions have no Impact Player state - nothing to apply there.
+    for state in (getattr(session, "impact_state", None) or {}).values():
         in_id = state.get("in_id")
         role = state.get("entry_role")
         if not in_id or role not in {"striker", "non_striker"}:

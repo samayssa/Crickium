@@ -206,7 +206,7 @@ def _collect_events(session: Any, outcome: Any, striker_before: Any, partnership
         if previous_bowler != bowler_id:
             previous_streak = 0
         if bool(getattr(outcome, "legal", False)):
-            if bool(getattr(outcome, "wicket", False)):
+            if bool(getattr(outcome, "wicket", False)) and getattr(outcome, "wicket_kind", None) != "run_out":
                 previous_streak += 1
             else:
                 previous_streak = 0

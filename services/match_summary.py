@@ -232,7 +232,8 @@ def snapshot_normal_session(session) -> dict:
     batters = [
         {"name": p.get("name"), "runs": int(v.get("runs") or 0),
          "balls": int(v.get("balls") or 0), "fours": int(v.get("fours") or 0),
-         "sixes": int(v.get("sixes") or 0)}
+         "sixes": int(v.get("sixes") or 0),
+         "dismissed": bool(v.get("dismissed")), "dismissal_text": v.get("dismissal_text")}
         for p in (session.meta.get("batting_squad") or [])
         for v in [session.meta.get("batter_stats", {}).get(p.get("name"), {})]
         if p.get("name") in session.meta.get("batter_stats", {})
