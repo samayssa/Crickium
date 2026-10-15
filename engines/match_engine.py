@@ -5987,6 +5987,24 @@ class MatchEngine:
         )
         runs_map = {"dot": 0, "single": 1, "double": 2, "triple": 3, "four": 4, "five": 5, "boundary": 4, "six": 6, "wide": 1, "no_ball": 1, "leg_bye": 1, "bye": 1, "out": 0, "run_out": 0, "mishit": 0}
         is_wicket = outcome in {"out", "run_out"}
+        dismissal = None
+        session.meta["_last_wicket_kind"] = None
+        session.meta["_last_dismissal"] = None
+        if is_wicket:
+            # How the wicket fell (scorecard detail only; run-outs are not a bowler wicket).
+            from engines.tactics_engine import pick_wicket_kind, build_dismissal
+            _bowler = dict(session.current_bowler or {})
+            _xi = list(session.meta.get("bowling_squad") or session.bowling_order or [])[:11]
+            _keeper = any("wicket" in str(p.get("role") or "").lower() for p in _xi if isinstance(p, dict))
+            _kind = "run_out" if outcome == "run_out" else pick_wicket_kind(
+                _bowler.get("bowling_hand"), _bowler.get("role"), run_outs_so_far=99, keeper_available=_keeper)
+            dismissal = build_dismissal(_kind, _bowler, _xi)
+            session.meta["_last_wicket_kind"] = dismissal["kind"]
+            session.meta["_last_dismissal"] = dismissal["text"]
+        _wk = dismissal["kind"] if dismissal else "caught"
+        _wf = dismissal["fielder"] if dismissal else None
+        _wt = dismissal["text"] if dismissal else None
+        _bn = (session.current_bowler or {}).get("name")
         session.balls_faced += 1 if outcome not in {"wide", "no_ball"} else 0
         session.score = update_score_from_ball(
             session.score,
@@ -5994,6 +6012,7 @@ class MatchEngine:
             runs=runs_map.get(outcome, 0),
             wicket=is_wicket,
             batter_name=self.current_batsman_name(session),
+            wicket_type=_wk, fielder_name=_wf, bowler_name=_bn, dismissal_text=_wt,
             legal_delivery=outcome not in {"wide", "no_ball"},
         )
         over_ended = False
@@ -6006,6 +6025,7 @@ class MatchEngine:
                 wicket=is_wicket,
                 batter_name=self.current_batsman_name(session),
                 legal_delivery=outcome not in {"wide", "no_ball"},
+                wicket_type=_wk, fielder_name=_wf, bowler_name=_bn, dismissal_text=_wt,
             )
             over_ended = session.innings.score.legal_balls > before_legal_balls and session.innings.score.legal_balls % 6 == 0
             if over_ended:
@@ -6025,6 +6045,8 @@ class MatchEngine:
             "outcome": outcome,
             "runs": runs_map.get(outcome, 0),
             "wicket": is_wicket,
+            "wicket_kind": dismissal["kind"] if dismissal else None,
+            "dismissal": dismissal["text"] if dismissal else None,
             "score": ball_summary(session.score),
             "commentary": describe_ball_result({
                 "outcome": outcome,

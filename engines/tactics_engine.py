@@ -45,11 +45,6 @@ from typing import Any
 
 OUTCOMES = [0, 1, 2, 3, 4, 6, "W", "WD", "NB", "LB", "BY"]
 
-# A run-out is a rare event that can happen only while attempting a run.
-# It is deliberately applied after the existing probability model so all current
-# tactical, pitch, form, and upgrade weighting remains unchanged.
-RUN_OUT_ON_RUNNING_BALL_PROBABILITY = 0.001
-
 BOWLER_TACTICS = [
     "defensive", "swinging", "pace_up", "back_of_length", "variation",
     # Off-spin family
@@ -1544,9 +1539,113 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
         bowling_upgrade_context=bowling_upgrade_context,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
-    sampled = random.choices(OUTCOMES, weights=values, k=1)[0]
-    # Very rare run-outs occur only on running outcomes, never on boundaries or
-    # extras. The existing weighted outcome is otherwise returned unchanged.
-    if sampled in {1, 2, 3} and random.random() < RUN_OUT_ON_RUNNING_BALL_PROBABILITY:
-        return "RO"
-    return sampled
+    return random.choices(OUTCOMES, weights=values, k=1)[0]
+
+
+# ---------------------------------------------------------------------------
+# DISMISSAL MODES (how a wicket fell) - scorecard detail only.
+#
+# This layer never changes WHETHER a wicket falls: "W" is still sampled by
+# simulate() exactly as before.  Once a wicket has been decided, the helpers
+# below only decide HOW the batter got out so the scorecard can show
+# "c Fielder b Bowler", "b Bowler", "lbw b Bowler", "st †Keeper b Bowler" or
+# "run out (Fielder)".
+#
+#   * spin bowlers   : caught, bowled, lbw, stumped
+#   * pace / medium  : caught, bowled, lbw           (never stumped)
+#   * run out        : very, very rare; at most ONE per innings; it is NOT
+#                      credited to the bowler's wicket tally (balls and runs
+#                      still count against the bowler).
+# ---------------------------------------------------------------------------
+WICKET_KIND_WEIGHTS_SPIN = {"caught": 42.0, "bowled": 26.0, "lbw": 16.0, "stumped": 16.0}
+WICKET_KIND_WEIGHTS_PACE = {"caught": 58.0, "bowled": 26.0, "lbw": 16.0}
+RUN_OUT_CHANCE = 0.015           # share of wickets that turn out to be run-outs
+MAX_RUN_OUTS_PER_INNINGS = 1
+CAUGHT_AND_BOWLED_CHANCE = 0.08  # of caught dismissals, the bowler takes it himself
+
+
+def wicket_kind_credits_bowler(kind: str | None) -> bool:
+    """Run-outs are not a bowler's wicket; every other mode is."""
+    return str(kind or "").strip().lower() != "run_out"
+
+
+def pick_wicket_kind(bowler_style: str | None = None, bowler_role: str | None = None,
+                     run_outs_so_far: int = 0, keeper_available: bool = True) -> str:
+    """Pick how a wicket fell: caught / bowled / lbw / stumped / run_out."""
+    if run_outs_so_far < MAX_RUN_OUTS_PER_INNINGS and random.random() < RUN_OUT_CHANCE:
+        return "run_out"
+    spin = bowler_family(bowler_style, bowler_role) == "spin"
+    weights = dict(WICKET_KIND_WEIGHTS_SPIN if spin else WICKET_KIND_WEIGHTS_PACE)
+    if not keeper_available:
+        weights.pop("stumped", None)
+    kinds = list(weights)
+    return random.choices(kinds, weights=[weights[k] for k in kinds], k=1)[0]
+
+
+def _is_keeper(player: dict) -> bool:
+    return "wicket" in str(player.get("role") or "").strip().lower()
+
+
+def _player_label(player: dict | None) -> str | None:
+    if not player:
+        return None
+    return str(player.get("name") or "Player")
+
+
+def build_dismissal(kind: str, bowler: dict | None, fielding_xi: list | None) -> dict:
+    """Return {kind, fielder, text, bowler_credit} for a wicket of `kind`."""
+    kind = str(kind or "caught").strip().lower()
+    bowler = bowler or {}
+    bowler_name = _player_label(bowler) or "Bowler"
+    bowler_id = bowler.get("player_id")
+    xi = [p for p in (fielding_xi or []) if isinstance(p, dict)]
+    others = [p for p in xi if p.get("player_id") is None or p.get("player_id") != bowler_id]
+    keepers = [p for p in others if _is_keeper(p)]
+
+    fielder = None
+    if kind == "stumped" and not keepers:
+        kind = "caught"
+    if kind == "caught":
+        if not others or random.random() < CAUGHT_AND_BOWLED_CHANCE:
+            fielder, text = bowler_name, f"c & b {bowler_name}"
+        else:
+            fielder = _player_label(random.choice(others))
+            text = f"c {fielder} b {bowler_name}"
+    elif kind == "stumped":
+        fielder = _player_label(random.choice(keepers))
+        text = f"st †{fielder} b {bowler_name}"
+    elif kind == "lbw":
+        text = f"lbw b {bowler_name}"
+    elif kind == "run_out":
+        pool = others or xi
+        fielder = _player_label(random.choice(pool)) if pool else None
+        text = f"run out ({fielder})" if fielder else "run out"
+    else:  # bowled
+        kind, text = "bowled", f"b {bowler_name}"
+    return {"kind": kind, "fielder": fielder, "text": text, "bowler_credit": wicket_kind_credits_bowler(kind)}
+
+
+def assign_dismissal(session: Any, outcome: Any) -> dict | None:
+    """Decide the dismissal for a wicket ball and stamp it on `outcome`.
+
+    Works on any /play-style runtime session (duck-typed).  Returns the
+    dismissal dict, or None when the ball was not a wicket.
+    """
+    if not bool(getattr(outcome, "wicket", False)):
+        return None
+    bowler = getattr(session, "current_bowler", None) or {}
+    xi = list(getattr(session, "bowling_squad", None) or [])[:11]
+    fallen = getattr(getattr(getattr(session, "innings", None), "score", None), "wickets_fallen", []) or []
+    run_outs = sum(1 for w in fallen if isinstance(w, dict) and w.get("type") == "run_out")
+    kind = getattr(outcome, "wicket_kind", None)
+    if not kind or (kind == "run_out" and run_outs >= MAX_RUN_OUTS_PER_INNINGS):
+        kind = pick_wicket_kind(bowler.get("bowling_hand"), bowler.get("role"), run_outs,
+                                keeper_available=any(_is_keeper(p) for p in xi if isinstance(p, dict)))
+    info = build_dismissal(kind, bowler, xi)
+    try:
+        outcome.wicket_kind = info["kind"]
+        outcome.fielder = info["fielder"]
+        outcome.dismissal_text = info["text"]
+    except Exception:
+        pass
+    return info

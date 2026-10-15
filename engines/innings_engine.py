@@ -25,6 +25,7 @@ class BatterSlot:
     balls: int = 0
     dismissed: bool = False
     dismissal_text: str | None = None
+    dismissal_kind: str | None = None
     confidence: float = 0.0
     boundary_streak: int = 0
     fours: int = 0
@@ -138,9 +139,8 @@ def register_ball(
     legal_delivery: bool = True,
     max_legal_balls: int = 120,
     max_wickets: int = 10,
-    dismissal_text: str | None = None,
     bowler_name: str | None = None,
-    bowler_credited: bool = True,
+    dismissal_text: str | None = None,
 ) -> dict[str, Any]:
     before_balls = state.score.legal_balls
     before_over = state.score.over_text
@@ -158,7 +158,6 @@ def register_ball(
         legal_delivery=legal_delivery,
         bowler_name=bowler_name,
         dismissal_text=dismissal_text,
-        bowler_credited=bowler_credited,
     )
 
     normalized = str(outcome or "").strip().lower()
@@ -176,6 +175,7 @@ def register_ball(
         if wicket:
             striker_before.dismissed = True
             striker_before.dismissal_text = dismissal_text or wicket_type
+            striker_before.dismissal_kind = wicket_type
 
     if normalized not in {"wide", "no_ball"} and should_rotate_strike(runs):
         state.striker, state.non_striker = state.non_striker, state.striker

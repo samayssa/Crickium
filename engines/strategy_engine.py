@@ -2,14 +2,8 @@
 mindset via engines/tactics_engine.py's full probability model."""
 from __future__ import annotations
 
-import random
-from typing import Any
-
 from engines.approaches.base import BallContext, BallOutcome, outcome_runs
-from engines.tactics_engine import (
-    BATTER_MINDSETS, BOWLER_TACTICS, FAST_BOWLER_STYLES, LEG_SPIN_STYLES,
-    OFF_SPIN_STYLES, SPINNER_TACTIC_ARCHETYPE, bowler_family, simulate as tactics_simulate,
-)
+from engines.tactics_engine import BATTER_MINDSETS, BOWLER_TACTICS, simulate as tactics_simulate
 
 STRATEGY_LABELS = {
     "defensive": "DEFENSIVE",
@@ -42,7 +36,7 @@ TACTIC_LABELS = {
 # engines/score_engine.py).
 _CODE_TO_OUTCOME = {
     0: "dot", 1: "single", 2: "double", 3: "triple", 4: "four", 6: "six",
-    "W": "wicket", "RO": "run_out", "WD": "wide", "NB": "no_ball", "LB": "leg_bye", "BY": "bye",
+    "W": "wicket", "WD": "wide", "NB": "no_ball", "LB": "leg_bye", "BY": "bye",
 }
 
 
@@ -77,40 +71,16 @@ def resolve(strategy: str, context: BallContext) -> BallOutcome:
     outcome = _CODE_TO_OUTCOME.get(code, "dot")
 
     legal = outcome not in {"wide", "no_ball"}
-    wicket = outcome in {"wicket", "run_out"}
+    wicket = outcome == "wicket"
     runs = outcome_runs(outcome)
-    batter_runs = 0 if outcome in {"dot", "wicket", "run_out", "wide", "no_ball", "bye", "leg_bye"} else runs
+    batter_runs = 0 if outcome in {"dot", "wicket", "wide", "no_ball", "bye", "leg_bye"} else runs
     bowler_runs = runs if outcome not in {"bye", "leg_bye"} else 0
     extra_type = outcome if outcome in {"wide", "no_ball", "bye", "leg_bye"} else None
 
-    dismissal_type = None
-    dismissal_text = None
-    bowler_credited = True
-    if outcome == "run_out":
-        dismissal_type = "run out"
-        bowler_credited = False
-    elif wicket:
-        style = str(context.bowler_hand or "").strip().upper().replace(" ", "")
-        role = str(context.bowler_role or "").strip().lower()
-        explicit_pace = style in FAST_BOWLER_STYLES or any(
-            token in style or token in role for token in ("FAST", "MEDIUM", "SEAM", "PACE")
-        )
-        explicit_spin = (
-            style in OFF_SPIN_STYLES or style in LEG_SPIN_STYLES
-            or any(token in style or token in role for token in ("SPIN", "ORTHODOX", "CHINAMAN", "OFFBREAK", "LEG-BREAK"))
-        )
-        # Player style/role is the strongest signal; when older squads omit
-        # that metadata, the selected specialist spinner delivery is the fallback.
-        family = "pace" if explicit_pace else "spin" if explicit_spin or tactic in SPINNER_TACTIC_ARCHETYPE else bowler_family(context.bowler_hand, context.bowler_role)
-        if family == "spin":
-            dismissal_type = random.choices(
-                ["caught", "bowled", "lbw", "stumped"], weights=[54, 22, 19, 5], k=1
-            )[0]
-        else:
-            # Stumping is intentionally excluded for pace and medium-pace bowlers.
-            dismissal_type = random.choices(
-                ["caught", "bowled", "lbw"], weights=[62, 22, 16], k=1
-            )[0]
+    wicket_kind = None
+    if wicket:
+        from engines.tactics_engine import pick_wicket_kind
+        wicket_kind = pick_wicket_kind(context.bowler_hand, context.bowler_role)
 
     return BallOutcome(
         outcome=outcome,
@@ -120,55 +90,8 @@ def resolve(strategy: str, context: BallContext) -> BallOutcome:
         extra_type=extra_type,
         batter_runs=batter_runs,
         bowler_runs=bowler_runs,
-        dismissal_type=dismissal_type,
-        dismissal_text=dismissal_text,
-        bowler_credited=bowler_credited,
+        wicket_kind=wicket_kind,
     )
-
-
-def decorate_dismissal(session: Any, outcome: BallOutcome) -> BallOutcome:
-    """Attach a realistic scorecard dismissal and, when relevant, a fielder.
-
-    The selected dismissal and fielding name are recorded with the ball so the
-    Mini App, Telegram scorecard, and completed report all show the same detail.
-    """
-    if not outcome.wicket:
-        return outcome
-    kind = str(outcome.dismissal_type or ("run out" if outcome.outcome == "run_out" else "caught")).lower()
-    bowler = getattr(session, "current_bowler", None) or {}
-    bowler_name = str(bowler.get("name") or "Bowler") if isinstance(bowler, dict) else "Bowler"
-    squad = []
-    full_squads = getattr(session, "full_squads", None) or {}
-    team_id = getattr(session, "bowling_team_id", None)
-    if isinstance(full_squads, dict) and team_id is not None:
-        squad = full_squads.get(team_id) or full_squads.get(str(team_id)) or []
-    if not squad:
-        squad = getattr(session, "bowling_squad", None) or getattr(session, "bowling_pool", None) or []
-    fielders = [dict(player) for player in squad if isinstance(player, dict) and str(player.get("name") or "").strip()]
-    if kind == "stumped":
-        keepers = [player for player in fielders if any(token in str(player.get("role") or "").lower() for token in ("keeper", "wk"))]
-        candidate_pool = keepers or fielders
-    else:
-        candidate_pool = fielders
-    fielder = random.choice(candidate_pool) if candidate_pool else {}
-    fielder_name = str(fielder.get("name") or "Fielder") if kind in {"caught", "stumped", "run out"} else None
-
-    if kind == "caught":
-        text = f"c {fielder_name} b {bowler_name}"
-    elif kind == "bowled":
-        text = f"b {bowler_name}"
-    elif kind == "lbw":
-        text = f"lbw b {bowler_name}"
-    elif kind == "stumped":
-        text = f"st {fielder_name} b {bowler_name}"
-    else:
-        text = f"run out ({fielder_name})"
-        outcome.bowler_credited = False
-
-    outcome.dismissal_type = kind
-    outcome.fielder_name = fielder_name
-    outcome.dismissal_text = text
-    return outcome
 
 
 def strategy_label(strategy: str) -> str:
