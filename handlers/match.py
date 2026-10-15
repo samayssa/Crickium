@@ -74,6 +74,9 @@ def _update_ball_stats(session, batter_name: str, bowler_name: str, outcome: str
     b = batter_stats.setdefault(batter_name, {"runs": 0, "balls": 0, "fours": 0, "sixes": 0})
     if legal_delivery:
         b["balls"] += 1
+    if wicket and session.meta.get("_last_dismissal"):
+        b["dismissed"] = True
+        b["dismissal_text"] = session.meta.get("_last_dismissal")
     b["runs"] += runs
     if outcome in {"four", "boundary"}:
         b["fours"] += 1
@@ -85,7 +88,8 @@ def _update_ball_stats(session, batter_name: str, bowler_name: str, outcome: str
     if legal_delivery:
         bs["balls"] += 1
     bs["runs"] += runs
-    if wicket:
+    if wicket and session.meta.get("_last_wicket_kind") != "run_out":
+        # A run-out is not credited to the bowler's wickets.
         bs["wickets"] += 1
 
     over_events = session.meta.setdefault("current_over_events", [])
