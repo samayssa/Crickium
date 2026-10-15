@@ -65,7 +65,22 @@ def _json_default(value):
     return str(value)
 
 
-def _json_safe(value, _depth: int = 0):
+import html as _html
+import re as _re
+
+_TAG_RE = _re.compile(r"</?[A-Za-z][^<>]*>")
+_TEAM_TEXT_KEY = _re.compile(r"(team|display|result|winner|toss|name|summary|title|label|note|text|status|innings)", _re.I)
+
+
+def _plain_text(text: str) -> str:
+    """Strip Telegram HTML / <tg-emoji> markup so only the plain name remains."""
+    cleaned = _re.sub(r"<tg-emoji\b[^>]*>.*?</tg-emoji>", "", text, flags=_re.I | _re.S)
+    cleaned = _TAG_RE.sub("", cleaned)
+    cleaned = _html.unescape(cleaned)
+    return _re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def _json_safe(value, _depth: int = 0, _key: str = ""):
     """Make a payload JSON-serialisable.
 
     json.dumps(default=...) is NOT consulted for dict *keys*, so a payload
@@ -86,10 +101,13 @@ def _json_safe(value, _depth: int = 0):
                 safe_key = "|".join(str(part) for part in key)
             else:
                 safe_key = str(key)
-            out[safe_key] = _json_safe(item, _depth + 1)
+            out[safe_key] = _json_safe(item, _depth + 1, str(safe_key))
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_safe(item, _depth + 1) for item in value]
+        return [_json_safe(item, _depth + 1, _key) for item in value]
+    if isinstance(value, str) and "<" in value and _TEAM_TEXT_KEY.search(_key or ""):
+        if _TAG_RE.search(value) or "<tg-emoji" in value.lower():
+            return _plain_text(value) or value
     return value
 
 
@@ -139,7 +157,7 @@ async def _send_static(send, path: str):
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
     # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
-    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js"}
+    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js"}
     cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
     await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
 
