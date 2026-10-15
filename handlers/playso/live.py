@@ -190,6 +190,15 @@ async def playso_shot(callback_query):
         non_striker=_player(state,"batting_xi",current_non_id) if current_non_id else None
         result=resolve_ball(pitch=str(match.get("pitch") or "even"),bowler=bowler,batter=batter,family=bowling_family(bowler),delivery=str(state.get("delivery")),line=str(state.get("line")),length=str(state.get("length")),foot=str(state.get("foot")),intent=str(state.get("intent")),shot=shot)
         analysis=state.setdefault("analysis_balls",[])
+        dismissal=None
+        if result.wicket:
+            # How the wicket fell (scorecard detail only). Run-out is very rare and not a bowler wicket.
+            from engines.tactics_engine import pick_wicket_kind, build_dismissal, MAX_RUN_OUTS_PER_INNINGS
+            _xi=[p for p in (state.get("bowling_xi") or []) if isinstance(p,dict)]
+            _ro=sum(1 for w in (state.get("wickets_fallen") or []) if isinstance(w,dict) and w.get("type")=="run_out")
+            _keeper=any("wicket" in str(p.get("role") or "").lower() for p in _xi if p.get("player_id")!=bowler.get("player_id"))
+            _kind=pick_wicket_kind(bowler.get("bowling_hand"),bowler.get("role"),_ro,keeper_available=_keeper)
+            dismissal=build_dismissal(_kind,bowler,_xi)
         outcome_kind = str(result.outcome or "dot").lower().replace("-", "_")
         delivery_runs = int(result.runs or 0)
         if result.wicket:
@@ -222,6 +231,8 @@ async def playso_shot(callback_query):
             "batter": batter.get("name"), "batter_id": int(batter.get("player_id") or 0) or None,
             "non_striker": non_striker.get("name") if non_striker else None, "non_striker_id": current_non_id or None,
             "bowler": bowler.get("name"), "bowler_id": int(bowler.get("player_id") or 0) or None,
+            "wicket_kind": dismissal["kind"] if dismissal else None,
+            "dismissal": dismissal["text"] if dismissal else None,
             "batting_approach": str(state.get("intent") or "Balanced"),
             "bowling_plan": str(bowler.get("role") or bowling_family(bowler) or "Mixed"),
             "delivery": state.get("delivery"), "line": state.get("line"), "length": state.get("length"),
@@ -230,8 +241,10 @@ async def playso_shot(callback_query):
         if result.wicket:
             state.setdefault("wickets_fallen",[]).append({
                 "batter": batter.get("name"),
-                "type": "wicket",
-                "fielder": None,
+                "type": dismissal["kind"] if dismissal else "wicket",
+                "fielder": dismissal["fielder"] if dismissal else None,
+                "bowler": bowler.get("name"),
+                "text": dismissal["text"] if dismissal else None,
                 "over": f"{legal_balls_before//6}.{legal_balls_before%6 + 1}",
             })
         state["runs"]=int(state.get("runs") or 0)+result.runs
@@ -242,13 +255,15 @@ async def playso_shot(callback_query):
         bst=state.setdefault("batter_stats",{})
         key=str(current_striker_id); bs=bst.setdefault(key,{"name":batter.get("name"),"runs":0,"balls":0,"fours":0,"sixes":0})
         if result.legal: bs["balls"] += 1
+        if dismissal:
+            bs["dismissed"]=True; bs["dismissal_text"]=dismissal["text"]
         if result.outcome not in {"WIDE","NO_BALL","LEG_BYE","BYE","OUT"}: bs["runs"] += result.runs
         if result.outcome=="4": bs["fours"] += 1
         if result.outcome=="6": bs["sixes"] += 1
         bwst=state.setdefault("bowler_stats",{}); bk=str(bowler.get("player_id")); bws=bwst.setdefault(bk,{"name":bowler.get("name"),"runs":0,"balls":0,"wickets":0})
         if result.legal: bws["balls"] += 1
         bws["runs"] += result.runs
-        if result.wicket: bws["wickets"] += 1
+        if result.wicket and (not dismissal or dismissal["bowler_credit"]): bws["wickets"] += 1
         # rotation for runs/wicket
         sel=[int(x) for x in state.get("selected_batters") or []]
         if result.wicket:
