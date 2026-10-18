@@ -1170,4 +1170,12 @@ async def migrate():
         )
     print("[migrate] Player upgrade catalogue seeded.")
 
+    try:
+        from database import achievements_repo, miniapp_game_repo
+        await achievements_repo.ensure_schema()
+        await miniapp_game_repo.ensure_schema()
+        print("[migrate] Achievements + Play Game tables OK.")
+    except Exception as exc:
+        print(f"[migrate] Achievements/Play Game schema skipped: {exc!r}")
+
     print("Migration Complete.")
