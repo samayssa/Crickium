@@ -223,3 +223,10 @@ async def migrate() -> None:
         );
     """)
     await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_news_articles_published ON miniapp_news_articles(is_published, created_at DESC);")
+
+    try:
+        from database import achievements_repo, miniapp_game_repo
+        await achievements_repo.ensure_schema()
+        await miniapp_game_repo.ensure_schema()
+    except Exception as exc:
+        print(f"[miniapp_backend] Achievements/Play Game schema skipped: {exc!r}")

@@ -18,6 +18,7 @@ _REQUESTS: dict[str, list[float]] = {}
 _WINDOW_SECONDS = 60
 _API_LIMIT = 90
 _WRITE_LIMIT = 8
+_GAME_LIMIT = 240
 _MAX_BODY_BYTES = 16_384
 
 
@@ -157,7 +158,7 @@ async def _send_static(send, path: str):
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
     # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
-    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js"}
+    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js"}
     cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
     await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
 
@@ -255,6 +256,27 @@ class CrickiumMiniApp:
             viewer = await resolve_viewer(headers, query)
         except MiniAppAuthError as exc:
             await _send_json(send, {"ok": False, "detail": str(exc)}, 401)
+            return
+
+        is_game = path == "/api/game" or path.startswith("/api/game/")
+        if is_game:
+            # A match is hundreds of small taps: it gets its own, higher budget.
+            if _rate_limited(f"{viewer.id}:game", _GAME_LIMIT):
+                await _send_json(send, {"ok": False, "detail": "Slow down a little"}, 429)
+                return
+            payload = {}
+            if method == "POST":
+                try:
+                    body = await _body(receive)
+                    payload = json.loads(body.decode("utf-8") or "{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("JSON body must be an object")
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                    await _send_json(send, {"detail": str(exc)}, 400)
+                    return
+            from . import game_api
+            status, data = await game_api.handle(viewer, method, path, query, payload)
+            await _send_json(send, data, status)
             return
 
         limit = _WRITE_LIMIT if method == "POST" else _API_LIMIT
@@ -373,8 +395,12 @@ class CrickiumMiniApp:
                     limit = 50
                 await _send_json(send, await api.build_leaderboard_response(viewer, limit))
                 return
-            if path == "/api/quests" or path == "/api/achievements":
+            if path == "/api/quests":
                 await _send_json(send, await api.build_quests_response(viewer))
+                return
+            if path == "/api/achievements":
+                from services import achievements
+                await _send_json(send, await achievements.build_response(int(viewer.id), viewer))
                 return
             if path.startswith("/api/ads/attempt/"):
                 attempt_id = path.removeprefix("/api/ads/attempt/")
