@@ -38,7 +38,8 @@ async def _resolve_captain_name(user_id: int, squad: list[dict]) -> str:
     return str(match.get("name")) if match and match.get("name") else "Not assigned"
 
 
-def _profile_caption(*, player_mention, tier_emoji, tier_key, snapshot, franchise_name, global_rank, captain_name, squad_len):
+def _profile_caption(*, player_mention, tier_emoji, tier_key, snapshot, franchise_name, global_rank, captain_name, squad_len, ach=None):
+    ach_line = (f"\n\n<blockquote><b>🏅 Achievements ➤ {ach['done']}/{ach['total']} · {ach['rank']}</b></blockquote>" if ach else "")
     return (
         "<b>╭━━〔 🏏 PROFILE 〕━━╮</b>\n\n"
         f"<blockquote><b>│ 👤 Owner ➤ {player_mention}</b></blockquote>\n\n"
@@ -49,7 +50,8 @@ def _profile_caption(*, player_mention, tier_emoji, tier_key, snapshot, franchis
         f"│ 🧢 Cap  ➤ {captain_name}\n"
         f"│ 👥 Squad     ➤ {squad_len}/{MAX_SQUAD_SIZE}\n"
         "└────────────────┘\n\n"
-        f"🎯 {snapshot['matches']} M   🏆 {snapshot['wins']} W   📊 {snapshot['win_pct']}%</b></blockquote>\n\n"
+        f"🎯 {snapshot['matches']} M   🏆 {snapshot['wins']} W   📊 {snapshot['win_pct']}%</b></blockquote>"
+        + ach_line + "\n\n"
         "<b>Keep climbing, champion! 📈\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
@@ -102,10 +104,16 @@ async def profile_command(message):
     tier_emoji, tier_key, tier_title = get_tier(snapshot["level"])
     player_mention = mention_name_only_html(user_id, first_name)
 
+    try:
+        from services.achievements import summary as _ach_summary
+        ach = await _ach_summary(int(user_id))
+    except Exception as exc:
+        print(f"[profile] achievements summary failed: {exc!r}")
+        ach = None
     caption = _profile_caption(
         player_mention=player_mention, tier_emoji=tier_emoji, tier_key=tier_key,
         snapshot=snapshot, franchise_name=franchise_name, global_rank=global_rank,
-        captain_name=captain_name, squad_len=len(squad),
+        captain_name=captain_name, squad_len=len(squad), ach=ach,
     )
 
     tier_image = await get_tier_card_image(tier_key)
