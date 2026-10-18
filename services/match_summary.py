@@ -129,7 +129,7 @@ def _rows(draw, box, snap, kind, color):
 
 def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
                          margin: str = "", potm: dict | None = None,
-                         match_number: int = 0) -> bytes:
+                         match_number: int = 0, result_text: str | None = None) -> bytes:
     image = Image.open(TEMPLATE_PATH).convert("RGB")
     if image.size != CANVAS:
         image = image.resize(CANVAS)
@@ -177,11 +177,18 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         winner_text = f"{_team_name(winner)} WON IN SUPER OVER".strip().upper()
     else:
         winner_text = f"{_team_name(winner)} WON BY {margin}".strip().upper()
+    if result_text:
+        # Free-form result line (ties, forfeits, "won by 4 wickets") - same box and style.
+        winner_text = " ".join(_team_name(result_text).split())
     _text(draw, winner_text, result_box, COLORS["gold"], FONT_SIZES["result"], bold=True, align="center")
     potm = potm or {}
     details = f"{int(potm.get('runs') or 0)} ({int(potm.get('balls') or 0)})"
     if potm.get("wickets") is not None:
-        details += f"  |  {_figure(potm)}"
+        figure = f"{int(potm.get('wickets') or 0)}/{int(potm.get('bowl_runs', potm.get('runs')) or 0)}"
+        if "bowl_runs" in potm and not int(potm.get("balls") or 0) and not int(potm.get("runs") or 0):
+            details = figure                    # pure bowling performance
+        else:
+            details += f"  |  {figure}"
     # The template already prints a white "#" and a gold "POTM" badge in the
     # footer, so only the number and the player's name/details are drawn -
     # each right next to its matching static element.
