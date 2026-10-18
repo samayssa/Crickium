@@ -126,6 +126,9 @@ async def _finish_hooks(user_id: int, game: dict) -> dict:
     except Exception as exc:
         print(f"[miniapp_game] result save failed: {type(exc).__name__}: {exc}")
     _STATS_CACHE.pop(user_id, None)
+    link = game.get("link")
+    if link and link.get("token"):
+        asyncio.create_task(_report_to_group(game, dict(link)))
     try:
         from services import achievements
         newly = await achievements.check_and_unlock(user_id)
@@ -155,6 +158,10 @@ async def handle(viewer: Any, method: str, path: str, query: dict, payload: dict
                 return 200, {"ok": True, **gv.config_block()}
             if route in {"", "state"}:
                 return await _state(viewer)
+            if route == "link":
+                return await _link_info(viewer, query)
+            if route == "watch":
+                return await _watch(viewer, query)
             if route == "history":
                 rows = await repo.recent_results(uid, 20)
                 return 200, {"ok": True, "results": rows}
@@ -203,6 +210,12 @@ async def _start(viewer: Any, payload: dict) -> tuple[int, dict]:
             await _persist(existing)
             await _finish_hooks(uid, existing)
             _CACHE.pop(uid, None)
+        link = None
+        token = str(payload.get("link") or "").strip()
+        if token:
+            row = await repo.get_link(token)
+            if row and int(row["user_id"]) == uid and row["status"] == "open":
+                link = row
         await core_api._ensure_user(viewer)
         ctx = await repo.load_user_context(uid)
         if len(ctx["squad"]) < 11:
@@ -211,8 +224,17 @@ async def _start(viewer: Any, payload: dict) -> tuple[int, dict]:
         game = ge.new_game(uid, cfg, first_name=ctx["first_name"] or getattr(viewer, "first_name", None),
                            franchise=ctx["franchise"], squad=ctx["squad"], lineup_pids=ctx["lineup"],
                            ai_pool=pool, rng=random.Random())
+        if link:
+            game["link"] = {"token": link["token"], "chat_id": int(link["chat_id"]),
+                            "message_id": link.get("message_id"), "user_id": uid,
+                            "user_name": link.get("user_name") or ctx["first_name"] or ""}
         _CACHE[uid] = {"g": game, "at": time.time()}
         await _persist(game)
+        if link:
+            try:
+                await repo.attach_link(link["token"], game["id"])
+            except Exception as exc:
+                print(f"[miniapp_game] link attach failed: {type(exc).__name__}")
         asyncio.create_task(_warm(uid, game))
         return _ok(game)
 
@@ -293,3 +315,81 @@ async def _act(viewer: Any, route: str, payload: dict) -> tuple[int, dict]:
         if game["stage"] == "done":
             _CACHE.pop(uid, None)
         return view_status
+
+
+# ---------------------------------------------------------------------------
+# group links + live spectating (/playai)
+# ---------------------------------------------------------------------------
+_FINAL: dict[str, tuple[float, dict]] = {}
+
+
+async def _report_to_group(game: dict, link: dict) -> None:
+    """Summary card + analysis HTML, posted into the group as a reply to the command."""
+    try:
+        from miniapp_backend.config import BOT_TOKEN
+        from services import miniapp_game_report as report
+        number = 0
+        try:
+            from database.query import fetchval
+            number = int(await fetchval("SELECT COUNT(*) FROM miniapp_game_results;") or 0)
+        except Exception:
+            number = 0
+        res = game.get("result") or {}
+        try:
+            await repo.finish_link(link["token"], res.get("text"))
+        except Exception as exc:
+            print(f"[miniapp_game] finish_link failed: {type(exc).__name__}")
+        _FINAL[link["token"]] = (time.time(), gv.build_view(game))
+        if len(_FINAL) > 200:
+            for key in sorted(_FINAL, key=lambda k: _FINAL[k][0])[:100]:
+                _FINAL.pop(key, None)
+        if not game.get("inn"):
+            return                                  # nothing was played - no card to post
+        await report.deliver(game, link, BOT_TOKEN, number)
+    except Exception as exc:
+        print(f"[miniapp_game] group report failed: {type(exc).__name__}: {exc}")
+
+
+def _first(query: dict, key: str) -> str:
+    value = query.get(key)
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
+async def _link_info(viewer: Any, query: dict) -> tuple[int, dict]:
+    token = _first(query, "token")
+    row = await repo.get_link(token)
+    if not row:
+        return _err(404, "no_link", "This game link is no longer valid.")
+    owner = int(row["user_id"]) == int(viewer.id)
+    return 200, {"ok": True, "owner": owner, "status": row["status"], "overs": row.get("overs"),
+                 "host": row.get("user_name") or "Player", "result": row.get("result_text")}
+
+
+async def _watch(viewer: Any, query: dict) -> tuple[int, dict]:
+    """Read-only live view of someone else's game (nothing private is exposed)."""
+    token = _first(query, "token")
+    row = await repo.get_link(token)
+    if not row:
+        return _err(404, "no_link", "This game link is no longer valid.")
+    host = row.get("user_name") or "Player"
+    base = {"ok": True, "status": row["status"], "host": host, "overs": row.get("overs"), "result": row.get("result_text")}
+    game = None
+    owner_uid = int(row["user_id"])
+    entry = _CACHE.get(owner_uid)
+    if entry and entry["g"].get("link", {}).get("token") == token:
+        game = entry["g"]
+    elif row["status"] == "done" and token in _FINAL:
+        view = dict(_FINAL[token][1]); view.pop("need", None); view["need"] = {"kind": "spectate"}
+        return 200, {**base, "game": view}
+    elif row.get("game_id"):
+        game = await repo.load_state_by_id(row["game_id"])
+    if not game:
+        return 200, {**base, "game": None}
+    view = gv.build_view(game)
+    view.pop("xi", None)
+    view["events"] = []
+    view["need"] = {"kind": "spectate"}
+    view["lineups"] = view.get("lineups")
+    return 200, {**base, "game": view}
