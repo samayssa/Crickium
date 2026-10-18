@@ -324,27 +324,55 @@ _FINAL: dict[str, tuple[float, dict]] = {}
 
 
 async def _report_to_group(game: dict, link: dict) -> None:
-    """Summary card + analysis HTML, posted into the group as a reply to the command."""
+    """Send the shared match-completion notice and the AI match report."""
     try:
         from miniapp_backend.config import BOT_TOKEN
         from services import miniapp_game_report as report
-        number = 0
-        try:
-            from database.query import fetchval
-            number = int(await fetchval("SELECT COUNT(*) FROM miniapp_game_results;") or 0)
-        except Exception:
-            number = 0
         res = game.get("result") or {}
         try:
             await repo.finish_link(link["token"], res.get("text"))
         except Exception as exc:
             print(f"[miniapp_game] finish_link failed: {type(exc).__name__}")
-        _FINAL[link["token"]] = (time.time(), gv.build_view(game))
+        view = gv.build_view(game)
+        _FINAL[link["token"]] = (time.time(), view)
         if len(_FINAL) > 200:
             for key in sorted(_FINAL, key=lambda k: _FINAL[k][0])[:100]:
                 _FINAL.pop(key, None)
         if not game.get("inn"):
-            return                                  # nothing was played - no card to post
+            return                                  # nothing was played - no match result to announce
+
+        # Use the same cross-engine number as PLAY, PLAYINT, PLAYIPL, PLAYWPL
+        # and MATCH. The result row has already been saved by _finish_hooks.
+        number = 0
+        try:
+            from services.match_notification import next_match_number
+            number = await next_match_number()
+        except Exception as exc:
+            print(f"[miniapp_game] shared match number unavailable: {type(exc).__name__}: {exc}")
+
+        # PLAY AI uses the same central notification group and message format
+        # as the other engines. Keep report delivery independent so a Telegram
+        # notification problem does not prevent the existing card/HTML report.
+        try:
+            from app import app as telegram_app
+            from services.match_notification import send_match_completion_notification
+            innings = report._snapshots(view)
+            user_team = (game.get("teams") or {}).get("user") or {}
+            ai_team = (game.get("teams") or {}).get("ai") or {}
+            await send_match_completion_notification(
+                telegram_app,
+                engine="PLAY AI",
+                pitch=(game.get("cfg") or {}).get("pitch"),
+                user1=(None, link.get("user_name") or user_team.get("name") or "Player"),
+                user2=(None, ai_team.get("name") or "Crickium AI"),
+                innings_1=innings[0] if innings else {},
+                innings_2=innings[1] if len(innings) > 1 else {},
+                result=res.get("text"),
+                match_number=number,
+            )
+        except Exception as exc:
+            print(f"[miniapp_game] match completion notification failed: {type(exc).__name__}: {exc}")
+
         await report.deliver(game, link, BOT_TOKEN, number)
     except Exception as exc:
         print(f"[miniapp_game] group report failed: {type(exc).__name__}: {exc}")
