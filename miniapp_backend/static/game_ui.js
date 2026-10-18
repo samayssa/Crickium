@@ -13,7 +13,8 @@
   const G = {
     cfg: null, hub: null, view: null, busy: false, tab: "live", card: 0, sel: null, skip: false,
     setup: { difficulty: "medium", overs: 5, sim: "ball", pitch: "random" },
-    toss: null, tossShow: false, alive: false, revealing: false,
+    toss: null, tossShow: false, alive: false, revealing: false, sheetMin: false,
+    linkToken: null, linkInfo: null, spectate: null, pollTimer: null, lastKey: "",
   };
 
   /* ------------------------------------------------------------------ io */
@@ -21,7 +22,7 @@
     return app().api(`/api/game/${route}`, { method: "POST", body: JSON.stringify(body || {}) });
   }
   function toast(msg, bad) { app().toast(msg, bad); }
-  function shell(html, title, eyebrow) { app().shell(html, title || "Play Game", eyebrow || "VS COMPUTER"); }
+  function shell(html, title, eyebrow) { removeSheet(); app().shell(html, title || "Play Game", eyebrow || "VS COMPUTER"); }
   function img(url, alt, cls) { return url ? app().image(url, alt, cls || "gm-avimg") : ""; }
   function hydrate() { try { app().hydrateImages(); } catch (_) {} }
   const initials = (n) => String(n || "?").trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join("").toUpperCase();
@@ -46,7 +47,68 @@
       shell(`<div class="panel empty-state"><b>Play Game is unavailable</b><p>${esc(e.message || "Please try again.")}</p><button class="button primary" data-page="game">Retry</button></div>`);
     }
   }
-  function stop() { G.alive = false; }
+  function stop() { G.alive = false; removeSheet(); stopPoll(); G.spectate = null; }
+  function stopPoll() { if (G.pollTimer) { clearInterval(G.pollTimer); G.pollTimer = null; } }
+
+  /* ----------------------------------------- group link: play or watch live */
+  async function openLink(token) {
+    G.alive = true; G.spectate = null; stopPoll();
+    shell(`<div class="skeleton hero-skeleton"></div><div class="skeleton"></div>`, "Play Game", "FROM GROUP");
+    let info;
+    try { info = await app().api(`/api/game/link?token=${encodeURIComponent(token)}`); }
+    catch (e) { toast(e.message || "This game link is not valid anymore", true); return load(); }
+    G.linkInfo = info;
+    if (info.owner) {
+      G.linkToken = info.status === "open" ? token : null;
+      if (info.overs && info.status === "open") G.setup.overs = Number(info.overs);
+      return load();
+    }
+    G.linkToken = null;
+    return startSpectating(token);
+  }
+
+  async function startSpectating(token) {
+    G.spectate = { token }; G.view = null; G.lastKey = "";
+    await pollWatch(true);
+    stopPoll();
+    G.pollTimer = setInterval(() => { if (G.alive && G.spectate) pollWatch(false); }, 4000);
+  }
+
+  async function pollWatch(first) {
+    if (!G.spectate) return;
+    let r;
+    try { r = await app().api(`/api/game/watch?token=${encodeURIComponent(G.spectate.token)}`); }
+    catch (e) { if (first) { toast(e.message || "Could not load the match", true); stopPoll(); G.spectate = null; load(); } return; }
+    if (!G.spectate) return;
+    const v = r.game;
+    const key = v ? `${v.rev}:${v.balls_played}:${v.stage}:${v.match?.balls}` : `none:${r.status}`;
+    if (!first && key === G.lastKey) return;
+    G.lastKey = key;
+    G.view = v;
+    G.spectate.host = r.host; G.spectate.status = r.status; G.spectate.result = r.result;
+    const y = window.scrollY;
+    renderSpectator();
+    if (!first) window.scrollTo(0, y);
+    if (v && v.stage === "done") stopPoll();
+  }
+
+  function renderSpectator() {
+    const sp = G.spectate, v = G.view;
+    if (!v) {
+      return shell(`<section class="gm-hero"><div class="gm-hero-glow"></div><span class="eyebrow">LIVE SPECTATOR</span><h2>Waiting for kick-off</h2>
+        <p>${esc(sp.host || "The host")} has not started the match yet. This screen updates by itself.</p></section>
+        ${sp.status === "done" ? `<div class="gm-result tie"><h3>${esc(sp.result || "Match finished")}</h3></div>` : ""}`, "Live Match", "WATCHING");
+    }
+    if (v.stage === "xi" || v.stage === "toss" || v.stage === "decision") {
+      const t = v.teams;
+      return shell(`<section class="gm-toss-head"><div class="tm you"><b>${esc(t.user.code)}</b><small>${esc(t.user.name)}</small></div><span class="vs">VS</span><div class="tm ai"><b>${esc(t.ai.code)}</b><small>${esc(t.ai.name)}</small></div></section>
+        <div class="gm-toss-meta"><span>${v.cfg.pitch_emoji} ${esc(v.cfg.pitch_label)}</span><span>${v.cfg.overs} ov</span><span>${esc(v.cfg.difficulty_label)}</span></div>
+        <div class="gm-toss-result"><small>LIVE</small><h3>${v.stage === "xi" ? "Picking the Playing XI…" : "At the toss…"}</h3></div>
+        <p class="gm-note center">${esc(sp.host || "The host")} is about to start. This screen updates by itself.</p>`, "Live Match", "WATCHING");
+    }
+    G.tab = G.tab || "live";
+    renderMatch();
+  }
 
   function render() {
     const v = G.view;
@@ -114,6 +176,7 @@
     const has = !!(G.view && G.view.stage !== "done");
     shell(`<section class="gm-hero"><div class="gm-hero-glow"></div><div class="gm-hero-ball"></div>
         <span class="eyebrow">CRICKIUM ARENA</span><h2>Play Game</h2><p>Your Playing XI against the computer. Choose the difficulty, the format and the pitch – then outsmart it.</p></section>
+      ${G.linkToken ? `<div class="gm-link-banner">👥 Started from your group — when this match ends, the summary card and full analysis are posted there.${G.setup.overs ? ` Overs preset: <b>${G.setup.overs}</b>.` : ""}</div>` : ""}
       ${careerStrip(st.stats)}
       ${has ? resumeCard(st.summary || {}) : ""}
       ${setupForm()}
@@ -125,7 +188,8 @@
     if (G.busy) return;
     G.busy = true;
     try {
-      const r = await post("start", { ...G.setup, replace: !!replace });
+      const r = await post("start", { ...G.setup, replace: !!replace, link: G.linkToken || undefined });
+      G.linkToken = null;
       G.view = r.game; G.tab = "live"; G.sel = null; G.toss = null; G.tossShow = false;
       render();
     } catch (e) {
@@ -280,7 +344,7 @@
       : `<div class="gm-need"><b>${m.proj != null ? `Projected ${m.proj}` : `Par ${m.par} RPO`}</b><small>${m.wkts_left} wickets left</small></div>`;
     return `<section class="gm-score ${m.bat === "user" ? "batting" : "bowling"}">
       <div class="gm-score-top"><span>${c.pitch_emoji} ${esc(c.pitch_label)}</span><span>${esc(c.difficulty_label)}</span><span>${c.overs} ov</span><span class="ph">${esc(m.phase)}</span>${m.free_hit ? `<span class="fh">FREE HIT</span>` : ""}</div>
-      <div class="gm-score-main"><div><small>INNINGS ${m.no} · ${m.bat === "user" ? "YOU BAT" : "YOU BOWL"}</small><h2>${esc(m.bat_name)}</h2></div>
+      <div class="gm-score-main"><div><small>INNINGS ${m.no} · ${G.spectate ? "LIVE" : (m.bat === "user" ? "YOU BAT" : "YOU BOWL")}</small><h2>${esc(m.bat_name)}</h2></div>
         <div class="gm-runs"><b>${m.runs}/${m.wkts}</b><small>(${m.overs}/${m.max_overs}) · CRR ${m.crr}</small></div></div>
       ${first}${need}${wpBar(v)}</section>`;
   }
@@ -303,32 +367,50 @@
         <div class="gm-over"><div class="gm-over-h"><span>THIS OVER · ${m.over_no}</span><b>${m.over_runs} runs</b></div><div class="gm-over-balls">${chips(m.this_over)}</div></div>
         ${m.last_over ? `<div class="gm-lastline">Last over: ${m.last_over.runs} runs${m.last_over.wkts ? `, ${m.last_over.wkts} wkt` : ""}${m.last_wicket ? ` · Last wkt: ${esc(m.last_wicket)}` : ""}</div>` : (m.last_wicket ? `<div class="gm-lastline">Last wkt: ${esc(m.last_wicket)}</div>` : "")}
       </section>
-      ${done ? resultPanel(v) : actionPanel(v, n)}
+      ${done ? resultPanel(v) : ""}
       <section class="gm-panel"><div class="gm-sec-head"><span>COMMENTARY</span></div><div class="gm-feed">${v.feed.map((f) => `<div class="gm-feed-i ${esc(f.k)} ${f.wicket ? "w" : ""}">${f.k === "ball" ? `<span class="gm-ball ${chipCls(f.sym)}">${esc(chipTxt(f.sym))}</span><div><small>${esc(f.ov)} · ${esc(f.score || "")}</small><p>${esc(f.text)}</p></div>` : `<div><p>${esc(f.text)}</p></div>`}</div>`).join("")}</div></section>`;
   }
 
-  function actionPanel(v, n) {
+  /* Bottom sheet with the batting / bowling controls (minimise / maximise). */
+  function sheetContent(v, n) {
     const over = n.scope === "over";
+    const m = v.match;
     if (n.kind === "continue") {
       const f = v.first_innings;
-      return `<section class="gm-action"><div class="gm-break"><span class="eyebrow">INNINGS BREAK</span><h3>${f ? `${esc(f.team)} ${f.runs}/${f.wkts}` : "Innings complete"}</h3>
-        <p>${f ? `${esc(v.teams[v.match.bat === "user" ? "user" : "ai"].name)} need <b>${f.target}</b> to win from ${v.match.max_overs} overs.` : ""}</p>
-        <button class="gm-cta" data-g="continue">START THE CHASE <span>›</span></button></div></section>`;
+      return { title: "INNINGS BREAK", body: `<div class="gm-break"><h3>${f ? `${esc(f.team)} ${f.runs}/${f.wkts}` : "Innings complete"}</h3>
+        <p>${f ? `Target <b>${f.target}</b> from ${m.max_overs} overs.` : ""}</p>
+        <button class="gm-cta" data-g="continue">START THE CHASE <span>›</span></button></div>` };
     }
     if (n.kind === "mindset") {
-      return `<section class="gm-action"><div class="gm-sec-head"><span>${over ? "YOUR APPROACH FOR THE OVER" : "YOUR BATTING APPROACH"}</span>${n.free_hit ? `<em class="fh">FREE HIT</em>` : ""}</div>
-        <div class="gm-opts-col">${n.options.map((o) => `<button class="gm-act bat a-${esc(o.key)}" data-g="play" data-c="${esc(o.key)}"><span>${o.emoji}</span><div><b>${esc(o.label)}</b><small>${esc(o.hint)}</small></div></button>`).join("")}</div>
-        ${over ? `<p class="gm-note center">The whole over is simulated from this one call.</p>` : ""}</section>`;
+      return { title: over ? "BATTING APPROACH · THIS OVER" : "BATTING APPROACH", fh: n.free_hit, body: `<div class="gm-opts-grid">${n.options.map((o) => `<button class="gm-act bat a-${esc(o.key)}" data-g="play" data-c="${esc(o.key)}"><span>${o.emoji}</span><div><b>${esc(o.label)}</b><small>${esc(o.hint)}</small></div></button>`).join("")}</div>` };
     }
     if (n.kind === "bowler") {
-      return `<section class="gm-action"><div class="gm-sec-head"><span>CHOOSE YOUR BOWLER · OVER ${v.match.over_no}</span></div>
-        <div class="gm-opts-col">${n.options.map((o) => `<button class="gm-act bowler" data-g="bowler" data-slot="${o.slot}"><span>🎯</span><div><b>${esc(o.name)}${o.part ? " (part-timer)" : ""}</b><small>${esc(o.bw || "")} · BWL ${o.bowl} · ${o.overs} ov, ${o.wkts}-${o.runs}${o.econ != null ? ` · econ ${o.econ}` : ""}</small></div><em>${o.left} left</em></button>`).join("")}</div></section>`;
+      return { title: `CHOOSE BOWLER · OVER ${m.over_no}`, body: `<div class="gm-opts-col">${n.options.map((o) => `<button class="gm-act bowler" data-g="bowler" data-slot="${o.slot}"><span>🎯</span><div><b>${esc(o.name)}${o.part ? " (part-timer)" : ""}</b><small>${esc(o.bw || "")} · BWL ${o.bowl} · ${o.overs} ov, ${o.wkts}-${o.runs}${o.econ != null ? ` · econ ${o.econ}` : ""}</small></div><em>${o.left} left</em></button>`).join("")}</div>` };
     }
     if (n.kind === "tactic") {
-      return `<section class="gm-action"><div class="gm-sec-head"><span>${over ? "BOWLING PLAN FOR THE OVER" : "BOWLING TACTIC"} · ${esc(n.bowler?.name || "")}</span></div>
-        <div class="gm-opts-col">${n.options.map((o) => `<button class="gm-act tac" data-g="play" data-c="${esc(o.key)}"><span>${o.emoji}</span><div><b>${esc(o.label)}</b><small>${esc(o.hint)}</small></div></button>`).join("")}</div></section>`;
+      return { title: `${over ? "BOWLING PLAN · THIS OVER" : "BOWLING TACTIC"} · ${esc(n.bowler?.name || "")}`, body: `<div class="gm-opts-grid">${n.options.map((o) => `<button class="gm-act tac" data-g="play" data-c="${esc(o.key)}"><span>${o.emoji}</span><div><b>${esc(o.label)}</b><small>${esc(o.hint)}</small></div></button>`).join("")}</div>` };
     }
-    return "";
+    return null;
+  }
+
+  function removeSheet() { document.getElementById("gm-sheet")?.remove(); document.body.classList.remove("gm-sheet-on"); }
+
+  function syncSheet() {
+    const v = G.view;
+    const c = v && v.stage !== "done" && (v.stage === "play" || v.stage === "break") ? sheetContent(v, v.need || {}) : null;
+    if (!c) return removeSheet();
+    let el = document.getElementById("gm-sheet");
+    const fresh = !el;
+    if (!el) { el = document.createElement("div"); el.id = "gm-sheet"; document.body.appendChild(el); }
+    const m = v.match;
+    el.className = `gm-sheet ${G.sheetMin ? "min" : "open"} ${fresh ? "enter" : ""}`;
+    el.innerHTML = `<button class="gm-sheet-bar" data-g="sheet-toggle" aria-expanded="${G.sheetMin ? "false" : "true"}" aria-label="${G.sheetMin ? "Show controls" : "Hide controls"}">
+        <span class="grip"></span><div class="gm-sheet-title"><b>${c.title}</b>${c.fh ? `<em class="fh">FREE HIT</em>` : ""}<small>${esc(m.bat_code)} ${m.runs}/${m.wkts} · ${m.overs} ov${m.target != null ? ` · need ${m.need}` : ""}</small></div>
+        <span class="gm-sheet-arrow">${G.sheetMin ? "▲" : "▼"}</span></button>
+      <div class="gm-sheet-body">${c.body}</div>`;
+    document.body.classList.add("gm-sheet-on");
+    document.documentElement.style.setProperty("--gm-sheet-h", `${G.sheetMin ? 86 : el.offsetHeight + 16}px`);
+    hydrate();
   }
 
   function resultPanel(v) {
@@ -338,7 +420,7 @@
     return `<section class="gm-result ${r.forfeit ? "lose" : won ? "win" : r.type === "tie" ? "tie" : "lose"}"><span class="eyebrow">${r.type === "tie" ? "MATCH TIED" : won ? "VICTORY" : "DEFEAT"}</span>
       <h3>${esc(r.text || "Match complete")}</h3>
       ${pom ? `<div class="gm-pom"><small>PLAYER OF THE MATCH</small><b>${esc(pom.name)}</b><span>${esc(pom.line)}</span></div>` : ""}
-      <div class="gm-res-btns"><button class="gm-cta small" data-g="rematch">REMATCH</button><button class="gm-ghost" data-g="new">New game</button><button class="gm-ghost" data-page="home">Home</button></div></section>`;
+      <div class="gm-res-btns">${G.spectate ? `<button class="gm-cta small" data-page="game">PLAY YOUR OWN GAME</button>` : `<button class="gm-cta small" data-g="rematch">REMATCH</button><button class="gm-ghost" data-g="new">New game</button>`}<button class="gm-ghost" data-page="home">Home</button></div></section>`;
   }
 
   /* scorecard tab */
@@ -412,15 +494,16 @@
       ${v.toss ? `<p class="gm-note">🪙 ${esc(v.toss.text || "")}</p>` : ""}
       <p class="gm-note">Max ${c.quota} over${c.quota === 1 ? "" : "s"} per bowler.</p></section>
       <section class="gm-panel">${lineup("user")}${lineup("ai")}</section>
-      <div class="gm-sticky static"><button class="gm-ghost danger" data-g="forfeit">Forfeit match</button></div>`;
+      ${G.spectate ? "" : `<div class="gm-sticky static"><button class="gm-ghost danger" data-g="forfeit">Forfeit match</button></div>`}`;
   }
 
   function renderMatch() {
     const v = G.view;
     const tabs = [["live", "LIVE"], ["card", "SCORECARD"], ["stats", "STATS"], ["info", "INFO"]];
     const body = G.tab === "card" ? scoreTab(v) : G.tab === "stats" ? statsTab(v) : G.tab === "info" ? infoTab(v) : liveTab(v);
-    shell(`${scoreboard(v)}<nav class="gm-tabs">${tabs.map(([k, l]) => `<button class="${G.tab === k ? "on" : ""}" data-g="tab" data-t="${k}">${l}</button>`).join("")}</nav>${body}`, v.stage === "done" ? "Full Time" : "Match Centre", `${esc(v.teams.user.code)} VS ${esc(v.teams.ai.code)}`);
+    shell(`${scoreboard(v)}<nav class="gm-tabs">${tabs.map(([k, l]) => `<button class="${G.tab === k ? "on" : ""}" data-g="tab" data-t="${k}">${l}</button>`).join("")}</nav>${body}<div class="gm-spacer"></div>`, v.stage === "done" ? "Full Time" : "Match Centre", G.spectate ? `👀 LIVE · ${esc(v.teams.user.code)} VS ${esc(v.teams.ai.code)}` : `${esc(v.teams.user.code)} VS ${esc(v.teams.ai.code)}`);
     hydrate();
+    syncSheet();
   }
 
   /* -------------------------------------------------------- ball reveal */
@@ -451,6 +534,7 @@
     const r = await act("play", { choice });
     if (!r) return;
     await reveal(r.game.events);
+    G.sheetMin = false;
     G.tab = "live";
     if (r.game.stage === "done") buzz(r.game.result?.winner === "user" ? "success" : "warning");
     render();
@@ -472,10 +556,11 @@
     if (a === "call") return doCall(el.dataset.call);
     if (a === "decide") return doDecide(el.dataset.d);
     if (a === "start-match") { G.tossShow = false; G.tab = "live"; return render(); }
+    if (a === "sheet-toggle") { G.sheetMin = !G.sheetMin; ping(); return syncSheet(); }
     if (a === "tab") { G.tab = el.dataset.t; return renderMatch(); }
     if (a === "card") { G.card = Number(el.dataset.i); return renderMatch(); }
     if (a === "play") return doPlay(el.dataset.c);
-    if (a === "bowler") { const r = await act("bowler", { slot: Number(el.dataset.slot) }); if (r) renderMatch(); return; }
+    if (a === "bowler") { const r = await act("bowler", { slot: Number(el.dataset.slot) }); G.sheetMin = false; if (r) renderMatch(); return; }
     if (a === "continue") { const r = await act("continue", {}); if (r) { G.tab = "live"; renderMatch(); } return; }
     if (a === "skip") { G.skip = true; return; }
     if (a === "forfeit") return confirmBox("Forfeit this match? It counts as a loss.", "Forfeit", async () => { await act("forfeit", {}); G.tab = "live"; renderMatch(); });
@@ -483,7 +568,7 @@
     if (a === "new") { G.view = null; G.hub = null; return load(); }
   });
 
-  window.CrickiumGame = { load, stop, mountHome };
+  window.CrickiumGame = { load, stop, mountHome, openLink };
 
   /* home entry card */
   async function mountHome() {

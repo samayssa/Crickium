@@ -2116,8 +2116,12 @@
   const launchParams = new URLSearchParams(window.location.search || "");
   const launchParam = String(tg?.initDataUnsafe?.start_param || launchParams.get("tgWebAppStartParam") || launchParams.get("startapp") || "");
   const sharedScoreMatch = launchParam.match(/^score_([A-Z0-9]+)_(\d+)$/i);
+  const playAiLink = launchParam.match(/^pai_([A-Za-z0-9]+)$/);
   if (sharedScoreMatch) {
     openMatch(sharedScoreMatch[1].toUpperCase(), Number(sharedScoreMatch[2]), { shared: true });
+  } else if (playAiLink && window.CrickiumGame) {
+    state.page = "game";
+    window.CrickiumGame.openLink(playAiLink[1]);
   } else {
     loadHome();
   }
