@@ -15,7 +15,8 @@ async def next_match_number() -> int:
           + (SELECT COUNT(*) FROM playint_matches WHERE status='completed')
           + (SELECT COUNT(*) FROM playipl_matches WHERE status='completed')
           + (SELECT COUNT(*) FROM wpl_matches WHERE status='completed')
-          + (SELECT COUNT(*) FROM match_challenges WHERE status='completed');
+          + (SELECT COUNT(*) FROM match_challenges WHERE status='completed')
+          + (SELECT COUNT(*) FROM miniapp_game_results);
         """
     )
     return int(total or 0)
@@ -39,8 +40,10 @@ def _score(snapshot: dict | None) -> str:
     return f"{team} • {int(snapshot.get('runs') or 0)}/{int(snapshot.get('wickets') or 0)} ({snapshot.get('over_text') or '0.0'} Ov)"
 
 
-async def send_match_completion_notification(app, *, engine: str, pitch: str | None, user1: tuple[str | None, str | None], user2: tuple[str | None, str | None], innings_1: dict, innings_2: dict, result: str | None = None) -> None:
-    match_no = await next_match_number()
+async def send_match_completion_notification(app, *, engine: str, pitch: str | None, user1: tuple[str | None, str | None], user2: tuple[str | None, str | None], innings_1: dict, innings_2: dict, result: str | None = None, match_number: int | None = None) -> None:
+    # Callers with a shared completion number can pass it through so the group
+    # notification, summary card and report all show the same match number.
+    match_no = int(match_number) if match_number is not None else await next_match_number()
     result_text = html.escape(str(result or 'Match completed'))
     text = (
         f"<b>🏏 CRICKIUM MATCH COMPLETED #{match_no}</b>\n\n"

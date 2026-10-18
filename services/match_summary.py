@@ -210,6 +210,12 @@ async def completed_match_count() -> int:
         except Exception:
             # Older installations may not have every optional engine table.
             continue
+    try:
+        # Play AI stores only completed results in this ledger; it has no
+        # status column like the live-match tables do.
+        total += int(await fetchval("SELECT COUNT(*) FROM miniapp_game_results;") or 0)
+    except Exception:
+        pass
     return total
 
 
