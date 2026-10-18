@@ -57,6 +57,21 @@ SCHEMA_STATEMENTS = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_miniapp_game_results_user ON miniapp_game_results(user_id, finished_at DESC);",
+    """
+    CREATE TABLE IF NOT EXISTS miniapp_game_links(
+        token TEXT PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        user_name TEXT,
+        chat_id BIGINT NOT NULL,
+        message_id BIGINT,
+        overs INTEGER,
+        game_id TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        result_text TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_miniapp_game_links_user ON miniapp_game_links(user_id, created_at DESC);",
 ]
 
 _ready = False
@@ -370,3 +385,49 @@ async def career_stats(user_id: int) -> dict:
     games = int(stats.get("games") or 0)
     stats["win_pct"] = round(100.0 * int(stats.get("wins") or 0) / games, 1) if games else 0.0
     return stats
+
+
+# ---------------------------------------------------------------------------
+# group links (/playai): one token per command use
+# ---------------------------------------------------------------------------
+async def create_link(user_id: int, user_name: str | None, chat_id: int, message_id: int | None,
+                      overs: int | None) -> str:
+    import secrets
+    await ensure_schema()
+    # an older, never-started link of the same user is replaced
+    await execute("UPDATE miniapp_game_links SET status='expired' WHERE user_id=$1 AND status='open';", int(user_id))
+    token = secrets.token_urlsafe(8).replace("-", "x").replace("_", "y")[:10]
+    await execute(
+        "INSERT INTO miniapp_game_links(token,user_id,user_name,chat_id,message_id,overs) VALUES($1,$2,$3,$4,$5,$6);",
+        token, int(user_id), (user_name or "")[:80], int(chat_id), message_id, overs,
+    )
+    return token
+
+
+async def get_link(token: str) -> dict | None:
+    await ensure_schema()
+    row = await fetchrow(
+        "SELECT token,user_id,user_name,chat_id,message_id,overs,game_id,status,result_text,created_at "
+        "FROM miniapp_game_links WHERE token=$1;", str(token or "")[:32])
+    if not row:
+        return None
+    d = dict(row)
+    d["created_at"] = d["created_at"].isoformat() if d.get("created_at") else None
+    return d
+
+
+async def attach_link(token: str, game_id: str) -> None:
+    await execute("UPDATE miniapp_game_links SET game_id=$2, status='playing' WHERE token=$1;", token, game_id)
+
+
+async def finish_link(token: str, result_text: str | None) -> None:
+    await execute("UPDATE miniapp_game_links SET status='done', result_text=$2 WHERE token=$1;", token,
+                  (result_text or "")[:300])
+
+
+async def load_state_by_id(game_id: str) -> dict | None:
+    row = await fetchrow("SELECT state FROM miniapp_game_sessions WHERE game_id=$1;", game_id)
+    if not row:
+        return None
+    state = _json(row["state"], None)
+    return state if isinstance(state, dict) else None
