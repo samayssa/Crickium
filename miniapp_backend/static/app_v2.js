@@ -55,6 +55,8 @@
     ["profile", "Profile", "◉"],
     ["squad", "Squad management", "♟"],
     ["collection", "Player collection", "▦"],
+    ["game", "Play Game", "🎮"],
+    ["achievements", "Achievements", "🏅"],
     ["quests", "Crickium Quest", "✦"],
     ["rewards", "Daily rewards & Kit Bag", "🎁"],
     ["wallet", "Coins & transactions", "◈"],
@@ -297,12 +299,14 @@
         <div class="progress-track"><i style="width:${Math.max(0, Math.min(100, Number(progress.progress_percent || 0)))}%"></i></div>
         <div class="hero-meta"><span>${esc(home.league?.progress_text || "Level progression")}</span><span>${number(home.squad?.count)}/${number(home.squad?.capacity)} SQUAD</span></div>
       </section>
+      <div id="home-game-slot"></div>
       <div class="stat-grid">
         <div class="stat-tile"><span>WINS</span><b>${number(stats.matches_won)}</b><small>${percent(stats.win_percentage)} win rate</small></div>
         <div class="stat-tile"><span>MATCHES</span><b>${number(stats.matches_played)}</b><small>career record</small></div>
         <div class="stat-tile"><span>GLOBAL RANK</span><b>${stats.rank ? `#${number(stats.rank)}` : "—"}</b><small>${number(stats.runs)} runs</small></div>
         <div class="stat-tile"><span>WICKETS</span><b>${number(stats.wickets)}</b><small>${number(stats.matches_lost)} losses</small></div>
       </div>
+      <div id="home-ach-slot"></div>
       <section class="panel reward-preview">
         <div class="panel-heading"><div><span class="eyebrow">DAILY STREAK</span><h2>${number(daily.streak)} day${daily.streak === 1 ? "" : "s"} claimed</h2></div>
           <button class="text-button" data-page="rewards">View all ›</button></div>
@@ -323,6 +327,7 @@
       ${sectionTitle("Recent matches", `<button class="text-button" data-page="matches">History ›</button>`)}
       ${recent.length ? `<div class="stack">${recent.slice(0, 3).map((item) => matchCard(item)).join("")}</div>` : emptyState("Your match history starts here", "Completed match summaries will appear after the bot records them.")}`;
     shell(content, "Your club");
+    try { window.CrickiumGame?.mountHome?.(); window.CrickiumAch?.mountHome?.(); } catch (_) {}
     await hydrateImages();
   }
 
@@ -1189,8 +1194,9 @@
       const progress = home.progress || {};
       document.getElementById("profile-content").innerHTML = `<section class="profile-card panel">${avatarMarkup(p, "profile-avatar")}<span class="eyebrow">CRICKIUM PLAYER</span><h2>${esc(p.display_name)}</h2><p>${p.username ? `@${esc(p.username)}` : "Telegram username not set"}</p><div class="id-pill">TELEGRAM ID · ${number(p.id)}</div></section>
         <div class="stat-grid"><div class="stat-tile"><span>LEVEL</span><b>${number(progress.level)}</b><small>${number(progress.xp)} XP</small></div><div class="stat-tile"><span>RANK</span><b>${stats.rank ? `#${number(stats.rank)}` : "—"}</b><small>global</small></div><div class="stat-tile"><span>MATCHES</span><b>${number(stats.matches_played)}</b><small>${number(stats.matches_won)} wins</small></div><div class="stat-tile"><span>WIN RATE</span><b>${percent(stats.win_percentage)}</b><small>${number(stats.matches_lost)} losses</small></div></div>
-        <div class="shortcut-grid"><button data-page="squad">♟<b>Squad</b><small>${number(home.squad?.count)} players</small></button><button data-page="collection">▦<b>Collection</b><small>Your owned cards</small></button><button data-page="quests">✦<b>Quests</b><small>Current tasks</small></button><button data-page="wallet">◈<b>Wallet</b><small>Coins & rubies</small></button></div>`;
+        <div id="profile-ach-slot"></div><div class="shortcut-grid"><button data-page="game">🎮<b>Play Game</b><small>Vs computer</small></button><button data-page="squad">♟<b>Squad</b><small>${number(home.squad?.count)} players</small></button><button data-page="collection">▦<b>Collection</b><small>Your owned cards</small></button><button data-page="quests">✦<b>Quests</b><small>Current tasks</small></button><button data-page="wallet">◈<b>Wallet</b><small>Coins & rubies</small></button></div>`;
       hydrateImages();
+      try { window.CrickiumAch?.mountProfile?.(); } catch (_) {}
     } catch (error) {
       document.getElementById("profile-content").innerHTML = errorState(error, "profile");
     }
@@ -1971,6 +1977,7 @@
     if (page !== "player-detail") state.currentPlayerRef = null;
     if (page !== "lineup-swap") state.lineupSwap = null;
     if (page !== "news-detail") state.currentNewsId = null;
+    try { window.CrickiumGame?.stop?.(); } catch (_) {}
     state.page = page;
     state.drawer = false;
     clearInterval(state.matchTimer);
@@ -2003,9 +2010,13 @@
       case "rewards": return loadRewards();
       case "wallet": return loadWallet();
       case "packs": return loadPacks();
+      case "game": return window.CrickiumGame ? window.CrickiumGame.load() : navigate("home", { history: false });
+      case "achievements": return window.CrickiumAch ? window.CrickiumAch.load() : navigate("home", { history: false });
       default: return staticPage(page);
     }
   }
+
+  window.CrickiumApp = { api, shell, esc, number, toast, navigate, hydrateImages, image, ping, state, tg };
 
   document.addEventListener("click", (event) => {
     const pageButton = event.target.closest("[data-page]");
