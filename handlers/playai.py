@@ -17,22 +17,16 @@ def _bot_username() -> str:
 
 
 def _overs_from(text: str) -> int | None:
-    """`/playai 5`, `/playai5`, `/playai@Bot 10`, `/playai 5 overs` -> 5 / 5 / 10 / 5."""
-    first, _, rest = (text or "").strip().partition(" ")
-    glued = re.fullmatch(r"/playai(\d{1,2})(?:@\w+)?", first.lower())
-    candidate = glued.group(1) if glued else (re.match(r"\s*(\d{1,2})\b", rest) or [None, None])[1]
-    try:
-        value = int(candidate) if candidate else None
-    except ValueError:
+    """`/playai` -> None (choose in the app); `/playai 5` or `/playai@Bot 5` -> 5 (only 2, 5, 10, 20)."""
+    rest = (text or "").strip().partition(" ")[2]
+    match = re.match(r"\s*(\d{1,3})\b", rest)
+    if not match:
         return None
+    value = int(match.group(1))
     return value if value in _OVERS else None
 
 
 @register("playai")
-@register("playai2")
-@register("playai5")
-@register("playai10")
-@register("playai20")
 async def playai_command(message):
     chat = message["chat"]
     user = message.get("from") or {}
