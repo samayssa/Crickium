@@ -128,7 +128,13 @@ async def _finish_hooks(user_id: int, game: dict) -> dict:
     _STATS_CACHE.pop(user_id, None)
     link = game.get("link")
     if link and link.get("token"):
+        # started with /playai: report goes where the command was used
         asyncio.create_task(_report_to_group(game, dict(link)))
+    elif game.get("inn"):
+        # played straight in the Mini App: the report goes to the player's DM
+        name = (game.get("teams", {}).get("user", {}) or {}).get("name") or ""
+        asyncio.create_task(_report_to_group(game, {"token": None, "chat_id": int(user_id), "message_id": None,
+                                                    "user_id": int(user_id), "user_name": name}))
     try:
         from services import achievements
         newly = await achievements.check_and_unlock(user_id)
@@ -224,6 +230,7 @@ async def _start(viewer: Any, payload: dict) -> tuple[int, dict]:
         game = ge.new_game(uid, cfg, first_name=ctx["first_name"] or getattr(viewer, "first_name", None),
                            franchise=ctx["franchise"], squad=ctx["squad"], lineup_pids=ctx["lineup"],
                            ai_pool=pool, rng=random.Random())
+        game["owner_username"] = getattr(viewer, "username", None)
         if link:
             game["link"] = {"token": link["token"], "chat_id": int(link["chat_id"]),
                             "message_id": link.get("message_id"), "user_id": uid,
@@ -329,15 +336,16 @@ async def _report_to_group(game: dict, link: dict) -> None:
         from miniapp_backend.config import BOT_TOKEN
         from services import miniapp_game_report as report
         res = game.get("result") or {}
-        try:
-            await repo.finish_link(link["token"], res.get("text"))
-        except Exception as exc:
-            print(f"[miniapp_game] finish_link failed: {type(exc).__name__}")
         view = gv.build_view(game)
-        _FINAL[link["token"]] = (time.time(), view)
-        if len(_FINAL) > 200:
-            for key in sorted(_FINAL, key=lambda k: _FINAL[k][0])[:100]:
-                _FINAL.pop(key, None)
+        if link.get("token"):                       # group link: close it and keep the final view for spectators
+            try:
+                await repo.finish_link(link["token"], res.get("text"))
+            except Exception as exc:
+                print(f"[miniapp_game] finish_link failed: {type(exc).__name__}")
+            _FINAL[link["token"]] = (time.time(), view)
+            if len(_FINAL) > 200:
+                for key in sorted(_FINAL, key=lambda k: _FINAL[k][0])[:100]:
+                    _FINAL.pop(key, None)
         if not game.get("inn"):
             return                                  # nothing was played - no match result to announce
 
@@ -363,7 +371,7 @@ async def _report_to_group(game: dict, link: dict) -> None:
                 telegram_app,
                 engine="PLAY AI",
                 pitch=(game.get("cfg") or {}).get("pitch"),
-                user1=(None, link.get("user_name") or user_team.get("name") or "Player"),
+                user1=(game.get("owner_username"), link.get("user_name") or user_team.get("name") or "Player"),
                 user2=(None, ai_team.get("name") or "Crickium AI"),
                 innings_1=innings[0] if innings else {},
                 innings_2=innings[1] if len(innings) > 1 else {},
