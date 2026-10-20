@@ -36,6 +36,8 @@ button { cursor: pointer; color: inherit; }
 .brand-ball { width: 36px; height: 36px; border-radius: 12px 12px 12px 4px; display: grid; place-items: center; background: var(--lime); color: #13200d; font-weight: 1000; font-size: 20px; }
 .wallet-pills { display: flex; gap: 6px; }
 .wallet-pill { padding: 8px 9px; border-radius: 999px; border: 1px solid var(--line); background: #101e19; color: var(--text); font-size: 11px; font-weight: 750; white-space: nowrap; }
+.wallet-pill { font-family: inherit; line-height: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.wallet-pill:active { transform: scale(.96); }
 .wallet-pill i { color: var(--gold); font-style: normal; margin-right: 4px; }
 .wallet-pill .coin-icon { font-size: 9px; text-shadow: 0 0 5px var(--gold); }
 .ruby-pill i { color: #e996d1; }

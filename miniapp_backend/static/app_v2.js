@@ -54,12 +54,10 @@
   const secondary = [
     ["profile", "Profile", "◉"],
     ["squad", "Squad management", "♟"],
-    ["collection", "Player collection", "▦"],
-    ["game", "Play Game", "🎮"],
     ["achievements", "Achievements", "🏅"],
+    ["giveaways", "Giveaways", "🎉"],
     ["quests", "Crickium Quest", "✦"],
     ["rewards", "Daily rewards & Kit Bag", "🎁"],
-    ["wallet", "Coins & transactions", "◈"],
     ["packs", "Pack Shop", "▣"],
     ["help", "Help & support", "?"],
     ["news", "News Update", "▤"],
@@ -144,8 +142,8 @@
       <button class="menu-button" data-action="drawer" aria-label="Open menu"><span></span><span></span><span></span></button>
       <button class="brand-lockup" data-page="home" aria-label="Crickium home"><span class="brand-ball">C</span><span><b>CRICKIUM</b><small>CRICKET CLUB</small></span></button>
       <div class="wallet-pills">
-        <span class="wallet-pill"><i class="coin-icon">●</i>${number(wallet.coins)}</span>
-        <span class="wallet-pill ruby-pill"><i>◆</i>${number(wallet.rubies)}</span>
+        <button type="button" class="wallet-pill" data-page="wallet" aria-label="Open coins and transactions"><i class="coin-icon">●</i>${number(wallet.coins)}</button>
+        <button type="button" class="wallet-pill ruby-pill" data-page="wallet" aria-label="Open coins and transactions"><i>◆</i>${number(wallet.rubies)}</button>
       </div>
     </header>`;
   }
@@ -758,6 +756,11 @@
     </div>`;
   }
 
+  function packCardsSection(packCards) {
+    if (!packCards.length) return "";
+    return `<section class="managed-roster-section">${sectionTitle(`Pack cards · ${number(packCards.length)}`)}<p class="muted-copy">Cards saved from pack openings are separate from your active squad. Sell a card here to return its listed resale value to your coin balance.</p><div class="player-grid">${packCards.map((item) => `<div class="collection-pack-card">${playerCard(item, true)}<small>${esc(String(item.pack_key || "pack").toUpperCase())} · ${esc(String(item.pack_slot || "bonus").toUpperCase())} · ${number(item.card_ovr)} OVR</small><button class="button sell-button full" data-action="sell-pack-card" data-card-id="${Number(item.card_id)}" data-name="${esc(item.name || "player")}" data-sell-price="${Number(item.sell_price || 0)}">Sell · ${number(item.sell_price)} coins</button></div>`).join("")}</div></section>`;
+  }
+
   function renderSquadList(data, hostId = "squad-list") {
     state.squadData = data;
     const host = document.getElementById(hostId);
@@ -771,6 +774,7 @@
         ${xi.length ? `<div class="player-grid">${xi.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : emptyState("Playing XI not set", "Add at least eleven players to manage your team lineup.")}</section>
       <section class="managed-roster-section">${sectionTitle(`Substitutes · ${number(bench.length)}`, `<button class="button secondary roster-header-action" data-action="open-sell-multiple">Sell Multiple</button>`)}
         ${bench.length ? `<div class="player-grid">${bench.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : emptyState("No substitutes yet", "Own more than eleven players to add substitutes to your Playing XI.")}</section>
+      ${packCardsSection(data.pack_cards || [])}
       <p class="notice">Lineup changes are saved to Crickium’s existing Playing XI record, so bot match flows use the same selected players. Squad sales use the bot price chart and require at least eleven players to remain.</p>`;
     hydrateImages(host);
   }
@@ -918,32 +922,6 @@
     }
   }
 
-  async function loadCollection() {
-    shell(`<div id="collection-list"><div class="loading-line">Loading your collection…</div></div>`, "Player collection", "YOUR PLAYER CARDS");
-    try {
-      const data = await api("/api/collection");
-      state.squadData = data;
-      const squadPlayers = data.players || [];
-      const packCards = data.pack_cards || [];
-      const lineupOrder = new Map((data.lineup_player_ids || []).map((id, index) => [Number(id), index]));
-      const xiPlayers = squadPlayers.filter((item) => item.in_playing_xi).sort((a, b) => (lineupOrder.get(Number(a.squad_player_id ?? a.player_id)) ?? 99) - (lineupOrder.get(Number(b.squad_player_id ?? b.player_id)) ?? 99));
-      const benchPlayers = squadPlayers.filter((item) => !item.in_playing_xi);
-      const squadSection = squadPlayers.length
-        ? `<section class="collection-group">${sectionTitle(`Squad cards · ${number(data.count)}`)}<p class="muted-copy">Manage Playing XI selection or sell a player without leaving the collection.</p>
-            ${sectionTitle(`Playing XI · ${number(xiPlayers.length)}/11`)}<div class="player-grid">${xiPlayers.map((item) => managedPlayerCard(item, data.count)).join("")}</div>
-            ${benchPlayers.length ? `${sectionTitle(`Substitutes · ${number(benchPlayers.length)}`)}<div class="player-grid">${benchPlayers.map((item) => managedPlayerCard(item, data.count)).join("")}</div>` : ""}</section>`
-        : `<section class="collection-group">${emptyState("Your squad is empty", "Player cards currently assigned to your active squad appear here.")}</section>`;
-      const packSection = packCards.length
-        ? `<section class="collection-group">${sectionTitle(`Pack collection · ${number(packCards.length)}`)}<p class="muted-copy">Cards saved from pack openings are separate from your active squad. Sell a card here to return its listed resale value to your coin balance.</p><div class="player-grid">${packCards.map((item) => `<div class="collection-pack-card">${playerCard(item, true)}<small>${esc(String(item.pack_key || "pack").toUpperCase())} · ${esc(String(item.pack_slot || "bonus").toUpperCase())} · ${number(item.card_ovr)} OVR</small><button class="button sell-button full" data-action="sell-pack-card" data-card-id="${Number(item.card_id)}" data-name="${esc(item.name || "player")}" data-sell-price="${Number(item.sell_price || 0)}">Sell · ${number(item.sell_price)} coins</button></div>`).join("")}</div></section>`
-        : `<section class="collection-group">${emptyState("No pack cards yet", "Cards you open from packs will be saved here without being added to your active squad automatically.")}</section>`;
-      document.getElementById("collection-list").innerHTML = squadSection + packSection + `<p class="notice">Selling a squad card updates the same squad used by bot commands. Pack-owned cards are sold from their separate collection inventory.</p>`;
-      hydrateImages();
-    } catch (error) {
-      document.getElementById("collection-list").innerHTML = errorState(error, "collection");
-    }
-  }
-
-
   async function startLineupSwap(playerId, mode) {
     state.lineupSwap = { player_id: Number(playerId), mode: mode === "add" ? "add" : "remove" };
     pushRoute({ page: "lineup-swap", lineupSwap: state.lineupSwap });
@@ -1011,8 +989,7 @@
       if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
       if (state.home?.wallet) state.home.wallet.coins = result.balance;
       const soldName = result.player?.name || "Player";
-      const page = state.page === "collection" ? "collection" : "squad";
-      await (page === "collection" ? loadCollection() : loadSquad());
+      await loadSquad();
       toast(`${soldName} sold for ${number(result.sell_price)} coins.`);
       ping("medium");
     } catch (error) {
@@ -1027,7 +1004,7 @@
       const result = await api("/api/collection/sell-pack-card", { method: "POST", body: JSON.stringify({ card_id: Number(cardId) }) });
       if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
       if (state.home?.wallet) state.home.wallet.coins = result.balance;
-      await loadCollection();
+      await loadSquad();
       toast(`${result.player?.name || "Player"} sold for ${number(result.sell_price)} coins.`);
       ping("medium");
     } catch (error) {
@@ -1194,7 +1171,7 @@
       const progress = home.progress || {};
       document.getElementById("profile-content").innerHTML = `<section class="profile-card panel">${avatarMarkup(p, "profile-avatar")}<span class="eyebrow">CRICKIUM PLAYER</span><h2>${esc(p.display_name)}</h2><p>${p.username ? `@${esc(p.username)}` : "Telegram username not set"}</p><div class="id-pill">TELEGRAM ID · ${number(p.id)}</div></section>
         <div class="stat-grid"><div class="stat-tile"><span>LEVEL</span><b>${number(progress.level)}</b><small>${number(progress.xp)} XP</small></div><div class="stat-tile"><span>RANK</span><b>${stats.rank ? `#${number(stats.rank)}` : "—"}</b><small>global</small></div><div class="stat-tile"><span>MATCHES</span><b>${number(stats.matches_played)}</b><small>${number(stats.matches_won)} wins</small></div><div class="stat-tile"><span>WIN RATE</span><b>${percent(stats.win_percentage)}</b><small>${number(stats.matches_lost)} losses</small></div></div>
-        <div id="profile-ach-slot"></div><div class="shortcut-grid"><button data-page="game">🎮<b>Play Game</b><small>Vs computer</small></button><button data-page="squad">♟<b>Squad</b><small>${number(home.squad?.count)} players</small></button><button data-page="collection">▦<b>Collection</b><small>Your owned cards</small></button><button data-page="quests">✦<b>Quests</b><small>Current tasks</small></button><button data-page="wallet">◈<b>Wallet</b><small>Coins & rubies</small></button></div>`;
+        <div id="profile-ach-slot"></div><div class="shortcut-grid"><button data-page="squad">♟<b>Squad</b><small>${number(home.squad?.count)} players</small></button><button data-page="quests">✦<b>Quests</b><small>Current tasks</small></button><button data-page="wallet">◈<b>Wallet</b><small>Coins & rubies</small></button></div>`;
       hydrateImages();
       try { window.CrickiumAch?.mountProfile?.(); } catch (_) {}
     } catch (error) {
@@ -1978,6 +1955,7 @@
     if (page !== "lineup-swap") state.lineupSwap = null;
     if (page !== "news-detail") state.currentNewsId = null;
     try { window.CrickiumGame?.stop?.(); } catch (_) {}
+    try { window.CrickiumGiveaway?.stop?.(); } catch (_) {}
     state.page = page;
     state.drawer = false;
     clearInterval(state.matchTimer);
@@ -1999,7 +1977,6 @@
       case "rank": return loadRank();
       case "profile": return loadProfile();
       case "squad": return loadSquad();
-      case "collection": return loadCollection();
       case "lineup-swap": return loadLineupSwap();
       case "lineup-order": return loadPlayingOrder();
       case "sell-multiple": return loadSellMultiple();
@@ -2011,6 +1988,7 @@
       case "wallet": return loadWallet();
       case "packs": return loadPacks();
       case "game": return window.CrickiumGame ? window.CrickiumGame.load() : navigate("home", { history: false });
+      case "giveaways": return window.CrickiumGiveaway ? window.CrickiumGiveaway.load() : navigate("home", { history: false });
       case "achievements": return window.CrickiumAch ? window.CrickiumAch.load() : navigate("home", { history: false });
       default: return staticPage(page);
     }
@@ -2117,7 +2095,11 @@
   const launchParam = String(tg?.initDataUnsafe?.start_param || launchParams.get("tgWebAppStartParam") || launchParams.get("startapp") || "");
   const sharedScoreMatch = launchParam.match(/^score_([A-Z0-9]+)_(\d+)$/i);
   const playAiLink = launchParam.match(/^pai_([A-Za-z0-9]+)$/);
-  if (sharedScoreMatch) {
+  const giveawayLink = launchParam.match(/^gw_(\d+)$/);
+  if (giveawayLink && window.CrickiumGiveaway) {
+    state.page = "giveaways";
+    window.CrickiumGiveaway.load();
+  } else if (sharedScoreMatch) {
     openMatch(sharedScoreMatch[1].toUpperCase(), Number(sharedScoreMatch[2]), { shared: true });
   } else if (playAiLink && window.CrickiumGame) {
     state.page = "game";
