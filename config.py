@@ -69,3 +69,17 @@ PLAYER_IMAGE_CHANNEL_ID = -1003958908828
 
 # Group where bot-level user/group notifications are sent.
 NOTIFICATION_GROUP_ID = -1003588964307
+
+# ==========================
+# Giveaway Configuration
+# ==========================
+
+# Main community group. Only members of this group can take part in a
+# /giveaway, and the winner announcement is posted here. The bot should be an
+# ADMIN of this group so Telegram lets it check membership of any user.
+MAIN_GROUP_ID = -1002374007744
+
+# Optional invite / public link of the main group (https://t.me/...). Leave it
+# empty and the bot will detect the link by itself (public username, or an
+# invite link it exports when it has the "invite users" admin right).
+MAIN_GROUP_LINK = "https://t.me/CrickiumHub"
