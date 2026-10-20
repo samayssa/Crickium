@@ -158,7 +158,7 @@ async def _send_static(send, path: str):
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
     # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
-    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js"}
+    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js", "giveaway_ui.css", "giveaway_ui.js"}
     cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
     await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
 
@@ -398,6 +398,10 @@ class CrickiumMiniApp:
             if path == "/api/quests":
                 await _send_json(send, await api.build_quests_response(viewer))
                 return
+            if path == "/api/giveaways":
+                from . import giveaway_api
+                await _send_json(send, await giveaway_api.build_list(viewer))
+                return
             if path == "/api/achievements":
                 from services import achievements
                 await _send_json(send, await achievements.build_response(int(viewer.id), viewer))
@@ -619,6 +623,18 @@ class CrickiumMiniApp:
             result = await api.claim_daily_reward(viewer)
             status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"cooldown", "squad_full", "no_player"} else 403 if result.get("status") == "debut_required" else 500
             await _send_json(send, result, status)
+            return
+        if path == "/api/giveaways/join":
+            from . import giveaway_api
+            try:
+                gid = int(payload.get("id") or 0)
+            except (TypeError, ValueError):
+                gid = 0
+            if gid <= 0:
+                await _send_json(send, {"ok": False, "detail": "Invalid giveaway"}, 400)
+                return
+            status, data = await giveaway_api.join(viewer, gid)
+            await _send_json(send, data, status)
             return
         if path == "/api/rewards/kitbag":
             result = await api.claim_kitbag(viewer)
