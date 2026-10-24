@@ -1,0 +1,8 @@
+Bundled fonts: Poppins (Bold, Medium, Regular)
+Source: Google Fonts (https://fonts.google.com/specimen/Poppins)
+License: SIL Open Font License 1.1 (https://openfontlicense.org)
+
+These fonts are bundled directly under services/fonts/ so player card
+image generation does not depend on any fonts being installed on the
+device running the bot (e.g. Pydroid3 on Android does not ship system
+fonts like this).

@@ -1,0 +1,53 @@
+Cricket Bot Structure Update
+
+Completed core files:
+- app.py
+- main.py
+- config.py
+- bot_api.py
+- handlers/__init__.py
+- handlers/registry.py
+- handlers/start_dm.py
+- handlers/debut.py
+- handlers/upload_players.py
+- handlers/match.py
+- handlers/team.py
+- handlers/pxl.py
+- database/connection.py
+- database/query.py
+- database/migrate.py
+- database/challenges_repo.py
+- database/players_repo.py
+- database/squads_repo.py
+- engines/probability_engine.py
+- engines/delivery_engine.py
+- engines/shot_engine.py
+- engines/score_engine.py
+- engines/innings_engine.py
+- engines/commentary_engine.py
+- engines/players_engine.py
+- engines/squad_engine.py
+- engines/lineup_engine.py
+- engines/toss_engine.py
+- engines/match_engine.py
+- engines/state_engine.py
+- buttons/challenge_buttons.py
+- buttons/decision_buttons.py
+- buttons/delivery_buttons.py
+- buttons/shot_buttons.py
+- buttons/toss_buttons.py
+- buttons/lineup_buttons.py
+- models/player.py
+- models/squad.py
+- models/match.py
+- models/challenge.py
+- utils/constants.py
+- utils/mentions.py
+- utils/markup.py
+- utils/timers.py
+
+Still pending / future work:
+- delivery flow callback handlers
+- shot flow callback handlers
+- over-end bowler rotation callback
+- advanced match scorecard screens

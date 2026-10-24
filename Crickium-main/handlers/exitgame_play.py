@@ -1,0 +1,593 @@
+from __future__ import annotations
+
+print("exitgame_play.py loaded")
+
+from handlers.registry import register, register_callback
+from app import app
+from services.quest_engine import record_quest_event
+from database.query import execute
+from database.play_repo import get_active_match_in_chat, get_match, update_status
+from database.playint_repo import get_active_match_in_chat as get_playint_match_in_chat, get_match as get_playint_match, update_status as update_playint_status
+from database.playipl_repo import get_active_match_in_chat as get_playipl_match_in_chat, get_match as get_playipl_match, update_status as update_playipl_status
+from database.playwpl_repo import get_active_match_in_chat as get_playwpl_match_in_chat, get_match as get_playwpl_match, update_status as update_playwpl_status
+from database.playso_repo import get_active_match_in_chat as get_playso_match_in_chat, get_match as get_playso_match, set_state as set_playso_state
+from buttons.playint_buttons import exit_confirm_keyboard as playint_exit_confirm_keyboard
+from buttons.playipl_buttons import exit_confirm_keyboard as playipl_exit_confirm_keyboard
+from buttons.playwpl_buttons import exit_confirm_keyboard as playwpl_exit_confirm_keyboard
+from engines.playint_runtime import get_playint_session, clear_playint_session
+from engines.playipl_runtime import get_playipl_session, clear_playipl_session, get_playipl_session_in_chat
+from engines.playwpl_runtime import get_playwpl_session, clear_playwpl_session, get_playwpl_session_in_chat
+from database.user_stats_repo import add_match_xp, record_match_result, record_h2h_result
+from engines.level_engine import WIN_XP, EXIT_PENALTY_XP
+from engines.play_runtime import clear_session, get_session
+from services.player_match_stats import record_session_player_stats
+from utils.mentions import mention_html
+from services.match_analysis import collect_match_row, collect_playso_match, collect_runtime_session, send_report
+from buttons.play_buttons import exit_confirm_keyboard
+from buttons.playso_buttons import exit_confirm_keyboard as playso_exit_confirm_keyboard
+from utils.game_inactivity import cancel_match as cancel_inactivity_match
+
+NO_KEYBOARD = {"inline_keyboard": []}
+EXIT_PENALTY = 5000
+
+
+def _is_participant(match: dict, user_id: int) -> bool:
+    return int(user_id) in (int(match["challenger_id"]), int(match["opponent_id"]))
+
+
+async def _remove_game_option_messages(chat_id: int, match: dict, session=None) -> None:
+    """Delete current setup/live option messages once an exit is confirmed."""
+    ids = set()
+    try:
+        mid = int(match.get("message_id") or 0)
+        if mid:
+            ids.add(mid)
+    except (TypeError, ValueError):
+        pass
+    if session is not None:
+        for attr in ("live_message_id", "ready_message_id", "short_message_id"):
+            try:
+                mid = int(getattr(session, attr, 0) or 0)
+                if mid:
+                    ids.add(mid)
+            except (TypeError, ValueError):
+                pass
+    for mid in ids:
+        try:
+            await app.delete_message(chat_id, mid)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed deleting game option message {mid}: {exc!r}")
+
+
+@register("exitgame")
+async def exitgame_command(message):
+    chat_id = message["chat"]["id"]
+    user_id = message.get("from", {}).get("id")
+
+    print(f"[exitgame_play] /exitgame invoked by user_id={user_id} in chat_id={chat_id}")
+
+    match = await get_active_match_in_chat(chat_id)
+    engine = "play"
+    if not match:
+        match = await get_playint_match_in_chat(chat_id)
+        engine = "playint" if match else None
+    if not match:
+        match = await get_playipl_match_in_chat(chat_id)
+        engine = "playipl" if match else None
+    if not match:
+        match = await get_playwpl_match_in_chat(chat_id)
+        engine = "playwpl" if match else None
+    if not match:
+        match = await get_playso_match_in_chat(chat_id)
+        engine = "playso" if match else None
+    if not match:
+        await app.send_message(chat_id, "<b>⚠️ There's no active game in this chat to exit.</b>", parse_mode="HTML")
+        return
+
+    if not _is_participant(match, user_id):
+        await app.send_message(chat_id, "<b>⚠️ You're not part of this match.</b>", parse_mode="HTML")
+        return
+
+    if engine == "play":
+        keyboard = exit_confirm_keyboard(match["match_id"])
+    elif engine == "playint":
+        keyboard = playint_exit_confirm_keyboard(match["match_id"])
+    elif engine == "playso":
+        keyboard = playso_exit_confirm_keyboard(match["match_id"])
+    elif engine == "playwpl":
+        keyboard = playwpl_exit_confirm_keyboard(match["match_id"])
+    else:
+        keyboard = playipl_exit_confirm_keyboard(match["match_id"])
+    await app.send_message(
+        chat_id,
+        (
+            "<b>⚠️ EXIT GAME?\n\n"
+            "Are you sure you want to exit the game?\n"
+            f"Result: you will receive -{EXIT_PENALTY:,} coins penalty</b>"
+        ),
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    print(f"[exitgame_play] Confirmation prompt sent to chat_id={chat_id}, requested by user_id={user_id}")
+
+
+@register_callback("play_exit_yes")
+async def on_play_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+
+    print(f"[exitgame_play] play_exit_yes clicked by user_id={presser['id']} for match_id={match_id}")
+
+    match = await get_match(match_id)
+    if not match or match["status"] in {"declined", "completed", "ended"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        return
+
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Exiting the game...")
+
+    try:
+        await execute(
+            "UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;",
+            EXIT_PENALTY, presser["id"],
+        )
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] Failed to apply coin penalty to user_id={presser['id']}: {exc!r}")
+
+    live_session = get_session(match_id)
+    if live_session:
+        try:
+            await record_session_player_stats(live_session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist player performance before exit for match_id={match_id}: {exc!r}")
+
+    try:
+        await update_status(match_id, "ended")
+    except Exception as exc:
+        print(f"[exitgame_play] Failed to update match_id={match_id} status to ended: {exc!r}")
+
+    # XP + stats: the exiter gets nothing for this match, the player who
+    # stayed is treated as the winner (full win XP + a recorded win).
+    try:
+        stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] Failed to award XP/stats for match_id={match_id}: {exc!r}")
+
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAY", live_session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if live_session else collect_match_row(
+                "PLAY", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAY exit report failed: {exc!r}")
+
+    await _remove_game_option_messages(chat_id, match, live_session)
+
+    try:
+        clear_session(match_id)
+    except Exception as exc:
+        print(f"[exitgame_play] Failed to clear play session for match_id={match_id}: {exc!r}")
+
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    await app.edit_message_text(
+        chat_id,
+        message_id,
+        (
+            "<b>🏳️ MATCH ENDED\n\n"
+            f"{exiter_mention} exited the game.\n"
+            f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>"
+        ),
+        parse_mode="HTML",
+        reply_markup=NO_KEYBOARD,
+    )
+    print(f"[exitgame_play] Match ended by user_id={presser['id']} in chat_id={chat_id}, match_id={match_id}")
+
+
+@register_callback("playint_exit_yes")
+async def on_playint_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    match = await get_playint_match(match_id)
+    if not match or match["status"] in {"declined", "completed", "ended"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        return
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Exiting the game...")
+    try:
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayInt penalty failed: {exc!r}")
+    playint_session = get_playint_session(match_id)
+    if playint_session:
+        try:
+            await record_session_player_stats(playint_session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist PlayInt player performance before exit for match_id={match_id}: {exc!r}")
+
+    try:
+        await update_playint_status(match_id, "ended")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayInt status update failed: {exc!r}")
+    stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+    try:
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] PlayInt XP/stats failed: {exc!r}")
+    session = playint_session
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYINT", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYINT", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYINT exit report failed: {exc!r}")
+    await _remove_game_option_messages(chat_id, match, session)
+    if session:
+        clear_playint_session(match_id)
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    await app.edit_message_text(chat_id, message_id, ("<b>🏳️ MATCH ENDED\n\n" f"{exiter_mention} exited the game.\n" f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>"), parse_mode="HTML", reply_markup=NO_KEYBOARD)
+
+
+@register_callback("playint_exit_cancel")
+async def on_playint_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    match = await get_playint_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The match continues.")
+    await app.edit_message_text(chat_id, message_id, "<b>✅ Match continues.\nThe exit request was cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+
+
+@register_callback("play_exit_cancel")
+async def on_play_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+
+    print(f"[exitgame_play] play_exit_cancel clicked by user_id={presser['id']} for match_id={match_id}")
+
+    match = await get_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The match continues.")
+    await app.edit_message_text(
+        chat_id,
+        message_id,
+        "<b>✅ Match continues.\nThe exit request was cancelled.</b>",
+        parse_mode="HTML",
+        reply_markup=NO_KEYBOARD,
+    )
+
+
+@register_callback("playipl_exit_yes")
+async def on_playipl_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    print(f"[exitgame_play] playipl_exit_yes clicked by user_id={presser['id']} for match_id={match_id}")
+
+    match = await get_playipl_match(match_id)
+    if not match or match["status"] in {"declined", "completed", "ended"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        return
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Exiting the game...")
+    try:
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayIPL penalty failed: {exc!r}")
+
+    session = get_playipl_session(match_id)
+    if session:
+        try:
+            await record_session_player_stats(session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist PlayIPL player performance before exit for match_id={match_id}: {exc!r}")
+
+    try:
+        await update_playipl_status(match_id, "ended")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayIPL status update failed: {exc!r}")
+
+    try:
+        stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] PlayIPL XP/stats failed: {exc!r}")
+
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYIPL", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYIPL", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYIPL exit report failed: {exc!r}")
+    await _remove_game_option_messages(chat_id, match, session)
+    if session:
+        clear_playipl_session(match_id)
+
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    await app.edit_message_text(
+        chat_id, message_id,
+        "<b>🏳️ MATCH ENDED\n\n"
+        f"{exiter_mention} exited the game.\n"
+        f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>",
+        parse_mode="HTML", reply_markup=NO_KEYBOARD,
+    )
+
+
+@register_callback("playipl_exit_cancel")
+async def on_playipl_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    match = await get_playipl_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The match continues.")
+    await app.edit_message_text(chat_id, message_id, "<b>✅ Match continues.\nThe exit request was cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+
+
+@register_callback("playwpl_exit_yes")
+async def on_playwpl_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    print(f"[exitgame_play] playwpl_exit_yes clicked by user_id={presser['id']} for match_id={match_id}")
+
+    match = await get_playwpl_match(match_id)
+    if not match or match["status"] in {"declined", "completed", "ended"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        return
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Exiting the game...")
+    try:
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayWPL penalty failed: {exc!r}")
+
+    session = get_playwpl_session(match_id)
+    if session:
+        try:
+            await record_session_player_stats(session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist PlayWPL player performance before exit for match_id={match_id}: {exc!r}")
+
+    try:
+        await update_playwpl_status(match_id, "ended")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayWPL status update failed: {exc!r}")
+
+    try:
+        stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] PlayWPL XP/stats failed: {exc!r}")
+
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYWPL", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYWPL", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYWPL exit report failed: {exc!r}")
+    await _remove_game_option_messages(chat_id, match, session)
+    if session:
+        clear_playwpl_session(match_id)
+
+    try:
+        cancel_inactivity_match("PLAYWPL", match_id)
+    except Exception as exc:
+        print(f"[exitgame_play] Failed cancelling PlayWPL inactivity timer for match_id={match_id}: {exc!r}")
+
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    await app.edit_message_text(
+        chat_id, message_id,
+        "<b>🏳️ MATCH ENDED\n\n"
+        f"{exiter_mention} exited the game.\n"
+        f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>",
+        parse_mode="HTML", reply_markup=NO_KEYBOARD,
+    )
+
+
+@register_callback("playwpl_exit_cancel")
+async def on_playwpl_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    match = await get_playwpl_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The match continues.")
+    await app.edit_message_text(chat_id, message_id, "<b>✅ Match continues.\nThe exit request was cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+
+
+@register_callback("playso_exit_yes")
+async def on_playso_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = int(callback_query["message"]["chat"]["id"])
+    message_id = int(callback_query["message"]["message_id"])
+    match = await get_playso_match(match_id)
+
+    if not match or match["status"] in {"declined", "completed", "ended", "expired", "timed_out"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        try:
+            await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        except Exception:
+            pass
+        return
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Exiting the Super Over...")
+    try:
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] PlaySO penalty failed: {exc!r}")
+
+    stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+    try:
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(900_000_000_000_000_000 + int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] PlaySO XP/stats failed: {exc!r}")
+
+    report_state = dict(match.get("state") or {})
+    try:
+        await send_report(
+            app,
+            collect_playso_match(
+                dict(match), report_state, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited the Super Over",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYSO exit report failed: {exc!r}")
+
+    await _remove_game_option_messages(chat_id, match)
+
+    try:
+        await set_playso_state(match_id, match.get("state") or {}, status="ended")
+        cancel_inactivity_match("PLAYSO", match_id)
+    except Exception as exc:
+        print(f"[exitgame_play] Failed ending PlaySO match_id={match_id}: {exc!r}")
+
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    try:
+        await app.edit_message_text(
+            chat_id,
+            message_id,
+            (
+                "<b>🏳️ PLAYSO ENDED\n\n"
+                f"{exiter_mention} exited the Super Over.\n"
+                f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>"
+            ),
+            parse_mode="HTML",
+            reply_markup=NO_KEYBOARD,
+        )
+    except Exception as exc:
+        print(f"[exitgame_play] Failed to edit PlaySO exit confirmation: {exc!r}")
+
+
+@register_callback("playso_exit_cancel")
+async def on_playso_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = int(callback_query["message"]["chat"]["id"])
+    message_id = int(callback_query["message"]["message_id"])
+    match = await get_playso_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The Super Over continues.")
+    try:
+        await app.edit_message_text(chat_id, message_id, "<b>✅ Super Over continues.\nThe exit request was cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+    except Exception as exc:
+        print(f"[exitgame_play] Failed to edit PlaySO exit cancel message: {exc!r}")
