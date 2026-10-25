@@ -55,6 +55,7 @@
     ["profile", "Profile", "◉"],
     ["squad", "Squad management", "♟"],
     ["achievements", "Achievements", "🏅"],
+    ["tournaments", "Tournaments", "🏆"],
     ["giveaways", "Giveaways", "🎉"],
     ["quests", "Crickium Quest", "✦"],
     ["rewards", "Daily rewards & Kit Bag", "🎁"],
@@ -1956,6 +1957,7 @@
     if (page !== "news-detail") state.currentNewsId = null;
     try { window.CrickiumGame?.stop?.(); } catch (_) {}
     try { window.CrickiumGiveaway?.stop?.(); } catch (_) {}
+    try { window.CrickiumTournament?.stop?.(); } catch (_) {}
     state.page = page;
     state.drawer = false;
     clearInterval(state.matchTimer);
@@ -1988,13 +1990,14 @@
       case "wallet": return loadWallet();
       case "packs": return loadPacks();
       case "game": return window.CrickiumGame ? window.CrickiumGame.load() : navigate("home", { history: false });
+      case "tournaments": return window.CrickiumTournament ? window.CrickiumTournament.load() : navigate("home", { history: false });
       case "giveaways": return window.CrickiumGiveaway ? window.CrickiumGiveaway.load() : navigate("home", { history: false });
       case "achievements": return window.CrickiumAch ? window.CrickiumAch.load() : navigate("home", { history: false });
       default: return staticPage(page);
     }
   }
 
-  window.CrickiumApp = { api, shell, esc, number, toast, navigate, hydrateImages, image, ping, state, tg };
+  window.CrickiumApp = { api, shell, esc, number, toast, navigate, hydrateImages, image, ping, state, tg, openMatch };
 
   document.addEventListener("click", (event) => {
     const pageButton = event.target.closest("[data-page]");
@@ -2096,7 +2099,12 @@
   const sharedScoreMatch = launchParam.match(/^score_([A-Z0-9]+)_(\d+)$/i);
   const playAiLink = launchParam.match(/^pai_([A-Za-z0-9]+)$/);
   const giveawayLink = launchParam.match(/^gw_(\d+)$/);
-  if (giveawayLink && window.CrickiumGiveaway) {
+  const aucLink = launchParam.match(/^auc_(\d+)$/);
+  const tourLink = launchParam.match(/^tour_(\d+)$/);
+  if ((aucLink || tourLink) && window.CrickiumTournament) {
+    state.page = "tournaments";
+    if (aucLink) window.CrickiumTournament.openRoom(Number(aucLink[1])); else window.CrickiumTournament.openHub(Number(tourLink[1]));
+  } else if (giveawayLink && window.CrickiumGiveaway) {
     state.page = "giveaways";
     window.CrickiumGiveaway.load();
   } else if (sharedScoreMatch) {
