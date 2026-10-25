@@ -747,6 +747,55 @@ async def on_prize(cq):
 # ---------------------------------------------------------------------------
 # assign / remove owners
 # ---------------------------------------------------------------------------
+TEAMOWN_HELP = ("👥 <b>Team owners</b>\n<blockquote>"
+                "<b>Add</b> (3 ways)\n"
+                "1️⃣ Reply to the user's message: <code>/teamown CSK</code>\n"
+                "2️⃣ By username: <code>/teamown @username CSK</code>\n"
+                "3️⃣ By user ID: <code>/teamown 123456789 CSK</code>\n\n"
+                "<b>Remove</b> (same 3 ways + by team)\n"
+                "1️⃣ Reply: <code>/teamown remove</code>\n"
+                "2️⃣ <code>/teamown remove @username</code>\n"
+                "3️⃣ <code>/teamown remove 123456789</code>\n"
+                "🏷 <code>/teamown remove CSK</code></blockquote>")
+
+
+async def _lookup_user(token: str) -> dict | None:
+    """@username or numeric user id -> {"id", "username", "first_name"} (None when a username is unknown)."""
+    from database.query import fetchrow
+    token = token.strip()
+    row = None
+    if token.startswith("@"):
+        name = token[1:].lower()
+        if not name:
+            return None
+        row = await fetchrow("SELECT user_id, username, first_name FROM users WHERE LOWER(username)=$1 LIMIT 1;", name)
+        if row is None:
+            row = await fetchrow("SELECT user_id, username, first_name FROM tour_members WHERE LOWER(username)=$1 LIMIT 1;", name)
+        if row is None:
+            try:
+                from services.giveaway import tg_call
+                chat = await tg_call("getChat", {"chat_id": "@" + name})
+                if isinstance(chat, dict) and chat.get("type") == "private" and chat.get("id"):
+                    return {"id": int(chat["id"]), "username": chat.get("username") or name, "first_name": chat.get("first_name") or name}
+            except Exception:
+                pass
+            return None
+    elif token.isdigit():
+        uid = int(token)
+        row = await fetchrow("SELECT user_id, username, first_name FROM users WHERE user_id=$1;", uid)
+        if row is None:
+            row = await fetchrow("SELECT user_id, username, first_name FROM tour_members WHERE user_id=$1 LIMIT 1;", uid)
+        if row is None:
+            return {"id": uid, "username": None, "first_name": "Player"}
+    if row is None:
+        return None
+    return {"id": int(row["user_id"]), "username": row["username"], "first_name": row["first_name"] or row["username"] or "Player"}
+
+
+def _is_user_token(tok: str) -> bool:
+    return tok.startswith("@") or (tok.isdigit() and len(tok) >= 5)
+
+
 @register("teamown")
 async def teamown_command(message):
     chat_id, _ = _chat(message)
@@ -757,32 +806,69 @@ async def teamown_command(message):
         return
     tid = int(t["tid"])
     words = _args(message).split()
-    remove = bool(words) and words[0].lower() in ("remove", "rm", "del")
+    remove = bool(words) and words[0].lower() in ("remove", "rm", "del", "delete")
     if remove:
         words = words[1:]
+    user_tok = next((w for w in words if _is_user_token(w)), None)
+    team_words = [w for w in words if w is not user_tok]
     teams = await tr.teams(tid)
-    team_no = tc._resolve_team(" ".join(words), teams) if words else None
-    target = ((message.get("reply_to_message") or {}).get("from")) or None
+    team_no = tc._resolve_team(" ".join(team_words), teams) if team_words else None
+    wanted = " ".join(team_words)
+    if team_words and team_no is None and (remove or t["status"] != "registration"):
+        await _send(chat_id, f"⚠️ I could not find the team “{tx.esc(wanted)}”. Use its short name like <code>CSK</code> or <code>#2</code>.")
+        return
+    target = None
+    reply_from = ((message.get("reply_to_message") or {}).get("from")) or None
+    if user_tok:
+        target = await _lookup_user(user_tok)
+        if target is None:
+            await _send(chat_id, f"⚠️ I do not know {tx.esc(user_tok)} yet — they must have used this bot once. Reply to their message instead, or use their user ID.")
+            return
+    elif reply_from and not reply_from.get("is_bot"):
+        target = {"id": int(reply_from["id"]), "username": reply_from.get("username"), "first_name": reply_from.get("first_name") or "Player"}
     if remove:
         if team_no is None and target:
             hit = await tr.team_of_user(tid, int(target["id"]))
             team_no = int(hit["team_no"]) if hit else None
+            if team_no is None:
+                await _send(chat_id, f"{tv.e(target['first_name'])} does not own a team here.")
+                return
         if team_no is None:
-            await _send(chat_id, "Usage: <code>/teamown remove CSK</code> (or reply to the user's message with /teamown remove)")
+            await _send(chat_id, TEAMOWN_HELP)
             return
-        await tr.remove_owner(tid, team_no, delete_if_registration=False)
-        await _send(chat_id, "✅ Owner removed from the team.")
+        gone = await tr.remove_owner(tid, team_no, delete_if_registration=False)
+        await _send(chat_id, f"✅ Owner removed from <b>{tx.esc(tx.team_short(await tr.team(tid, team_no)))}</b>."
+                    if gone else "That team has no owner.")
         await _refresh_lobby(tid)
         return
-    if team_no is None or not target:
-        await _send(chat_id, "Reply to the user's message: <code>/teamown CSK</code>\nRemove: <code>/teamown remove CSK</code>")
+    if not wanted or target is None:
+        await _send(chat_id, TEAMOWN_HELP)
         return
     try:
-        await tr.assign_owner(tid, team_no, {"id": int(target["id"]), "username": target.get("username"), "first_name": target.get("first_name") or "Player"})
+        if team_no is None:      # the slot does not exist yet (registration): open it for this owner
+            if t["engine"] == "PLAY":
+                short = re.sub(r"[^A-Z]", "", wanted.upper())[:4] or "TEAM"
+                taken = {x["base_code"] for x in teams}
+                while short in taken or len(short) < 2:
+                    short = (short + "X")[:6]
+                err = await _join_team(t, target, short, tc.clean_name(wanted) or short, short)
+            else:
+                base = next((c for c in _franchise_codes(t["engine"]) if c.casefold() == wanted.casefold()), None)
+                if base is None:
+                    await _send(chat_id, f"⚠️ “{tx.esc(wanted)}” is not a team of this tournament. Options: " + ", ".join(_franchise_codes(t["engine"])))
+                    return
+                err = await _join_team(t, target, base, _franchise_name(t["engine"], base), base)
+            if err:
+                await _send(chat_id, f"⚠️ {tx.esc(err)}")
+                return
+            team_no = int((await tr.team_of_user(tid, int(target["id"])) or {}).get("team_no") or 0)
+        else:
+            await tr.assign_owner(tid, team_no, target)
     except tr.TourError as exc:
         await _send(chat_id, f"⚠️ {tx.esc(str(exc))}")
         return
-    await _send(chat_id, f"✅ {tv.e(target.get('first_name'))} now owns <b>{tx.esc(tx.team_short(await tr.team(tid, team_no)))}</b>.")
+    await _send(chat_id, f"✅ {tv.owner_mention({'owner_id': target['id'], 'owner_username': target.get('username'), 'owner_name': target['first_name']})} "
+                f"now owns <b>{tx.esc(tx.team_short(await tr.team(tid, team_no)))}</b>.")
     await _refresh_lobby(tid)
 
 
@@ -801,21 +887,34 @@ async def auction_command(message):
     await _send(chat_id, text, kb)
 
 
-@register_callback("trb")
-async def on_bid(cq):
-    p = _parts(cq)
-    try:
-        tid, ord_, price = int(p[1]), int(p[2]), int(p[3])
-    except (IndexError, ValueError):
-        await _answer(cq, "Invalid bid.", True)
+@register("bid")
+async def bid_command(message):
+    """Team owners bid with /bid in the host group: it always takes the next legal price."""
+    chat_id, ctype = _chat(message)
+    u = _user(message)
+    if not _is_group(ctype):
+        await _send(chat_id, "🏛 Bid in the group where the auction is running.")
+        return
+    rows = await tr.for_chat(chat_id, ("auction",))
+    if not rows:
+        return                                   # nothing is being auctioned here: stay silent
+    t = rows[0]
+    tid = int(t["tid"])
+    from database import tournament_auction_repo as ar
+    a = await ar.get_auction(tid)
+    lot = await ar.lot_view(tid, int(a["cur_ord"])) if a and a.get("cur_ord") is not None else None
+    if lot is None or lot["status"] != "live":
+        await _send(chat_id, "⏳ No player is open for bidding right now — the next one starts in a moment.")
         return
     try:
-        res = await auc.bid(tid, ord_, _user(cq)["id"], expected_lakh=price)
+        res = await auc.bid(tid, int(lot["ord"]), u["id"])
     except Exception:
         traceback.print_exc()
-        await _answer(cq, "Something went wrong, try again.", True)
+        await _send(chat_id, "⚠️ Something went wrong, send /bid again.")
         return
-    await _answer(cq, tx.bid_feedback(res), not res.get("ok"))
+    if not res.get("ok"):
+        who = tv.owner_mention({"owner_id": u["id"], "owner_username": u["username"], "owner_name": u["first_name"]})
+        await _send(chat_id, f"{who} — {tx.esc(tx.bid_feedback(res))}")
 
 
 @register_callback("trh")

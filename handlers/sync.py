@@ -56,3 +56,17 @@ async def sync_command(message):
         parse_mode="Markdown",
     )
     print(f"[sync] Full backup sent to user_id={user_id}, {len(backup_bytes)} bytes")
+
+
+@register("backupnext")
+async def backupnext_command(message):
+    chat_id = message["chat"]["id"]
+    if not await _is_admin((message.get("from") or {}).get("id")):
+        await app.send_message(chat_id, "🚫 This command is restricted to the bot admin only.")
+        return
+    from services.auto_backup import remaining_seconds
+    left = await remaining_seconds()
+    if left is None:
+        await app.send_message(chat_id, "⏱ Auto backup timer has not started yet.")
+        return
+    await app.send_message(chat_id, f"⏱ Next automatic backup in {left // 60} min {left % 60} s.")
