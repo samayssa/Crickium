@@ -546,6 +546,12 @@ async def main():
     except Exception:
         print("[main.py] Tournament workers failed to start:")
         traceback.print_exc()
+    try:
+        from services import auto_backup
+        auto_backup.start_worker()
+    except Exception:
+        print("[main.py] Auto backup failed to start:")
+        traceback.print_exc()
     me = await app.get_me()
     print(f"[main.py] Logged in as: id={me['id']} username=@{me.get('username')} is_bot={me.get('is_bot')}")
 
