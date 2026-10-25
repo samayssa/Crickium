@@ -1,1547 +1,989 @@
+"""Auction Tournaments: /createtour wizard, lobby, host panel, table, records, /tplay, /tsched, /auction.
+
+All state lives in the database (see database/tournament_repo.py); this module only turns commands and buttons
+into calls to services.tournament_runtime / services.tournament_auction and renders the answers.
+"""
 from __future__ import annotations
 
-import asyncio
-import html
-import json
-import secrets
+print("tournament.py loaded")
+
+import re
+import traceback
 from typing import Any
 
-from handlers.registry import register, register_callback
 from app import app
-from database.auction_tournament_repo import (
-    ACTIVE_DRAFT_STATUSES,
-    assign_team,
-    create_draft,
-    create_ipl_teams,
-    create_pools,
-    fetch_all_pool_players,
-    fetch_pool_summary,
-    fetch_teams,
-    find_user_by_identifier,
-    get_active_draft,
-    get_team,
-    get_tournament,
-    get_tournament_for_prize,
-    get_owned_running_tournaments,
-    find_owned_running_tournament,
-    create_tournament_backup,
-    lookup_tournament_backup,
-    restore_tournament_backup,
-    RUNNING_TOURNAMENT_STATUSES,
-    get_user_registration,
-    remove_team_owner,
-    update_tournament,
-)
-from database.query import fetchrow
-from database.squads_repo import get_team_squad
-from services.auction_tournament_session import sync_tournament_session, has_active_prompt_message
-from services.auction_tournament import (
-    IPL_TEAM_MAP,
-    IPL_TEAM_ORDER,
-    build_prize_breakdown,
-    cancel_keyboard,
-    confirm_prize_keyboard,
-    create_registration_announcement,
-    create_tournament_final,
-    create_type_keyboard,
-    esc,
-    final_create_keyboard,
-    group_choice_keyboard,
-    handle_tournament_reply,
-    mode_keyboard,
-    parse_pool_text,
-    parse_prize_input,
-    pool_confirmation_keyboard,
-    prize_command_text,
-    public_group_info,
-    render_creation_success,
-    render_final_review,
-    render_group_review,
-    render_pool_prompt,
-    render_prize_confirmation,
-    render_prize_prompt,
-    render_tournament_overview,
-    team_keyboard,
-    teamown_confirm_keyboard,
-    update_group_board,
-    teamown_keyboard,
-    remove_confirm_keyboard,
-    validate_pool_players,
-    resolve_owned_prize_player,
-)
+from config import ADMIN_USER_ID
+from database import tournament_repo as tr
+from handlers.registry import register, register_callback
+from services import tournament_auction as auc
+from services import tournament_core as tc
+from services import tournament_prize as tp
+from services import tournament_runtime as rt
+from services import tournament_text as tx
+from services import tournament_views as tv
+from services import tournament_virtual as tvirt
 
-NO_KEYBOARD = {"inline_keyboard": []}
+LIVE = ("registration", "auction", "ready", "live")
+_TEAM_LISTS = {
+    "PLAYIPL": ("database.playipl_teams_repo", "TEAM_ORDER"),
+    "PLAYWPL": ("database.playwpl_teams_repo", "TEAM_ORDER"),
+    "PLAYINT": ("database.playint_teams_repo", None),
+}
 
 
-def _chat_type(message: dict) -> str:
-    value = str((message.get("chat") or {}).get("type") or "").strip().lower()
-    return value
+# ---------------------------------------------------------------------------
+# small helpers
+# ---------------------------------------------------------------------------
+def _is_admin(uid: Any) -> bool:
+    return int(uid or 0) == int(ADMIN_USER_ID)
 
 
-def _is_group_chat(message: dict) -> bool:
-    return _chat_type(message) in {"group", "supergroup", "chat_type.group", "chat_type.supergroup"}
+def _user(obj: dict) -> dict:
+    u = (obj or {}).get("from") or {}
+    return {"id": int(u.get("id") or 0), "username": u.get("username"), "first_name": u.get("first_name") or u.get("username") or "Player"}
 
 
-def _user_id(message: dict) -> int:
-    return int((message.get("from") or {}).get("id") or 0)
-
-
-def _arg_text(message: dict) -> str:
-    text = str(message.get("text") or "").strip()
-    parts = text.split(maxsplit=1)
-    return parts[1].strip() if len(parts) == 2 else ""
-
-
-def _tournament_owner_ok(tournament: Any, user_id: int) -> bool:
-    return tournament is not None and int(tournament["creator_id"]) == int(user_id)
-
-
-async def _edit_prompt(tournament_id: int, text: str, markup: dict | None = None):
-    tournament = await get_tournament(tournament_id)
-    if not tournament:
-        return
-    chat_id = int(tournament["creation_chat_id"])
-    message_id = int(tournament.get("prompt_message_id") or tournament.get("overview_message_id") or 0)
-    if message_id:
-        await app.edit_message_text(
-            chat_id,
-            message_id,
-            text,
-            parse_mode="HTML",
-            reply_markup=markup,
-        )
-
-
-async def _set_prompt_id(tournament_id: int, message_id: int):
-    await update_tournament(tournament_id, prompt_message_id=int(message_id), overview_message_id=int(message_id))
-
-
-async def _send_cancelled(tournament_id: int):
-    tournament = await get_tournament(tournament_id)
-    if not tournament:
-        return
-    await update_tournament(tournament_id, status="cancelled")
+async def _answer(cq: dict, text: str | None = None, alert: bool = False) -> None:
     try:
-        await app.edit_message_text(
-            int(tournament["creation_chat_id"]),
-            int(tournament.get("prompt_message_id") or tournament.get("overview_message_id") or 0),
-            "<b>❌ TOURNAMENT CREATION CANCELLED</b>\n\nNo tournament was created and no player card was removed from your squad.",
-            parse_mode="HTML",
-            reply_markup=NO_KEYBOARD,
-        )
+        await app.answer_callback_query(cq.get("id"), text=(text or "")[:195] or None, show_alert=alert)
+    except Exception:
+        pass
+
+
+async def _send(chat_id: int, text: str, markup: dict | None = None) -> int | None:
+    msg = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+    return int((msg or {}).get("message_id") or 0) or None
+
+
+async def _edit(cq: dict, text: str, markup: dict | None = None) -> None:
+    m = cq.get("message") or {}
+    try:
+        await app.edit_message_text(int((m.get("chat") or {}).get("id")), int(m.get("message_id")), text, parse_mode="HTML", reply_markup=markup)
     except Exception as exc:
-        print(f"[tournament] cancellation edit failed: {exc!r}")
+        if "not modified" not in str(exc).lower():
+            print(f"[tournament] edit failed: {exc!r}")
+
+
+def _chat(obj: dict) -> tuple[int, str]:
+    c = (obj.get("message") or obj).get("chat") or {}
+    return int(c.get("id") or 0), str(c.get("type") or "")
+
+
+def _is_group(kind: str) -> bool:
+    return kind in ("group", "supergroup")
+
+
+def _parts(cq: dict) -> list[str]:
+    return str(cq.get("data") or "").split(":")
+
+
+async def _find(chat_id: int, user_id: int, arg: str = "", statuses=LIVE) -> dict | None:
+    arg = (arg or "").strip().lstrip("#")
+    if arg.isdigit():
+        return await tr.get(int(arg))
+    rows = await tr.for_chat(chat_id, statuses)
+    if rows:
+        live = [r for r in rows if r["status"] == "live"]
+        return (live or rows)[0]
+    mine = [r for r in await tr.list_for_user(user_id, 20) if r["status"] in statuses]
+    return mine[0] if mine else None
+
+
+def _args(message: dict) -> str:
+    parts = (message.get("text") or "").split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+async def _need_host(cq: dict, t: dict | None) -> bool:
+    if t is None:
+        await _answer(cq, "Tournament not found.", True)
+        return False
+    if not rt.can_manage(t, _user(cq)["id"]):
+        await _answer(cq, "Only the tournament host can do this.", True)
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# /createtour wizard:  engine -> name -> mode -> teams -> window -> lobby
+# ---------------------------------------------------------------------------
+async def _drop_draft(tid: int) -> None:
+    try:
+        await tp.refund(tid)
+    except Exception:
+        traceback.print_exc()
+    await tr.delete_draft(tid)
+
+
+def _wiz_head(t: dict) -> str:
+    prof = tc.profile(t["engine"]) if t.get("setup_step") != "engine" else None
+    bits = [f"🏆 <b>{tx.esc(t['name'])}</b>"] if t.get("setup_step") not in ("engine", "name") else []
+    if prof:
+        bits.append(f"{prof['icon']} {tx.esc(prof['title'])}")
+    return "\n".join(bits)
+
+
+def _wiz_card(t: dict) -> tuple[str, dict]:
+    tid, step = int(t["tid"]), t["setup_step"]
+    cancel = tx.button("✖ Cancel", f"trc:{tid}:x", style="danger")
+    off = "🎖 <b>Official tournament</b>\n" if t.get("kind") == "official" else ""
+    if step == "engine":
+        text = (f"{off}🏆 <b>Create a tournament</b> — step 1/5\n<blockquote>What are you playing?\n"
+                "🏏 IPL — 10 franchises\n🌍 T20 World Cup — nations\n👑 WPL — women's franchises\n🎮 Custom — your own squads, regular /play game</blockquote>")
+        kb = tx.markup([tx.button("🏏 IPL", f"trc:{tid}:e:ipl", style="primary"), tx.button("🌍 T20 World Cup", f"trc:{tid}:e:t20wc", style="primary")],
+                       [tx.button("👑 WPL", f"trc:{tid}:e:wpl", style="primary"), tx.button("🎮 Custom", f"trc:{tid}:e:custom", style="primary")], [cancel])
+    elif step == "name":
+        prof = tc.profile(t["engine"])
+        text = (f"{off}{_wiz_head(t)}\n\n<b>Step 2/5 — name</b>\n<blockquote>Send the tournament name as a message now.\n"
+                f"Example: <code>Samay Premier League</code>\nOr use the default: <b>{tx.esc(prof['short'])} Cup</b></blockquote>")
+        kb = tx.markup([tx.button(f"✅ Use “{prof['short']} Cup”", f"trc:{tid}:n:d", style="success")], [cancel])
+    elif step == "mode":
+        text = (f"{off}{_wiz_head(t)}\n\n<b>Step 3/5 — squads</b>\n<blockquote>🏛 <b>With auction</b> — owners bid live for players (30 s timer, random sets).\n"
+                "⚡ <b>Without auction</b> — uses the saved squads (for Custom: each owner's own squad).</blockquote>")
+        kb = tx.markup([tx.button("🏛 With auction", f"trc:{tid}:m:a", style="primary"), tx.button("⚡ Without auction", f"trc:{tid}:m:d", style="primary")], [cancel])
+    elif step == "teams":
+        prof = tc.profile(t["engine"])
+        nums = list(range(int(prof["min_teams"]), int(prof["max_teams"]) + 1))
+        text = f"{off}{_wiz_head(t)}\n\n<b>Step 4/5 — how many teams?</b>\n<blockquote>Example: 4 teams → 12 league matches + final.</blockquote>"
+        rows = [[tx.button(str(n), f"trc:{tid}:t:{n}") for n in nums[i:i + 5]] for i in range(0, len(nums), 5)]
+        kb = tx.markup(*rows, [cancel])
+    elif step == "prize":
+        have = tp.describe(t.get("prize"))
+        text = (f"{off}{_wiz_head(t)}\n\n<b>Last step — 🎁 prize pool (optional)</b>\n<blockquote>"
+                + (f"✅ Prize ready: <b>{tx.esc(have)}</b>\n{tx.esc(tp.split_label(t.get("prize")))}\n\n" if have else "")
+                + "Add coins, rubies and/or a player card. Send in this chat:\n<code>/prize 50000 20 Virat Kohli</code>\n"
+                  "(coins · rubies · card name — use 0 to skip a part)\n"
+                + ("👑 Owner: you do not need to own the prize." if _is_admin(t.get("creator_id")) else
+                   "⚠️ You must own the coins, rubies and card. They are locked until the tournament ends and returned if it is cancelled.")
+                + "\nThe pool is divided automatically when the final ends.</blockquote>")
+        kb = tx.markup([tx.button("✅ Create tournament" if have else "⏭ Skip prize — create", f"trc:{tid}:z:go", style="success")], [cancel])
+    else:   # window
+        text = (f"{off}{_wiz_head(t)}\n\n<b>Step 5/5 — daily match time</b>\n<blockquote>Players may play any time inside this window "
+                "(or earlier with /tplay). One hour before the end the bot tags everyone with a pending match.</blockquote>")
+        rows = [[tx.button(tc.fmt_window(a, b), f"trc:{tid}:w:{i}", style="primary")] for i, (a, b) in enumerate(tc.WINDOW_PRESETS)]
+        kb = tx.markup(*rows, [cancel])
+    return text, kb
+
+
+async def _draft_show(t: dict, cq: dict | None = None) -> None:
+    text, kb = _wiz_card(t)
+    if cq is not None:
+        await _edit(cq, text, kb)
+        return
+    mid = t.get("setup_msg_id")
+    try:
+        if mid:
+            await app.edit_message_text(int(t["host_chat_id"]), int(mid), text, parse_mode="HTML", reply_markup=kb)
+            return
+    except Exception:
+        pass
+    new = await _send(int(t["host_chat_id"]), text, kb)
+    await tr.update_fields(int(t["tid"]), setup_msg_id=new)
+
+
+async def _start_wizard(message: dict, kind: str) -> None:
+    chat_id, ctype = _chat(message)
+    u = _user(message)
+    if not _is_group(ctype):
+        await _send(chat_id, "🏆 Tournaments run inside a <b>group</b>. Add me to your group and send /createtour there.")
+        return
+    if kind == "official" and not _is_admin(u["id"]):
+        await _send(chat_id, "🚫 Only the bot owner can create official tournaments.")
+        return
+    old = await tr.draft_of(u["id"])
+    if old and old.get("kind") != kind:
+        await _drop_draft(int(old["tid"]))
+    t = await tr.create_draft(u["id"], u["first_name"], chat_id, (message.get("chat") or {}).get("title"), kind)
+    if not t.get("_created"):
+        await tr.update_fields(int(t["tid"]), host_chat_id=chat_id, host_chat_title=(message.get("chat") or {}).get("title"), setup_msg_id=None)
+        t = await tr.get(int(t["tid"]))
+    await _draft_show(t)
 
 
 @register("createtour")
-async def create_tour_command(message: dict):
-    user_id = _user_id(message)
-    chat_id = int((message.get("chat") or {}).get("id") or 0)
-    first_name = (message.get("from") or {}).get("first_name") or "Tournament Host"
-    username = (message.get("from") or {}).get("username")
+async def createtour_command(message):
+    await _start_wizard(message, "user")
 
-    existing = await get_active_draft(user_id)
-    if existing:
-        await app.send_message(
-            chat_id,
-            "<b>⚠️ You already have a tournament creation in progress.</b>\n\n"
-            "Use the buttons on your current setup message or press Cancel before starting a new tournament.",
-            parse_mode="HTML",
-        )
+
+@register("officialtour")
+async def officialtour_command(message):
+    await _start_wizard(message, "official")
+
+
+async def _finish_wizard(t: dict, window: tuple[int, int], cq: dict) -> None:
+    tid = int(t["tid"])
+    prof = tc.profile(t["engine"])
+    row = await tr.cas_status(tid, ["setup"], "registration", window_start_min=window[0], window_end_min=window[1], setup_step="done",
+                              purse_lakh=int(prof["purse_lakh"]), squad_min=int(prof["squad_min"]) if t["mode"] == "auction" else 11,
+                              squad_max=int(prof["squad_max"]), overseas_squad_max=int(prof["overseas_squad_max"]),
+                              xi_overseas_max=int(prof["xi_overseas_max"]))
+    if row is None:
+        await _answer(cq, "Already created.")
         return
-
-    text = (
-        "<b>╭━━〔 🏆 CREATE TOURNAMENT 〕━━╮</b>\n\n"
-        "Choose the game instance for your tournament.\n\n"
-        "<blockquote>"
-        "🏏 <b>Indian Premier League (IPL)</b>\n"
-        "Total teams: <b>10</b>\n\n"
-        "🌍 <b>T20 World Cup Tournament</b>\n"
-        "Total teams: <b>10/20</b>\n\n"
-        "🧩 <b>Custom Tournament</b>\n"
-        "Create your own tournament name and let users participate with their own collectible squads."
-        "</blockquote>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
-    )
-    await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=create_type_keyboard(user_id))
-    # create_draft is persistent DB state; mirror it to the restart-safe session file.
-    if existing is None:
-        fresh = await get_active_draft(user_id)
-        if fresh:
-            await sync_tournament_session(int(fresh["tournament_id"]))
+    await _post_lobby(row, replace=cq)
 
 
-def _pool_player_preview_line(player: dict) -> str:
-    edition = f" ({esc(player.get("edition"))})" if player.get("edition") else ""
-    overseas_mark = " 🌍 Overseas" if bool(player.get("is_overseas")) else " 🇮🇳 Indian" if player.get("country_class") == "indian" else ""
-    return f"├ {esc(player.get("name"))}{edition} • OVR {int(player.get("ovr") or 0)}{overseas_mark}"
+def _lobby_markup(t: dict) -> dict:
+    tid = int(t["tid"])
+    return tx.markup([tx.button("🙋 Join", f"trj:{tid}:j", style="success"), tx.button("🚪 Leave", f"trj:{tid}:l")],
+                     [tx.button("⚙️ Host panel", f"trm:{tid}:menu", style="primary"), tx.hub_button(tid)])
 
 
-@register("setpool")
-async def setpool_command(message: dict):
-    user_id = _user_id(message)
-    arg = _arg_text(message).upper()
-    if arg not in {"IPL", "PLAYIPL"}:
-        await app.send_message(
-            int((message.get("chat") or {}).get("id") or 0),
-            "⚠️ For the current auction module, use <code>/setpool IPL</code>.",
-            parse_mode="HTML",
-        )
-        return
-
-    tournament = await get_active_draft(user_id)
-    if not tournament:
-        await app.send_message(
-            int((message.get("chat") or {}).get("id") or 0),
-            "⚠️ You do not have an active IPL auction-tournament creation in progress.",
-        )
-        return
-
-    if str(tournament["status"]) not in {"overview", "await_pool", "confirm_pool"}:
-        await app.send_message(
-            int((message.get("chat") or {}).get("id") or 0),
-            "⚠️ The tournament is not currently waiting for an auction pool.",
-        )
-        return
-
-    reply = message.get("reply_to_message") or {}
-    source_text = str(reply.get("text") or "").strip()
-    source_document = reply.get("document") or {}
-    if not source_text and source_document.get("file_id"):
-        file_name = str(source_document.get("file_name") or "").lower()
-        if not file_name.endswith(".txt"):
-            await app.send_message(
-                int((message.get("chat") or {}).get("id") or 0),
-                "⚠️ The replied document must be a <code>.txt</code> file.",
-                parse_mode="HTML",
-            )
-            return
-        try:
-            raw = await app.download_media(str(source_document["file_id"]))
-            source_text = raw.decode("utf-8-sig", errors="replace")
-        except Exception as exc:
-            await app.send_message(
-                int((message.get("chat") or {}).get("id") or 0),
-                f"⚠️ I could not read that TXT file: <code>{esc(exc)}</code>",
-                parse_mode="HTML",
-            )
-            return
-
-    if not source_text:
-        prompt_message_id = int(tournament.get("overview_message_id") or tournament.get("prompt_message_id") or 0)
-        chat_id = int(tournament["creation_chat_id"])
-        if prompt_message_id:
-            await update_tournament(tournament["tournament_id"], status="await_pool", prompt_message_id=prompt_message_id)
-            await app.edit_message_text(
-                chat_id,
-                prompt_message_id,
-                render_pool_prompt(),
-                parse_mode="HTML",
-                reply_markup=cancel_keyboard(int(tournament["tournament_id"])),
-            )
-        else:
-            sent = await app.send_message(chat_id, render_pool_prompt(), parse_mode="HTML", reply_markup=cancel_keyboard(int(tournament["tournament_id"])))
-            await _set_prompt_id(int(tournament["tournament_id"]), int(sent["message_id"]))
-        return
-
-    pools, errors = parse_pool_text(source_text)
-    valid_pools, errors, success, failed = await validate_pool_players(pools, errors)
-    if success == 0:
-        errors.append({"pool": "-", "line": 0, "detail": "No valid auction players were found. Nothing can be saved until at least one player is valid."})
-
-    preview = valid_pools
-    tid = int(tournament["tournament_id"])
-    await update_tournament(
-        tid,
-        status="confirm_pool" if success > 0 else "await_pool",
-        pool_preview=preview,
-        pool_errors=errors,
-        pool_count=len(valid_pools),
-        player_count=success,
-        prompt_message_id=int(tournament.get("overview_message_id") or tournament.get("prompt_message_id") or 0),
-    )
-
-    summary_lines = [
-        "<b>╭━━〔 📦 AUCTION POOL REVIEW 〕━━╮</b>",
-        "",
-        f"✅ <b>Valid pools</b>  : {len(valid_pools)}",
-        f"✅ <b>Valid players</b>: {success}",
-        f"❌ <b>Failed entries</b>: {len(errors)}",
-        "",
-    ]
-    for pool in valid_pools:
-        summary_lines.append(
-            f"<b>[Pool {int(pool['pool_no'])}: {esc(pool['pool_name'])}]</b> • Base {int(pool['base_price']):,}\n"
-            + "\n".join(_pool_player_preview_line(p) for p in pool['players'])
-        )
-        summary_lines.append("")
-
-    if errors:
-        summary_lines += ["<blockquote><b>⚠️ VALIDATION DETAILS</b>"]
-        for err in errors[:30]:
-            summary_lines.append(
-                f"Pool {esc(err.get('pool'))}, line {esc(err.get('line'))}: {esc(err.get('detail'))}"
-            )
-        if len(errors) > 30:
-            summary_lines.append(f"… and {len(errors) - 30} more errors.")
-        summary_lines.append("</blockquote>")
-        summary_lines.append("")
-
-    summary_lines += [
-        "<b>Are you sure you want to set these players for the IPL auction?</b>",
-        "",
-        "Choose <b>Yes, go ahead</b> to save the valid details, <b>No, change it</b> to resend the pool, or <b>Cancel</b> to stop.",
-        "",
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-    ]
-
-    prompt_id = int(tournament.get("overview_message_id") or tournament.get("prompt_message_id") or 0)
-    summary_text = "\n".join(summary_lines)
-    summary_markup = pool_confirmation_keyboard(tid) if success else cancel_keyboard(tid)
-    if not prompt_id:
-        sent = await app.send_message(
-            int(tournament["creation_chat_id"]),
-            summary_text,
-            parse_mode="HTML",
-            reply_markup=summary_markup,
-        )
-        await _set_prompt_id(tid, int(sent["message_id"]))
+async def _post_lobby(t: dict, replace: dict | None = None) -> None:
+    teams = await tr.teams(int(t["tid"]))
+    text, kb = tv.lobby_text(t, teams), _lobby_markup(t)
+    if replace is not None:
+        await _edit(replace, text, kb)
+        mid = int((replace.get("message") or {}).get("message_id") or 0)
     else:
-        try:
-            await app.edit_message_text(
-                int(tournament["creation_chat_id"]),
-                prompt_id,
-                summary_text,
-                parse_mode="HTML",
-                reply_markup=summary_markup,
-            )
-        except Exception as exc:
-            # Telegram can reject an edit because of a stale/invalid entity or
-            # keyboard field. The pool was already validated and persisted as
-            # the draft preview, so never leave the host without a response.
-            print(f"[tournament] setpool edit failed; falling back to a new review message: {exc!r}")
-            sent = await app.send_message(
-                int(tournament["creation_chat_id"]),
-                summary_text,
-                parse_mode="HTML",
-                reply_markup=summary_markup,
-            )
-            await _set_prompt_id(tid, int(sent["message_id"]))
+        mid = await _send(int(t["host_chat_id"]), text, kb)
+    if mid:
+        await tr.update_fields(int(t["tid"]), lobby_msg_id=mid)
+
+
+async def _refresh_lobby(tid: int) -> None:
+    t = await tr.get(tid)
+    if not t or t["status"] != "registration" or not t.get("lobby_msg_id"):
+        return
+    try:
+        await app.edit_message_text(int(t["host_chat_id"]), int(t["lobby_msg_id"]), tv.lobby_text(t, await tr.teams(tid)), parse_mode="HTML", reply_markup=_lobby_markup(t))
+    except Exception:
+        pass
+
+
+@register_callback("trc")
+async def on_wizard(cq):
+    p = _parts(cq)
+    tid, act = int(p[1]), p[2]
+    arg = p[3] if len(p) > 3 else ""
+    t = await tr.get(tid)
+    if t is None or t["status"] != "setup":
+        await _answer(cq, "This setup is finished or expired. Send /createtour again.", True)
+        return
+    if _user(cq)["id"] != int(t["creator_id"]):
+        await _answer(cq, "Only the creator can use these buttons.", True)
+        return
+    await _answer(cq)
+    if act == "x":
+        await _drop_draft(tid)
+        await _edit(cq, "✖ Tournament setup cancelled. Any prize you had put up is returned.")
+        return
+    if act == "e" and arg in tc.PRESET_ENGINE:
+        engine = tc.PRESET_ENGINE[arg]
+        prof = tc.profile(engine)
+        t = await tr.update_fields(tid, engine=engine, preset=arg, setup_step="name", name=f"{prof['short']} Cup", max_teams=int(prof["max_teams"]))
+    elif act == "n" and t["setup_step"] == "name":
+        t = await tr.update_fields(tid, setup_step="mode")
+    elif act == "m" and t["setup_step"] == "mode":
+        t = await tr.update_fields(tid, mode="auction" if arg == "a" else "direct", setup_step="teams")
+    elif act == "t" and t["setup_step"] == "teams" and arg.isdigit():
+        prof = tc.profile(t["engine"])
+        n = max(int(prof["min_teams"]), min(int(prof["max_teams"]), int(arg)))
+        t = await tr.update_fields(tid, max_teams=n, setup_step="window")
+    elif act == "w" and t["setup_step"] == "window" and arg.isdigit() and int(arg) < len(tc.WINDOW_PRESETS):
+        a_, b_ = tc.WINDOW_PRESETS[int(arg)]
+        t = await tr.update_fields(tid, window_start_min=a_, window_end_min=b_, setup_step="prize")
+    elif act == "z" and t["setup_step"] == "prize":
+        await _finish_wizard(t, (int(t["window_start_min"]), int(t["window_end_min"])), cq)
+        return
+    await _draft_show(t, cq)
+
+
+async def handle_non_command_message(message) -> bool:
+    """The creator types the tournament name during step 2 of the wizard."""
+    text = str(message.get("text") or "").strip()
+    if not text or text.startswith("/"):
+        return False
+    u = _user(message)
+    if not u["id"]:
+        return False
+    t = await tr.draft_of(u["id"])
+    if t is None or t.get("setup_step") != "name" or int(t.get("host_chat_id") or 0) != _chat(message)[0]:
+        return False
+    name = tc.clean_name(text)
+    if not name:
+        await _send(_chat(message)[0], "⚠️ Please send a name (max 36 characters, letters/numbers).")
+        return True
+    t = await tr.update_fields(int(t["tid"]), name=name, setup_step="mode")
+    await _draft_show(t)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# lobby: join / leave
+# ---------------------------------------------------------------------------
+def _franchise_codes(engine: str) -> list[str]:
+    import importlib
+    mod_name, order = _TEAM_LISTS[engine]
+    mod = importlib.import_module(mod_name)
+    return list(getattr(mod, order)) if order else list(mod.TEAMS_PAGE_1) + list(mod.TEAMS_PAGE_2)
+
+
+def _franchise_name(engine: str, base: str) -> str:
+    import importlib
+    return importlib.import_module(_TEAM_LISTS[engine][0]).TEAM_MAP[base]
+
+
+async def _join_team(t: dict, user: dict, base: str, name: str, short: str | None) -> str | None:
+    """Create a team owned by ``user``. Returns an error text or None."""
+    try:
+        await tr.add_team(int(t["tid"]), base, tvirt.make_code(base, int(t["tid"])) if t["engine"] != "PLAY" else base, name, short, user, int(t["purse_lakh"] or 0))
+    except tr.TourError as exc:
+        return str(exc)
+    return None
+
+
+@register_callback("trj")
+async def on_lobby(cq):
+    p = _parts(cq)
+    tid, act = int(p[1]), p[2]
+    t = await tr.get(tid)
+    u = _user(cq)
+    if t is None or t["status"] != "registration":
+        await _answer(cq, "Registration is closed.", True)
+        return
+    if act == "j":
+        if await tr.team_of_user(tid, u["id"]):
+            await _answer(cq, "You already own a team here.", True)
+            return
+        teams = await tr.teams(tid)
+        if len(teams) >= int(t["max_teams"]):
+            await _answer(cq, "All slots are taken.", True)
+            return
+        if t["engine"] == "PLAY":
+            base = re.sub(r"[^A-Z]", "", u["first_name"].upper())[:4] or "TEAM"
+            taken = {x["base_code"] for x in teams}
+            while base in taken or len(base) < 2:
+                base = (base + "X")[:6]
+            err = await _join_team(t, u, base, f"{u['first_name']} XI", base)
+            await _answer(cq, err or "✅ You joined! Rename your team any time with /teamname <name>", bool(err))
+            await _refresh_lobby(tid)
+            return
+        taken = {x["base_code"] for x in teams}
+        free = [c for c in _franchise_codes(t["engine"]) if c not in taken]
+        rows = [[tx.button(c, f"trj:{tid}:p:{c}", style="primary") for c in free[i:i + 4]] for i in range(0, len(free), 4)]
+        await _answer(cq)
+        await _send(int(t["host_chat_id"]), f"{tv.e(u['first_name'])}, pick your team 👇", tx.markup(*rows))
+        return
+    if act == "p":
+        base = p[3]
+        if base not in _franchise_codes(t["engine"]):
+            await _answer(cq, "Unknown team.", True)
+            return
+        err = await _join_team(t, u, base, _franchise_name(t["engine"], base), base)
+        await _answer(cq, err or f"✅ You are {base}!", bool(err))
+        if not err:
             try:
-                await app.delete_message(int(tournament["creation_chat_id"]), prompt_id)
+                m = cq.get("message") or {}
+                await app.delete_message(int(m["chat"]["id"]), int(m["message_id"]))
             except Exception:
                 pass
-
-
-@register("setgroup")
-async def setgroup_command(message: dict):
-    user_id = _user_id(message)
-    chat_id = int((message.get("chat") or {}).get("id") or 0)
-    arg = _arg_text(message)
-    tournament = await get_active_draft(user_id)
-    if not tournament:
-        await app.send_message(chat_id, "⚠️ You do not have an active tournament creation in progress.")
+            await _refresh_lobby(tid)
         return
+    if act == "l":
+        team = await tr.team_of_user(tid, u["id"])
+        if not team:
+            await _answer(cq, "You have no team here.", True)
+            return
+        await tr.remove_owner(tid, int(team["team_no"]))
+        await _answer(cq, "You left the tournament.")
+        await _refresh_lobby(tid)
 
-    tid = int(tournament["tournament_id"])
-    if not arg:
-        await update_tournament(tid, status="await_group")
-        await _edit_prompt(
-            tid,
-            "<b>╭━━〔 🌐 HOST GROUP 〕━━╮</b>\n\n"
-            "Do you want to set a public Telegram group to host this tournament?\n\n"
-            "<blockquote>✅ Yes, I want → continue to the group-ID step.\n"
-            "No, I don't want → create without a host group.\n"
-            "❌ Cancel → stop tournament creation.</blockquote>\n\n"
-            "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-            group_choice_keyboard(tid),
-        )
+
+@register("teamname")
+async def teamname_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    name = tc.clean_name(_args(message))
+    t = await _find(chat_id, u["id"])
+    team = await tr.team_of_user(int(t["tid"]), u["id"]) if t else None
+    if not t or not team or not name:
+        await _send(chat_id, "Usage: <code>/teamname Mighty Kings</code> (you need a team in a tournament).")
         return
+    if t["engine"] != "PLAY":
+        await _send(chat_id, "Franchise teams keep their real name. Only Custom tournaments allow renaming.")
+        return
+    await tr.rename_team(int(t["tid"]), int(team["team_no"]), name)
+    await _send(chat_id, f"✅ Team renamed to <b>{tx.esc(name)}</b>.")
+    await _refresh_lobby(int(t["tid"]))
 
+
+# ---------------------------------------------------------------------------
+# host panel
+# ---------------------------------------------------------------------------
+def _panel(t: dict, teams: list[dict]) -> tuple[str, dict]:
+    tid = int(t["tid"])
+    auction = t["mode"] == "auction"
+    lines = [f"⚙️ <b>Host panel</b> · {tx.esc(t['name'])}", f"<blockquote>👥 {len(teams)}/{t['max_teams']} teams"
+             + (f" · 💰 purse {tx.esc(tc.fmt_money(t['purse_lakh']))}\n📈 steps: " + ", ".join(f"{tx.esc(a)} {tx.esc(b)}" for a, b in tc.ladder_rows(t.get('ladder'))[:4]) if auction else "")
+             + f"\n🕔 {tx.esc(tc.fmt_window(int(t['window_start_min']), int(t['window_end_min'])))}</blockquote>"]
+    rows: list[list[dict]] = []
+    if t["status"] == "registration":
+        if auction:
+            prof = tc.profile(t["engine"])
+            rows.append([tx.button(tc.fmt_money(v), f"trm:{tid}:pu:{v}") for v in prof["purse_presets"][:4]])
+            rows.append([tx.button("📈 IPL steps", f"trm:{tid}:ld:ipl"), tx.button("⚡ Fast steps", f"trm:{tid}:ld:fast")])
+            rows.append([tx.button("🏛 Start auction", f"trm:{tid}:sa", style="success")])
+            lines.append("<i>Custom purse: /setpurse 120cr · custom steps (lakh): /setsteps 5 10 20 25 (below 1cr, 1–2cr, 2–5cr, above 5cr) or /setsteps 10 for flat</i>")
+        else:
+            rows.append([tx.button("🚀 Start tournament", f"trm:{tid}:st", style="success")])
+        rows.append([tx.button("📄 Manual schedule", f"trm:{tid}:sch"), tx.button("🎁 Prize pool", f"trm:{tid}:pz")])
+    elif t["status"] == "ready":
+        rows.append([tx.button("🚀 Start tournament", f"trm:{tid}:st", style="success"), tx.button("📄 Manual schedule", f"trm:{tid}:sch")])
+        rows.append([tx.button("🎁 Prize pool", f"trm:{tid}:pz")])
+    elif t["status"] == "auction":
+        rows.extend(auc.host_markup_rows(tid))
+    if t["status"] in LIVE:
+        rows.append([tx.button("🛑 Cancel tournament", f"trm:{tid}:cx", style="danger")])
+    rows.append([tx.button("↩ Close", f"trm:{tid}:close")])
+    return "\n".join(lines), tx.markup(*rows)
+
+
+@register_callback("trm")
+async def on_manage(cq):
+    p = _parts(cq)
+    tid, act = int(p[1]), p[2]
+    arg = p[3] if len(p) > 3 else ""
+    t = await tr.get(tid)
+    if not await _need_host(cq, t):
+        return
+    u = _user(cq)
+    if act == "menu":
+        await _answer(cq)
+        text, kb = _panel(t, await tr.teams(tid))
+        await _send(int(t["host_chat_id"]), text, kb)
+        return
+    if act == "close":
+        await _answer(cq)
+        m = cq.get("message") or {}
+        try:
+            await app.delete_message(int(m["chat"]["id"]), int(m["message_id"]))
+        except Exception:
+            pass
+        return
+    if act == "pu" and t["status"] == "registration" and arg.isdigit():
+        await tr.update_fields(tid, purse_lakh=int(arg))
+        await tr.set_all_purses(tid, int(arg))
+        await _answer(cq, f"Purse set to {tc.fmt_money(int(arg))}")
+    elif act == "ld" and t["status"] == "registration" and arg in tc.LADDER_PRESETS:
+        await tr.update_fields(tid, ladder=tc.ladder_to_json(tc.LADDER_PRESETS[arg][1]))
+        await _answer(cq, f"{tc.LADDER_PRESETS[arg][0]} steps set")
+    elif act == "sa":
+        teams = await tr.teams(tid)
+        await _answer(cq)
+        rows = "\n".join(f"• {tx.team_label(x)}" for x in teams) or "—"
+        await _edit(cq, f"🏛 <b>Start the auction?</b>\n<blockquote>{rows}\n\n💰 Purse {tx.esc(tc.fmt_money(t['purse_lakh']))} each\n📈 "
+                        + ", ".join(f"{tx.esc(a)} {tx.esc(b)}" for a, b in tc.ladder_rows(t.get('ladder'))[:4]) + "</blockquote>",
+                    tx.markup([tx.button("✅ Yes, start", f"trm:{tid}:sy", style="success"), tx.button("↩ Back", f"trm:{tid}:menu")]))
+        return
+    elif act == "sy":
+        res = await auc.start_auction(tid, u["id"])
+        await _answer(cq, "🏛 Auction starting!" if res.get("ok") else res.get("error"), not res.get("ok"))
+        return
+    elif act == "st":
+        res = await rt.start_tournament(tid, u["id"])
+        await _answer(cq, "🚀 Started!" if res.get("ok") else res.get("error"), not res.get("ok"))
+        return
+    elif act == "sch":
+        await _answer(cq)
+        await _send(int(t["host_chat_id"]), tc.SCHEDULE_HELP + "\n\nSend a .txt file with the caption <code>/tsched</code> to apply it.")
+        return
+    elif act == "sp" and arg in tp.SPLITS:
+        res = await tp.set_split(tid, _user(cq)["id"], arg)
+        await _answer(cq, ("✅ " + tp.SPLITS[arg]["label"]) if res["ok"] else res["error"], not res["ok"])
+        if res["ok"]:
+            await _edit(cq, await _prize_done_text(await tr.get(tid)), tx.markup(_split_markup(tid, arg)))
+        return
+    elif act == "pz":
+        await _answer(cq)
+        cur = t.get("prize") or {}
+        await _send(int(t["host_chat_id"]), (await _prize_done_text(t) if cur.get("state") == "held" else PRIZE_HELP),
+                    tx.markup(_split_markup(tid, cur.get("split") or tp.DEFAULT_SPLIT)) if cur.get("state") == "held" else None)
+        return
+    elif act == "cx":
+        await _answer(cq)
+        await _edit(cq, f"🛑 <b>Cancel “{tx.esc(t['name'])}”?</b> This cannot be undone.",
+                    tx.markup([tx.button("Yes, cancel", f"trm:{tid}:cy", style="danger"), tx.button("No", f"trm:{tid}:close")]))
+        return
+    elif act == "cy":
+        await _cancel(t)
+        await _answer(cq, "Cancelled.")
+        await _edit(cq, f"🛑 <b>{tx.esc(t['name'])}</b> was cancelled.")
+        return
+    t = await tr.get(tid)
+    text, kb = _panel(t, await tr.teams(tid))
+    await _edit(cq, text, kb)
+
+
+async def _cancel(t: dict) -> None:
+    tid = int(t["tid"])
+    if t["status"] == "auction":
+        await auc.control(tid, int(t["creator_id"]), "end")
+    await tr.cas_status(tid, list(LIVE), "cancelled")
     try:
-        group_id = int(arg.split()[0])
-    except ValueError:
-        await app.send_message(chat_id, "⚠️ Group ID must be a numeric Telegram group ID such as <code>-1001234567890</code>.", parse_mode="HTML")
-        return
-
-    info, error = await public_group_info(group_id)
-    if error:
-        await app.send_message(chat_id, f"⚠️ <b>Group validation failed</b>\n\n{esc(error)}", parse_mode="HTML")
-        return
-
-    await update_tournament(
-        tid,
-        status="confirm_group",
-        host_group_id=int(info["id"]),
-        host_group_name=info["title"],
-        host_group_username=info["username"],
-    )
-    tournament = await get_tournament(tid)
-    await _edit_prompt(tid, render_group_review(tournament), final_create_keyboard(tid, group_review=True))
-
-
-def _running_tournament_keyboard(prefix: str, tournaments: list[dict], *, target_id: int, remove: bool, host_id: int) -> dict:
-    rows = []
-    for tournament in tournaments:
-        tid = int(tournament["tournament_id"])
-        name = str(tournament.get("tournament_name") or tournament.get("tournament_code") or "Tournament")
-        rows.append([
-            {
-                "text": name[:60],
-                "callback_data": f"tour_teamown_tourpick:{tid}:{int(target_id)}:{1 if remove else 0}:{int(host_id)}",
-                "style": "primary",
-            }
-        ])
-    rows.append([{"text": "❌ Cancel", "callback_data": f"tour_ui_cancel:{int(tournaments[0]['tournament_id'])}", "style": "danger"}])
-    return {"inline_keyboard": rows}
-
-
-async def _resolve_teamown_target(message: dict, user_id: int, target_tokens: list[str]):
-    target = None
-    from_argument = False
-    if target_tokens:
-        target = await find_user_by_identifier(target_tokens[0])
-        from_argument = target is not None
-    if target is None:
-        reply = message.get("reply_to_message") or {}
-        rid = int((reply.get("from") or {}).get("id") or 0)
-        if rid:
-            target = await fetchrow("SELECT * FROM users WHERE user_id=$1 LIMIT 1;", rid)
-    return target, from_argument
-
-
-@register("teamown")
-async def teamown_command(message: dict):
-    user_id = _user_id(message)
-    chat_id = int((message.get("chat") or {}).get("id") or 0)
-    args = _arg_text(message)
-    tokens = args.split()
-    remove = bool(tokens and tokens[-1].lower() == "remove")
-    if remove:
-        tokens = tokens[:-1]
-    elif tokens and tokens[0].lower() == "remove":
-        remove = True
-        tokens = tokens[1:]
-
-    target, target_from_argument = await _resolve_teamown_target(message, user_id, tokens)
-    if target is None:
-        await app.send_message(
-            chat_id,
-            "⚠️ Target user not found. Use <code>/teamown @username</code>, <code>/teamown USER_ID</code>, "
-            "or reply to the user's message with <code>/teamown</code>.",
-            parse_mode="HTML",
-        )
-        return
-
-    target_id = int(target["user_id"])
-    if target_id == user_id:
-        await app.send_message(chat_id, "⚠️ The host cannot assign or remove their own tournament franchise through this command.")
-        return
-
-    # The first token identifies the user. Any remaining tokens identify the
-    # tournament, e.g. IPL, T20WC, or the exact custom tournament name.
-    if target_from_argument:
-        keyword = " ".join(tokens[1:]).strip() if tokens else ""
-    else:
-        keyword = " ".join(tokens).strip()
-    running = await get_owned_running_tournaments(user_id)
-    running = [r for r in running if str(r.get("status") or "") == "created"]
-
-    if not running:
-        await app.send_message(chat_id, "⚠️ You do not currently own a running tournament that accepts team ownership changes.")
-        return
-
-    tournament = None
-    if keyword:
-        tournament = await find_owned_running_tournament(user_id, keyword)
-        if tournament and str(tournament.get("status") or "") != "created":
-            tournament = None
-        if tournament is None:
-            await app.send_message(
-                chat_id,
-                f"⚠️ No running tournament owned by you matches <code>{esc(keyword)}</code>.",
-                parse_mode="HTML",
-            )
-            return
-    elif len(running) == 1:
-        tournament = running[0]
-    else:
-        await app.send_message(
-            chat_id,
-            "<b>╭━━〔 🏟️ SELECT TOURNAMENT 〕━━╮</b>\n\n"
-            f"👤 <b>User</b> : {esc(target.get('first_name') or target.get('username') or target_id)}\n"
-            f"🆔 <b>ID</b>   : <code>{target_id}</code>\n\n"
-            "You own more than one running tournament. Choose the tournament for this team-ownership action.",
-            parse_mode="HTML",
-            reply_markup=_running_tournament_keyboard(
-                "teamown", running, target_id=target_id, remove=remove, host_id=user_id
-            ),
-        )
-        return
-
-    await _teamown_present_action(chat_id, user_id, target, tournament, remove=remove)
-
-
-async def _teamown_present_action(chat_id: int, host_id: int, target: dict, tournament: dict, *, remove: bool):
-    tid = int(tournament["tournament_id"])
-    target_id = int(target["user_id"])
-    target_name = esc(target.get("first_name") or target.get("username") or target_id)
-    tournament_name = esc(tournament.get("tournament_name") or tournament.get("tournament_code") or "Tournament")
-
-    if remove:
-        owned = await get_user_registration(tid, target_id)
-        if not owned:
-            await app.send_message(
-                chat_id,
-                f"⚠️ {target_name} does not currently own a team in <b>{tournament_name}</b>.",
-                parse_mode="HTML",
-            )
-            return
-        team_name = esc(IPL_TEAM_MAP.get(str(owned["team_code"]), str(owned["team_code"])))
-        text = (
-            "<b>╭━━〔 🗑️ REMOVE TEAM OWNER 〕━━╮</b>\n\n"
-            f"👤 <b>User</b>      : {target_name}\n"
-            f"🆔 <b>ID</b>        : <code>{target_id}</code>\n"
-            f"🏆 <b>Tournament</b>: {tournament_name}\n"
-            f"🏷️ <b>Team</b>      : {team_name}\n\n"
-            f"<b>Are you sure you want to remove this user from {tournament_name} for {team_name}?</b>\n\n"
-            "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
-        )
-        await app.send_message(
-            chat_id, text, parse_mode="HTML",
-            reply_markup=remove_confirm_keyboard(tid, target_id, str(owned["team_code"])),
-        )
-        return
-
-    text = (
-        "<b>╭━━〔 👑 TEAM OWNERSHIP 〕━━╮</b>\n\n"
-        f"👤 <b>User</b>      : {target_name}\n"
-        f"🆔 <b>ID</b>        : <code>{target_id}</code>\n"
-        f"🏆 <b>Tournament</b>: {tournament_name}\n\n"
-        "<b>Which team do you want to assign to this user for this tournament?</b>\n\n"
-        "Choose a franchise below. The next screen will ask for confirmation.\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
-    )
-    await app.send_message(
-        chat_id, text, parse_mode="HTML",
-        reply_markup=teamown_keyboard(tid, target_id),
-    )
+        await tp.refund(tid)
+    except Exception:
+        traceback.print_exc()
+    rt.wake()
 
 
 @register("endtour")
-async def endtour_command(message: dict):
-    user_id = _user_id(message)
-    chat_id = int((message.get("chat") or {}).get("id") or 0)
-    running = await get_owned_running_tournaments(user_id)
-    if not running:
-        await app.send_message(
-            chat_id,
-            "<b>⚠️ No tournament you have running right now.</b>\n\nCreate one with <code>/createtour</code>.",
-            parse_mode="HTML",
-        )
+async def endtour_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"], _args(message))
+    if not t or not rt.can_manage(t, u["id"]):
+        await _send(chat_id, "Only the tournament host can cancel a tournament.")
         return
+    await _send(chat_id, f"🛑 <b>Cancel “{tx.esc(t['name'])}”?</b>", tx.markup([tx.button("Yes, cancel", f"trm:{int(t['tid'])}:cy", style="danger"), tx.button("No", f"trm:{int(t['tid'])}:close")]))
 
-    if len(running) == 1:
-        tournament = running[0]
-        await _show_endtour_confirmation(chat_id, tournament, user_id)
+
+@register("setpurse")
+async def setpurse_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"], statuses=("registration",))
+    if not t or not rt.can_manage(t, u["id"]):
+        await _send(chat_id, "No tournament of yours is in registration here.")
         return
-
-    rows = []
-    for tournament in running:
-        rows.append([{
-            "text": str(tournament.get("tournament_name") or tournament.get("tournament_code") or "Tournament")[:60],
-            "callback_data": f"tour_end_pick:{int(tournament['tournament_id'])}:{int(user_id)}",
-            "style": "primary",
-        }])
-    rows.append([{"text": "❌ Cancel", "callback_data": f"tour_end_cancel:{int(user_id)}", "style": "danger"}])
-    await app.send_message(
-        chat_id,
-        "<b>╭━━〔 🛑 END TOURNAMENT 〕━━╮</b>\n\n"
-        "You currently own more than one running tournament. Which tournament do you want to end completely?",
-        parse_mode="HTML",
-        reply_markup={"inline_keyboard": rows},
-    )
+    lakh = tc.parse_money(_args(message))
+    if not lakh or lakh < 100:
+        await _send(chat_id, "Usage: <code>/setpurse 120cr</code> (or <code>/setpurse 9000L</code>)")
+        return
+    await tr.update_fields(int(t["tid"]), purse_lakh=int(lakh))
+    await tr.set_all_purses(int(t["tid"]), int(lakh))
+    await _send(chat_id, f"💰 Purse for every team: <b>{tx.esc(tc.fmt_money(lakh))}</b>")
 
 
-async def _show_endtour_confirmation(chat_id: int, tournament: dict, host_id: int, *, message_id: int | None = None):
-    tid = int(tournament["tournament_id"])
-    name = esc(tournament.get("tournament_name") or tournament.get("tournament_code") or "Tournament")
-    text = (
-        "<b>╭━━〔 ⚠️ END TOURNAMENT 〕━━╮</b>\n\n"
-        f"🏆 <b>Tournament</b> : {name}\n"
-        f"👤 <b>Hosted by</b>  : {esc(tournament.get('creator_username') and '@' + str(tournament.get('creator_username')).lstrip('@') or tournament.get('creator_name') or host_id)}\n"
-        f"🎯 <b>Type</b>       : {esc(tournament.get('tournament_code') or 'IPL')} • {'Auction' if tournament.get('auction_mode') else 'No Auction'}\n"
-        f"🪙 <b>Prize</b>      : {int(tournament.get('prize_coins') or 0):,} Coins • {int(tournament.get('prize_rubies') or 0):,} Rubies\n"
-        f"📦 <b>Auction</b>    : {int(tournament.get('pool_count') or 0)} pools • {int(tournament.get('player_count') or 0)} players\n\n"
-        "<blockquote>Once confirmed, this tournament and its current state will be ended and removed from the active tournament database. "
-        "A verified backup file will be sent to you. You can restore it later by replying to that backup file with <code>/restore</code>.</blockquote>\n\n"
-        "<b>Are you sure you want to end this tournament completely?</b>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
-    )
-    markup = {
-        "inline_keyboard": [
-            [{"text": "✅ Yes, End", "callback_data": f"tour_end_confirm:{tid}:{int(host_id)}", "style": "success"}],
-            [{"text": "❌ Cancel", "callback_data": f"tour_end_cancel:{int(host_id)}", "style": "danger"}],
-        ]
-    }
-    if message_id:
-        await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=markup)
-    else:
-        await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+@register("setsteps")
+async def setsteps_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"], statuses=("registration",))
+    if not t or not rt.can_manage(t, u["id"]):
+        await _send(chat_id, "No tournament of yours is in registration here.")
+        return
+    ladder = tc.parse_ladder_text(_args(message))
+    if not ladder:
+        await _send(chat_id, "Usage: <code>/setsteps 5 10 20 25</code> (lakh: below 1cr · 1–2cr · 2–5cr · above 5cr) or <code>/setsteps 10</code> for one flat step.\nOfficial IPL default: " + tx.esc(tc.ladder_text(tc.OFFICIAL_LADDER)))
+        return
+    await tr.update_fields(int(t["tid"]), ladder=tc.ladder_to_json(ladder))
+    await _send(chat_id, "📈 Bid steps saved:\n" + "\n".join(f"• {tx.esc(a)} → +{tx.esc(b)}" for a, b in tc.ladder_rows(ladder)))
 
 
-async def _send_endtour_backup(chat_id: int, backup: dict):
-    tournament = backup["tournament"]
-    name = esc(tournament.get("tournament_name") or tournament.get("tournament_code") or "Tournament")
-    teams = backup.get("teams") or []
-    pools = backup.get("pools") or []
-    caption = (
-        "<b>✅ TOURNAMENT ENDED COMPLETELY</b>\n\n"
-        f"🏆 <b>Tournament</b> : {name}\n"
-        f"👤 <b>Hosted by</b>  : {esc(tournament.get('creator_username') and '@' + str(tournament.get('creator_username')).lstrip('@') or tournament.get('creator_name') or tournament.get('creator_id'))}\n"
-        f"👥 <b>Total Teams</b> : {len(teams)}\n"
-        f"🪙 <b>Prize</b>       : {int(tournament.get('prize_coins') or 0):,} Coins • {int(tournament.get('prize_rubies') or 0):,} Rubies\n"
-        f"📦 <b>Auction Pools</b>: {len(pools)}\n\n"
-        "<blockquote>🔐 <b>Verified backup attached.</b>\nReply to this file with <code>/restore</code> to restore the tournament.</blockquote>"
-    )
+# ---------------------------------------------------------------------------
+# prize pool:  /prize <coins> <rubies> [card name]
+# ---------------------------------------------------------------------------
+from utils.bounded_dict import BoundedDict  # noqa: E402
+
+_PRIZE: dict[str, dict] = BoundedDict(100)
+PRIZE_HELP = ("🎁 <b>Prize pool</b>\n<blockquote><code>/prize 50000 20 Virat Kohli</code>\ncoins · rubies · card name (use 0 for a part you skip)\n"
+              "<code>/prize 100000 0</code> — coins only\n<code>/prize 0 0 Virat Kohli</code> — card only\n<code>/prize remove</code> — take the prize back</blockquote>")
+
+
+def _money_arg(word: str) -> int | None:
+    w = word.replace(",", "").lower()
+    mult = 1
+    if w.endswith("k"):
+        mult, w = 1000, w[:-1]
+    elif w.endswith("m"):
+        mult, w = 1_000_000, w[:-1]
     try:
-        await app.send_document(
-            chat_id,
-            backup["raw"],
-            filename=str(backup["filename"]),
-            caption=caption,
-            parse_mode="HTML",
-        )
-        return
-    except Exception as exc:
-        print(f"[tournament] backup document-with-caption send failed: {exc!r}")
-        await app.send_message(chat_id, caption, parse_mode="HTML")
-        try:
-            await app.send_document(chat_id, backup["raw"], filename=str(backup["filename"]))
-        except Exception as second:
-            await app.send_message(chat_id, f"⚠️ Backup file could not be sent automatically: <code>{esc(second)}</code>", parse_mode="HTML")
+        return int(float(w) * mult)
+    except ValueError:
+        return None
 
 
-@register("restore")
-async def restore_command(message: dict):
-    user_id = _user_id(message)
-    chat_id = int((message.get("chat") or {}).get("id") or 0)
-    reply = message.get("reply_to_message") or {}
-    document = reply.get("document") or {}
-    if not document.get("file_id"):
-        await app.send_message(chat_id, "⚠️ Reply to the tournament backup <code>.json</code> file with <code>/restore</code>.", parse_mode="HTML")
-        return
-    try:
-        raw = await app.download_media(str(document["file_id"]))
-        payload = json.loads(raw.decode("utf-8-sig"))
-    except Exception as exc:
-        await app.send_message(chat_id, f"⚠️ I could not read that tournament backup file: <code>{esc(exc)}</code>", parse_mode="HTML")
-        return
+async def _prize_target(chat_id: int, user_id: int) -> dict | None:
+    draft = await tr.draft_of(user_id)
+    if draft and int(draft["host_chat_id"]) == chat_id:
+        return draft
+    rows = [r for r in await tr.for_chat(chat_id, tp.SETTABLE) if rt.can_manage(r, user_id)]
+    return rows[0] if rows else None
 
-    backup = await lookup_tournament_backup(payload, user_id)
-    if not backup:
-        await app.send_message(
-            chat_id,
-            "<b>❌ This is not your tournament backup.</b>\n\nThe file may belong to another host, may have been modified, or may no longer be a known backup.",
-            parse_mode="HTML",
-        )
-        return
 
-    data = backup.get("payload") or {}
-    tournament = data.get("tournament") or {}
-    teams = data.get("teams") or []
-    pools = data.get("pools") or []
-    players = data.get("pool_players") or []
-    restore_id = int(backup["backup_id"])
-    text = (
-        "<b>╭━━〔 ♻️ TOURNAMENT RESTORE FOUND 〕━━╮</b>\n\n"
-        f"🏆 <b>Name</b>       : {esc(tournament.get('tournament_name') or 'Tournament')}\n"
-        f"🎯 <b>Type</b>       : {esc(tournament.get('tournament_code') or 'IPL')} • {'Auction' if tournament.get('auction_mode') else 'No Auction'}\n"
-        f"👥 <b>Teams</b>      : {len(teams)}\n"
-        f"👤 <b>Participants</b>: {sum(1 for t in teams if t.get('owner_user_id'))}\n"
-        f"🎴 <b>Auction Players</b>: {len(players)}\n"
-        f"📦 <b>Pools</b>      : {len(pools)}\n"
-        f"🪙 <b>Prize</b>      : {int(tournament.get('prize_coins') or 0):,} Coins • {int(tournament.get('prize_rubies') or 0):,} Rubies\n\n"
-        "<blockquote>The restore will recreate the tournament from this verified backup at the same saved stage/state.</blockquote>\n\n"
-        "<b>Do you want to restore it?</b>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
-    )
-    markup = {
-        "inline_keyboard": [
-            [{"text": "✅ Yes, restore it", "callback_data": f"tour_restore_confirm:{restore_id}:{user_id}", "style": "success"}],
-            [{"text": "❌ Cancel", "callback_data": f"tour_restore_cancel:{user_id}", "style": "danger"}],
-        ]
-    }
-    await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+def _split_markup(tid: int, current: str) -> list[dict]:
+    return [tx.button(("✅ " if k == current else "") + v["label"].split(" ", 1)[0] + " " + k.title(), f"trm:{tid}:sp:{k}") for k, v in tp.SPLITS.items()]
+
+
+async def _prize_done_text(t: dict) -> str:
+    prize = t.get("prize") or {}
+    parts = tp.parts_of(prize)
+    return (f"🎁 <b>Prize pool</b> · {tx.esc(tp.describe(prize))}\n<blockquote>"
+            + "\n".join(f"{tp.ROLE_LABEL[r]} — {pct}%" for r, pct in parts.items())
+            + ("\n🃏 card → Champion" if prize.get("card") else "") + "</blockquote>"
+            + ("<i>👑 Created by the owner — nothing was taken.</i>" if prize.get("minted") else "<i>🔒 Locked from your account until the tournament ends (returned if cancelled).</i>"))
 
 
 @register("prize")
-async def prize_command(message: dict):
-    user_id = _user_id(message)
-    chat_id = int((message.get("chat") or {}).get("id") or 0)
-    tournament = await get_tournament_for_prize(chat_id, user_id)
-    if not tournament:
-        await app.send_message(chat_id, "⚠️ No created IPL auction tournament was found here.")
+async def prize_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _prize_target(chat_id, u["id"])
+    if t is None:
+        await _send(chat_id, "Start with /createtour — you can add the prize while creating it, or before the tournament starts.")
         return
-    players = await fetch_all_pool_players(int(tournament["tournament_id"]))
-    await app.send_message(chat_id, prize_command_text(tournament, players), parse_mode="HTML")
+    words = _args(message).split()
+    if not words:
+        cur = tp.describe(t.get("prize")) if (t.get("prize") or {}).get("state") == "held" else ""
+        await _send(chat_id, PRIZE_HELP + (f"\nCurrent: <b>{tx.esc(cur)}</b>" if cur else ""))
+        return
+    if words[0].lower() in ("remove", "clear", "off"):
+        if (t.get("prize") or {}).get("state") == "held":
+            await tp.refund(int(t["tid"]))
+            await tr.update_fields(int(t["tid"]), prize={})
+            await _send(chat_id, "✅ Prize removed" + ("." if (t["prize"] or {}).get("minted") else " — everything is back in your account."))
+        else:
+            await _send(chat_id, "There is no prize to remove.")
+        return
+    coins = _money_arg(words[0]) if words else None
+    rubies = _money_arg(words[1]) if len(words) > 1 else 0
+    if coins is None or rubies is None or coins < 0 or rubies < 0:
+        await _send(chat_id, "⚠️ Numbers first.\n" + PRIZE_HELP)
+        return
+    name = " ".join(words[2:]).strip()
+    cards: list[dict] = []
+    if name:
+        from handlers.giveaway import _find_cards
+        cards = await _find_cards(name)
+        if not cards:
+            await _send(chat_id, f"⚠️ No card named <b>{tx.esc(name)}</b>. Check the spelling (see /player).")
+            return
+    token = secrets_token()
+    _PRIZE[token] = {"tid": int(t["tid"]), "user": u["id"], "coins": coins, "rubies": rubies, "cards": cards[:10]}
+    if len(cards) > 1:
+        from services.giveaway import card_info
+        rows = [[tx.button(f"{i + 1}. {card_info(c)['full_name'][:30]} · OVR {card_info(c)['ovr']}", f"trz:{token}:p:{i}")] for i, c in enumerate(cards[:10])]
+        await _send(chat_id, "🃏 Several cards match — which one is the prize?", tx.markup(*rows, [tx.button("✖ Cancel", f"trz:{token}:x", style="danger")]))
+        return
+    await _prize_confirm(chat_id, token, 0 if cards else None)
 
 
-async def handle_non_command_message(message: dict) -> bool:
-    """Called by main.py only for non-command messages.
+def secrets_token() -> str:
+    import secrets
+    return secrets.token_hex(4)
 
-    The persistent session mirror is checked first. This is deliberately
-    fail-closed for ordinary replies so a busy group cannot generate a
-    PostgreSQL query for every conversation message.
-    """
+
+async def _prize_confirm(chat_id: int, token: str, idx: int | None) -> None:
+    st = _PRIZE.get(token)
+    if st is None:
+        return
+    st["pick"] = idx
+    card = st["cards"][idx] if idx is not None else None
+    from services.giveaway import card_info
+    bits = [x for x in (f"🪙 {st['coins']:,} coins" if st["coins"] else "", f"💎 {st['rubies']:,} rubies" if st["rubies"] else "",
+                        f"🃏 {card_info(card)['full_name']}" if card else "") if x]
+    admin = _is_admin(st["user"])
+    await _send(chat_id, "🎁 <b>Confirm the prize</b>\n<blockquote>" + "\n".join(bits) + "</blockquote>"
+                + ("👑 Owner: nothing is taken from you; it is created when paid out." if admin else
+                   "🔒 These are taken from your account now and held until the tournament ends. Cancelled tournament → returned."),
+                tx.markup([tx.button("✅ Confirm", f"trz:{token}:y", style="success"), tx.button("✖ Cancel", f"trz:{token}:x", style="danger")]))
+
+
+@register("prizesplit")
+async def prizesplit_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _prize_target(chat_id, u["id"])
+    if t is None or (t.get("prize") or {}).get("state") != "held":
+        await _send(chat_id, "Set a prize first with /prize, then divide it here.")
+        return
+    text = _args(message)
+    if not text:
+        names = ", ".join(f"<code>{k}</code>" for k in ("champion", "runner", "third", "fourth", "orange", "purple", "mvp", "50s", "100s", "sr", "sixes"))
+        await _send(chat_id, "✍️ <b>Custom prize split</b>\n" + await _prize_done_text(t) + f"\nAwards: {names}\nExample: <code>/prizesplit champion=50 runner=25 orange=15 purple=10</code>")
+        return
+    parts, err = tp.parse_custom_parts(text)
+    if parts is None:
+        await _send(chat_id, "⚠️ " + tx.esc(err))
+        return
+    res = await tp.set_custom_parts(int(t["tid"]), u["id"], parts)
+    if not res["ok"]:
+        await _send(chat_id, "⚠️ " + tx.esc(res["error"]))
+        return
+    await _send(chat_id, await _prize_done_text(await tr.get(int(t["tid"]))))
+
+
+@register_callback("trz")
+async def on_prize(cq):
+    p = _parts(cq)
+    token, act = p[1], p[2]
+    st = _PRIZE.get(token)
+    if st is None:
+        await _answer(cq, "This request expired — send /prize again.", True)
+        return
+    if _user(cq)["id"] != st["user"]:
+        await _answer(cq, "Only the host can use this.", True)
+        return
+    chat_id = int((cq.get("message") or {}).get("chat", {}).get("id") or 0)
+    if act == "x":
+        _PRIZE.pop(token, None)
+        await _answer(cq, "Cancelled.")
+        await _edit(cq, "✖ Prize cancelled.")
+        return
+    if act == "p":
+        await _answer(cq)
+        await _edit(cq, "🃏 Card chosen.")
+        await _prize_confirm(chat_id, token, int(p[3]))
+        return
+    if act == "y":
+        _PRIZE.pop(token, None)
+        idx = st.get("pick")
+        card = st["cards"][idx] if idx is not None and st["cards"] else None
+        res = await tp.set_prize(st["tid"], st["user"], st["coins"], st["rubies"], card)
+        if not res["ok"]:
+            await _answer(cq, res["error"][:190], True)
+            await _edit(cq, "⚠️ " + tx.esc(res["error"]))
+            return
+        await _answer(cq, "🎁 Prize set!")
+        t = await tr.get(st["tid"])
+        await _edit(cq, await _prize_done_text(t), tx.markup(_split_markup(st["tid"], t["prize"].get("split") or tp.DEFAULT_SPLIT)))
+        if t["status"] == "setup":
+            await _draft_show(t)
+        else:
+            await _refresh_lobby(st["tid"])
+
+
+# ---------------------------------------------------------------------------
+# assign / remove owners
+# ---------------------------------------------------------------------------
+@register("teamown")
+async def teamown_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"])
+    if not t or not rt.can_manage(t, u["id"]):
+        await _send(chat_id, "Only the tournament host can assign teams.")
+        return
+    tid = int(t["tid"])
+    words = _args(message).split()
+    remove = bool(words) and words[0].lower() in ("remove", "rm", "del")
+    if remove:
+        words = words[1:]
+    teams = await tr.teams(tid)
+    team_no = tc._resolve_team(" ".join(words), teams) if words else None
+    target = ((message.get("reply_to_message") or {}).get("from")) or None
+    if remove:
+        if team_no is None and target:
+            hit = await tr.team_of_user(tid, int(target["id"]))
+            team_no = int(hit["team_no"]) if hit else None
+        if team_no is None:
+            await _send(chat_id, "Usage: <code>/teamown remove CSK</code> (or reply to the user's message with /teamown remove)")
+            return
+        await tr.remove_owner(tid, team_no, delete_if_registration=False)
+        await _send(chat_id, "✅ Owner removed from the team.")
+        await _refresh_lobby(tid)
+        return
+    if team_no is None or not target:
+        await _send(chat_id, "Reply to the user's message: <code>/teamown CSK</code>\nRemove: <code>/teamown remove CSK</code>")
+        return
     try:
-        chat = message.get("chat") or {}
-        reply = message.get("reply_to_message") or {}
-        if not reply:
-            return False
-        user_id = int((message.get("from") or {}).get("id") or 0)
-        chat_id = int(chat.get("id") or 0)
-        reply_id = int(reply.get("message_id") or 0)
-        if not has_active_prompt_message(user_id, chat_id, reply_id):
-            return False
-        return await handle_tournament_reply(message)
-    except Exception as exc:
-        print(f"[tournament] non-command reply handling failed: {exc!r}")
-        return False
-
-
-@register_callback("tour_type")
-async def on_tour_type(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    chat = callback_query.get("message") or {}
-    chat_id = int((chat.get("chat") or {}).get("id") or 0)
-    parts = str(callback_query.get("data") or "").split(":")
-    choice = parts[1] if len(parts) > 1 else ""
-    owner_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-    if uid != owner_id:
-        await app.answer_callback_query(callback_query["id"], "This tournament setup belongs to another user.", show_alert=True)
+        await tr.assign_owner(tid, team_no, {"id": int(target["id"]), "username": target.get("username"), "first_name": target.get("first_name") or "Player"})
+    except tr.TourError as exc:
+        await _send(chat_id, f"⚠️ {tx.esc(str(exc))}")
         return
+    await _send(chat_id, f"✅ {tv.e(target.get('first_name'))} now owns <b>{tx.esc(tx.team_short(await tr.team(tid, team_no)))}</b>.")
+    await _refresh_lobby(tid)
 
-    if choice != "IPL":
-        await app.answer_callback_query(callback_query["id"], "That tournament engine is reserved for the next module.", show_alert=True)
+
+# ---------------------------------------------------------------------------
+# auction card + bidding + host controls
+# ---------------------------------------------------------------------------
+@register("auction")
+async def auction_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"], _args(message), statuses=("registration", "auction", "ready", "live"))
+    if not t:
+        await _send(chat_id, "No tournament here yet. Create one with /createtour")
         return
-
-    tournament = await create_draft(
-        uid,
-        (callback_query.get("from") or {}).get("username"),
-        (callback_query.get("from") or {}).get("first_name"),
-        chat_id,
-    )
-    tid = int(tournament["tournament_id"])
-    await create_ipl_teams(tid, IPL_TEAM_ORDER)
-    await update_tournament(tid, status="select_mode", prompt_message_id=int(chat.get("message_id") or 0), overview_message_id=int(chat.get("message_id") or 0))
-
-    await app.edit_message_text(
-        chat_id,
-        int(chat.get("message_id") or 0),
-        "<b>╭━━〔 🏏 INDIAN PREMIER LEAGUE 〕━━╮</b>\n\n"
-        "Choose how this IPL tournament should be created.\n\n"
-        "<blockquote>"
-        "🔨 <b>Auction Tour</b> → teams are built through the auction stage.\n"
-        "🏏 <b>Without Auction Tour</b> → reserved for the non-auction tournament flow."
-        "</blockquote>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-        parse_mode="HTML",
-        reply_markup=mode_keyboard(tid),
-    )
-    await app.answer_callback_query(callback_query["id"], "IPL selected.")
+    text, kb = await auc.status_card(int(t["tid"]), u["id"])
+    await _send(chat_id, text, kb)
 
 
-@register_callback("tour_mode")
-async def on_tour_mode(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) < 3:
+@register_callback("trb")
+async def on_bid(cq):
+    p = _parts(cq)
+    try:
+        tid, ord_, price = int(p[1]), int(p[2]), int(p[3])
+    except (IndexError, ValueError):
+        await _answer(cq, "Invalid bid.", True)
         return
-    tid = int(parts[1])
-    mode = parts[2]
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This tournament setup belongs to another user.", show_alert=True)
+    try:
+        res = await auc.bid(tid, ord_, _user(cq)["id"], expected_lakh=price)
+    except Exception:
+        traceback.print_exc()
+        await _answer(cq, "Something went wrong, try again.", True)
         return
+    await _answer(cq, tx.bid_feedback(res), not res.get("ok"))
 
-    if mode != "auction":
-        await app.answer_callback_query(callback_query["id"], "Without-auction tournaments are reserved for the next module.", show_alert=True)
+
+@register_callback("trh")
+async def on_host_control(cq):
+    p = _parts(cq)
+    tid, act = int(p[1]), p[2]
+    t = await tr.get(tid)
+    if not await _need_host(cq, t):
         return
-
-    await update_tournament(tid, status="await_prize", auction_mode=True)
-    await _edit_prompt(tid, render_prize_prompt(), cancel_keyboard(tid))
-    await app.answer_callback_query(callback_query["id"], "Auction mode selected.")
-
-
-@register_callback("tour_new_cancel")
-async def on_tour_new_cancel(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    parts = str(callback_query.get("data") or "").split(":")
-    owner_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-    if uid != owner_id:
-        await app.answer_callback_query(callback_query["id"], "This tournament setup belongs to another user.", show_alert=True)
+    if act == "e":
+        await _answer(cq)
+        await _send(int(t["host_chat_id"]), "🛑 <b>End the auction now?</b>\nUnsold lots stop and squads are completed automatically.",
+                    tx.markup([tx.button("Yes, end", f"trh:{tid}:ey", style="danger"), tx.button("No", f"trh:{tid}:en")]))
         return
-    msg = callback_query.get("message") or {}
-    await app.edit_message_text(
-        int((msg.get("chat") or {}).get("id") or 0),
-        int(msg.get("message_id") or 0),
-        "<b>❌ TOURNAMENT CREATION CANCELLED</b>\n\nNo tournament setup was started.",
-        parse_mode="HTML",
-        reply_markup=NO_KEYBOARD,
-    )
-    await app.answer_callback_query(callback_query["id"], "Cancelled.")
-
-
-@register_callback("tour_ui_cancel")
-async def on_tour_ui_cancel(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "Only the tournament host can close this prompt.", show_alert=True)
-        return
-    msg = callback_query.get("message") or {}
-    await app.edit_message_text(
-        int((msg.get("chat") or {}).get("id") or 0),
-        int(msg.get("message_id") or 0),
-        "<b>❌ ACTION CANCELLED</b>\n\nThe tournament itself is unchanged.",
-        parse_mode="HTML",
-        reply_markup=NO_KEYBOARD,
-    )
-    await app.answer_callback_query(callback_query["id"], "Action cancelled.")
-
-
-@register_callback("tour_cancel")
-async def on_tour_cancel(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) < 2:
-        return
-    tid = int(parts[1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "Only the tournament creator can cancel this setup.", show_alert=True)
-        return
-    await _send_cancelled(tid)
-    await app.answer_callback_query(callback_query["id"], "Tournament creation cancelled.")
-
-
-@register_callback("tour_prize_confirm")
-async def on_prize_confirm(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-
-    player = tournament.get("prize_player")
-    if isinstance(player, str):
-        player = json.loads(player)
-    if player:
-        current, error = await resolve_owned_prize_player(uid, str(player.get("name") or ""))
-        if error or not current or int(current.get("player_id") or 0) != int(player.get("player_id") or 0):
-            await app.answer_callback_query(callback_query["id"], "The prize player changed or is no longer owned. Please change the prize.", show_alert=True)
-            await _edit_prompt(tid, render_prize_prompt("The optional prize player is no longer available in your squad."), cancel_keyboard(tid))
-            await update_tournament(tid, status="await_prize")
-            return
-
-    await update_tournament(tid, status="overview")
-    tournament = await get_tournament(tid)
-    await _edit_prompt(
-        tid,
-        render_tournament_overview(tournament),
-        cancel_keyboard(tid),
-    )
-    await app.answer_callback_query(callback_query["id"], "Prize confirmed.")
-
-
-@register_callback("tour_prize_change")
-async def on_prize_change(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-    await update_tournament(tid, status="await_prize")
-    await _edit_prompt(tid, render_prize_prompt(), cancel_keyboard(tid))
-    await app.answer_callback_query(callback_query["id"], "Enter the new prize details.")
-
-
-@register_callback("tour_pool_confirm")
-async def on_pool_confirm(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-
-    preview = tournament.get("pool_preview") or []
-    if isinstance(preview, str):
-        preview = json.loads(preview)
-    if not preview:
-        await app.answer_callback_query(callback_query["id"], "There are no valid auction players to save.", show_alert=True)
-        return
-
-    pool_count, player_count = await create_pools(tid, preview)
-    await update_tournament(
-        tid,
-        status="ask_group",
-        pool_preview=None,
-        pool_errors=None,
-        pool_count=pool_count,
-        player_count=player_count,
-    )
-    await _edit_prompt(
-        tid,
-        "<b>╭━━〔 🌐 HOST GROUP 〕━━╮</b>\n\n"
-        "Do you want to set a public Telegram group to host this tournament?\n\n"
-        "<blockquote>✅ <b>Yes, I want</b> → configure a public group.\n"
-        "No, I don't want → continue without a group.\n"
-        "❌ <b>Cancel</b> → stop tournament creation.</blockquote>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-        group_choice_keyboard(tid),
-    )
-    await app.answer_callback_query(callback_query["id"], "Auction pool saved.")
-
-
-@register_callback("tour_pool_change")
-async def on_pool_change(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-    await update_tournament(tid, status="await_pool")
-    await _edit_prompt(tid, render_pool_prompt(), cancel_keyboard(tid))
-    await app.answer_callback_query(callback_query["id"], "Resend the auction pool.")
-
-
-@register_callback("tour_group_yes")
-async def on_group_yes(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-    await update_tournament(tid, status="await_group")
-    await _edit_prompt(
-        tid,
-        "<b>╭━━〔 🌐 SET HOST GROUP 〕━━╮</b>\n\n"
-        "Now send the group ID with:\n"
-        "<code>/setgroup -1001234567890</code>\n\n"
-        "<blockquote>Only public groups are accepted. The bot must already be in the group with the required admin permissions.</blockquote>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-        cancel_keyboard(tid),
-    )
-    await app.answer_callback_query(callback_query["id"], "Send the group ID with /setgroup.")
-
-
-@register_callback("tour_group_no")
-async def on_group_no(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-    await update_tournament(tid, status="final_confirm")
-    tournament = await get_tournament(tid)
-    await _edit_prompt(tid, render_final_review(tournament), final_create_keyboard(tid))
-    await app.answer_callback_query(callback_query["id"], "No host group selected.")
-
-
-@register_callback("tour_group_confirm")
-async def on_group_confirm(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-    await update_tournament(tid, status="final_confirm")
-    tournament = await get_tournament(tid)
-    await _edit_prompt(tid, render_final_review(tournament), final_create_keyboard(tid))
-    await app.answer_callback_query(callback_query["id"], "Host group confirmed.")
-
-
-@register_callback("tour_group_change")
-async def on_group_change(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-    await update_tournament(tid, status="await_group", host_group_id=None, host_group_name=None, host_group_username=None)
-    await _edit_prompt(
-        tid,
-        "<b>╭━━〔 🌐 SET HOST GROUP 〕━━╮</b>\n\n"
-        "Resend the public group with:\n"
-        "<code>/setgroup -1001234567890</code>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-        cancel_keyboard(tid),
-    )
-    await app.answer_callback_query(callback_query["id"], "Change the group.")
-
-
-@register_callback("tour_create")
-async def on_tour_create(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "This setup belongs to another user.", show_alert=True)
-        return
-
-    # Verify the creator still owns the optional prize player before showing
-    # the 3-second creation status.
-    player = tournament.get("prize_player")
-    if isinstance(player, str):
-        player = json.loads(player)
-    if player:
-        _, error = await resolve_owned_prize_player(uid, str(player.get("name") or ""))
-        if error:
-            await app.answer_callback_query(callback_query["id"], "The prize player is no longer available. Please change the prize.", show_alert=True)
-            await update_tournament(tid, status="await_prize")
-            await _edit_prompt(tid, render_prize_prompt(error), cancel_keyboard(tid))
-            return
-
-    await app.answer_callback_query(callback_query["id"], "Creating tournament...")
-    source_chat = int(tournament["creation_chat_id"])
-    source_message = int(tournament.get("prompt_message_id") or tournament.get("overview_message_id") or 0)
-    if source_message:
+    if act in ("en",):
+        await _answer(cq)
+        m = cq.get("message") or {}
         try:
-            await app.delete_message(source_chat, source_message)
+            await app.delete_message(int(m["chat"]["id"]), int(m["message_id"]))
+        except Exception:
+            pass
+        return
+    action = {"p": "pause", "r": "resume", "ey": "end"}.get(act)
+    if not action:
+        await _answer(cq, "Unknown action.", True)
+        return
+    res = await auc.control(tid, _user(cq)["id"], action)
+    await _answer(cq, res.get("message"), not res.get("ok"))
+    if act == "ey":
+        m = cq.get("message") or {}
+        try:
+            await app.delete_message(int(m["chat"]["id"]), int(m["message_id"]))
         except Exception:
             pass
 
-    progress = await app.send_message(
-        source_chat,
-        "<b>Creating your IPL tournament...</b>",
-        parse_mode="HTML",
-    )
-    await asyncio.sleep(3)
+
+# ---------------------------------------------------------------------------
+# match days: ready / present / /tplay
+# ---------------------------------------------------------------------------
+@register("tplay")
+async def tplay_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await rt.find_for_user(chat_id, u["id"])
+    if t is None:
+        await _send(chat_id, "You have no running tournament match. Use /tour to see the tournaments here.")
+        return
+    res = await rt.ready(int(t["tid"]), u["id"])
+    who = tv.owner_mention({"owner_id": u["id"], "owner_username": u["username"], "owner_name": u["first_name"]})
+    await _send(chat_id, f"{who} — {res['message']}")
+    rt.wake()
+
+
+@register_callback("trr")
+async def on_ready(cq):
+    tid = int(_parts(cq)[1])
+    res = await rt.ready(tid, _user(cq)["id"])
+    await _answer(cq, res["message"], not res.get("ok"))
+    if res.get("ok") and res.get("state") == "waiting":
+        t = await tr.get(tid)
+        if t:
+            u = _user(cq)
+            await _send(int(t["host_chat_id"]), f"✅ {tv.e(u['first_name'])} is ready — waiting for the opponent. They can tap Ready or send /tplay.")
+    rt.wake()
+
+
+@register_callback("trp")
+async def on_present(cq):
+    p = _parts(cq)
+    res = await rt.present(int(p[1]), int(p[2]), p[3], _user(cq)["id"])
+    await _answer(cq, res["message"], not res.get("ok"))
+    rt.wake()
+
+
+# ---------------------------------------------------------------------------
+# table, caps, records
+# ---------------------------------------------------------------------------
+def _caps_markup(tid: int, records: bool = False) -> dict:
+    rows = [[tx.button("📊 Table", f"trs:{tid}:table"), tx.button("🟠 Orange Cap", f"trs:{tid}:orange"),
+             tx.button("🟣 Purple Cap", f"trs:{tid}:purple"), tx.button("⭐ MVP", f"trs:{tid}:mvp")]]
+    if records:
+        names = [tv.BOARD_TITLES[b] for b in tv.RECORD_BOARDS]
+        row: list[dict] = []
+        for b, (icon, title) in zip(tv.RECORD_BOARDS, names):
+            row.append(tx.button(f"{icon} {title.replace('Most ', '').replace('Best ', '')}"[:20], f"trs:{tid}:{b}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+    rows.append([tx.hub_button(tid)])
+    return tx.markup(*rows)
+
+
+async def _board_text(t: dict, board: str) -> str:
+    tid = int(t["tid"])
+    teams_l = await tr.teams(tid)
+    if board == "table":
+        fixtures = await tr.fixtures(tid)
+        league = [f for f in fixtures if f["stage"] == "league"]
+        table = tc.table_from_rows(teams_l, fixtures)
+        return tv.table_text(t, table, sum(1 for f in league if f["status"] == "done"), len(league))
+    return tv.leaders_text(t, board, await tr.leaders(tid, board, 10), {int(x["team_no"]): x for x in teams_l})
+
+
+async def _show_board(chat_id: int, message: dict, board: str, records: bool, arg: str = "") -> None:
+    t = await _find(chat_id, _user(message)["id"], arg, statuses=("live", "completed", "ready", "registration", "auction"))
+    if not t:
+        await _send(chat_id, "No tournament found here. Start one with /createtour")
+        return
+    await _send(chat_id, await _board_text(t, board), _caps_markup(int(t["tid"]), records))
+
+
+@register("tour")
+async def tour_command(message):
+    await _show_board(_chat(message)[0], message, "table", False, _args(message))
+
+
+@register("tourstats")
+async def tourstats_command(message):
+    await _show_board(_chat(message)[0], message, "orange", True, _args(message))
+
+
+@register_callback("trs")
+async def on_board(cq):
+    p = _parts(cq)
+    tid, board = int(p[1]), p[2]
+    t = await tr.get(tid)
+    if t is None or (board != "table" and board not in tv.BOARD_TITLES):
+        await _answer(cq, "Not available.", True)
+        return
+    await _answer(cq)
+    await _edit(cq, await _board_text(t, board), _caps_markup(tid, board in tv.RECORD_BOARDS or board in ("orange", "purple", "mvp")))
+
+
+# ---------------------------------------------------------------------------
+# /tsched  (.txt in, current schedule .txt out)
+# ---------------------------------------------------------------------------
+@register("tsched")
+async def tsched_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"], _args(message).split()[0] if _args(message) else "",
+                    statuses=("registration", "ready", "live"))
+    if not t or not rt.can_manage(t, u["id"]):
+        await _send(chat_id, "Only the host of a tournament in this chat can manage the schedule.")
+        return
+    tid = int(t["tid"])
+    doc = message.get("document") or ((message.get("reply_to_message") or {}).get("document"))
+    if not doc:
+        name, text = await rt.schedule_file(tid)
+        await _send(chat_id, tc.SCHEDULE_HELP + "\n\n📎 Send your own .txt file with the caption <code>/tsched</code> (or reply to a .txt with /tsched).")
+        if text.strip():
+            await app.send_document(chat_id, text.encode("utf-8"), filename=name, caption="📄 Current schedule — edit it and send it back with /tsched")
+        return
+    if int(doc.get("file_size") or 0) > 200_000:
+        await _send(chat_id, "⚠️ File too large (max 200 KB).")
+        return
     try:
-        await app.delete_message(source_chat, int(progress.get("message_id") or 0))
+        raw = await app.download_media(doc["file_id"])
+        text = raw.decode("utf-8-sig", errors="replace")
     except Exception:
-        pass
-
-    ok, error = await create_tournament_final(tid)
-    tournament = await get_tournament(tid)
-    if (not ok) and str(tournament.get("status") or "") != "created":
-        # The only pre-creation failure currently possible after the final
-        # check is a race where the optional prize player disappeared. Restore
-        # a live setup prompt instead of leaving the creator with a dead draft.
-        await update_tournament(tid, status="await_prize")
-        sent = await app.send_message(
-            source_chat,
-            render_prize_prompt(error or "The prize setup needs to be entered again."),
-            parse_mode="HTML",
-            reply_markup=cancel_keyboard(tid),
-        )
-        await _set_prompt_id(tid, int(sent["message_id"]))
-        await app.answer_callback_query(callback_query["id"], "The tournament was not created. Please update the prize.", show_alert=True)
+        traceback.print_exc()
+        await _send(chat_id, "⚠️ Could not read that file. Send it as a plain .txt document.")
         return
-
-    tournament = await get_tournament(tid)
-    group_ok = bool(tournament.get("host_group_id")) and ok
-    success_text = render_creation_success(tournament, group_ok, error)
-    await app.send_message(source_chat, success_text, parse_mode="HTML")
-    await app.answer_callback_query(callback_query["id"], "Tournament creation finished.")
-
-
-@register_callback("tour_selfreg")
-async def on_self_registration(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tid = int(str(callback_query.get("data") or "").split(":")[-1])
-    tournament = await get_tournament(tid)
-    if not tournament or not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "Only the tournament host can enable self-registration.", show_alert=True)
+    res = await rt.apply_schedule(tid, u["id"], text)
+    if not res["ok"]:
+        await _send(chat_id, "⚠️ <b>Schedule not applied</b>\n<blockquote>" + tx.esc(res["error"]) + "</blockquote>")
         return
-    await update_tournament(tid, self_registration_enabled=True)
-    await update_group_board(tid)
-    await app.answer_callback_query(callback_query["id"], "Self-registration enabled.")
-
-
-@register_callback("tour_team")
-async def on_team_register(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 3:
-        return
-    tid = int(parts[1])
-    team_code = parts[2].upper()
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    user = callback_query.get("from") or {}
-    tournament = await get_tournament(tid)
-    if not tournament or tournament["status"] != "created":
-        await app.answer_callback_query(callback_query["id"], "This tournament is not accepting registrations.", show_alert=True)
-        return
-    if int(tournament.get("host_group_id") or 0) != int((callback_query.get("message") or {}).get("chat", {}).get("id") or 0):
-        await app.answer_callback_query(callback_query["id"], "This registration board is not valid here.", show_alert=True)
-        return
-    if not tournament["self_registration_enabled"]:
-        await app.answer_callback_query(callback_query["id"], "Self-registration is not enabled by the tournament host yet.", show_alert=True)
-        return
-    if team_code not in IPL_TEAM_ORDER:
-        await app.answer_callback_query(callback_query["id"], "Unknown franchise.", show_alert=True)
-        return
-
-    team = await get_team(tid, team_code)
-    if not team or team["owner_user_id"]:
-        await app.answer_callback_query(callback_query["id"], "That franchise is already taken.", show_alert=True)
-        return
-
-    existing = await get_user_registration(tid, uid)
-    if existing:
-        await app.answer_callback_query(callback_query["id"], f"You already own {existing['team_code']} in this tournament.", show_alert=True)
-        return
-
-    # The Telegram API can only DM users who have started the bot. If the DM
-    # is unavailable, do not reserve the franchise.
-    dm_text = (
-        "<b>╭━━〔 ✅ TOURNAMENT REGISTRATION 〕━━╮</b>\n\n"
-        f"🎉 Congratulations, <b>{esc(user.get('first_name') or user.get('username') or uid)}</b>.\n\n"
-        f"🏏 <b>Tournament</b>: {esc(tournament.get('tournament_name'))}\n"
-        f"🏷️ <b>Your Team</b>   : {esc(IPL_TEAM_MAP.get(team_code, team_code))}\n"
-        f"👤 <b>Hosted by</b>   : {esc(tournament.get('creator_username') or tournament.get('creator_name') or 'Tournament Host')}\n"
-        f"🌐 <b>Host Group</b>  : {esc(tournament.get('host_group_name'))}\n\n"
-        "<blockquote>Confirm your franchise registration. Cancelling here leaves the team available for someone else.</blockquote>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
-    )
-    markup = {
-        "inline_keyboard": [[
-            {"text": "✅ Yes, confirm", "callback_data": f"tour_register_confirm:{tid}:{team_code}", "style": "success"},
-            {"text": "❌ Cancel registration", "callback_data": f"tour_register_cancel:{tid}:{team_code}", "style": "danger"},
-        ]]
-    }
-    try:
-        await app.send_message(uid, dm_text, parse_mode="HTML", reply_markup=markup)
-        await app.answer_callback_query(callback_query["id"], "Check your private chat with the bot.")
-    except Exception as exc:
-        await app.answer_callback_query(
-            callback_query["id"],
-            "Please open the bot and press /start first. I could not open the private registration message.",
-            show_alert=True,
-        )
-        print(f"[tournament] registration DM failed for user={uid}: {exc!r}")
-
-
-@register_callback("tour_register_confirm")
-async def on_register_confirm(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 3:
-        return
-    tid = int(parts[1])
-    team_code = parts[2].upper()
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tournament = await get_tournament(tid)
-    if not tournament:
-        await app.edit_message_text(int(uid), int(callback_query.get("message", {}).get("message_id") or 0), "⚠️ Tournament no longer exists.")
-        return
-
-    success, reason = await assign_team(
-        tid,
-        team_code,
-        uid,
-        (callback_query.get("from") or {}).get("username"),
-        (callback_query.get("from") or {}).get("first_name"),
-        "self",
-    )
-    if not success:
-        await app.answer_callback_query(callback_query["id"], reason, show_alert=True)
-        return
-
-    await update_group_board(tid)
-    await app.edit_message_text(
-        uid,
-        int(callback_query.get("message", {}).get("message_id") or 0),
-        "<b>✅ TOURNAMENT REGISTRATION CONFIRMED</b>\n\n"
-        f"You are now the franchise owner of <b>{esc(IPL_TEAM_MAP.get(team_code, team_code))}</b>.\n\n"
-        "Your host group board has been updated.",
-        parse_mode="HTML",
-        reply_markup=NO_KEYBOARD,
-    )
-    await app.answer_callback_query(callback_query["id"], "Registration confirmed.")
-
-
-@register_callback("tour_register_cancel")
-async def on_register_cancel(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    mid = int(callback_query.get("message", {}).get("message_id") or 0)
-    try:
-        await app.edit_message_text(
-            uid,
-            mid,
-            "<b>❌ REGISTRATION CANCELLED</b>\n\nNo franchise was reserved for you.",
-            parse_mode="HTML",
-            reply_markup=NO_KEYBOARD,
-        )
-    except Exception:
-        pass
-    await app.answer_callback_query(callback_query["id"], "Registration cancelled.")
-
-
-
-async def _restore_stage_to_host(chat_id: int, tournament: dict):
-    tid = int(tournament["tournament_id"])
-    status = str(tournament.get("status") or "select_mode")
-    sent = None
-
-    if status == "select_mode":
-        text = (
-            "<b>╭━━〔 ♻️ RESTORED TOURNAMENT SETUP 〕━━╮</b>\n\n"
-            "Your tournament creation session has been restored. Choose the game instance to continue."
-        )
-        markup = create_type_keyboard(int(tournament["creator_id"]))
-    elif status == "await_prize":
-        text = render_prize_prompt()
-        markup = cancel_keyboard(tid)
-    elif status == "confirm_prize":
-        player = tournament.get("prize_player")
-        if isinstance(player, str):
-            player = json.loads(player)
-        prize = {
-            "coins": int(tournament.get("prize_coins") or 0),
-            "rubies": int(tournament.get("prize_rubies") or 0),
-            "player": player,
-        }
-        text = render_prize_confirmation(prize)
-        markup = confirm_prize_keyboard(tid)
-    elif status in {"overview", "await_pool"}:
-        text = render_tournament_overview(tournament, show_setpool=False)
-        text += "\n\n<blockquote>📥 <b>Next step</b>\nUse <code>/setpool IPL</code> and reply with the auction pool text or a .txt file.</blockquote>"
-        markup = cancel_keyboard(tid)
-    elif status == "confirm_pool":
-        preview = tournament.get("pool_preview") or []
-        if isinstance(preview, str):
-            preview = json.loads(preview)
-        lines = [
-            "<b>╭━━〔 📦 RESTORED AUCTION POOL REVIEW 〕━━╮</b>", "",
-            f"✅ <b>Valid pools</b>  : {len(preview)}",
-            f"✅ <b>Valid players</b>: {int(tournament.get('player_count') or 0)}",
-            "",
-        ]
-        for pool in preview:
-            lines.append(f"<b>[Pool {int(pool['pool_no'])}: {esc(pool['pool_name'])}]</b> • Base {int(pool['base_price']):,}")
-            lines.extend(_pool_player_preview_line(player) for player in pool.get("players", []))
-            lines.append("")
-        lines += ["<b>Are you sure you want to set these players for the IPL auction?</b>", "", "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"]
-        text = "\n".join(lines)
-        markup = pool_confirmation_keyboard(tid)
-    elif status in {"ask_group", "await_group"}:
-        text = (
-            "<b>╭━━〔 🌐 HOST GROUP 〕━━╮</b>\n\n"
-            "Do you want to set a public Telegram group to host this tournament?\n\n"
-            "<blockquote>✅ <b>Yes, I want</b> → configure a public group.\n"
-            "No, I don't want → continue without a host group.\n"
-            "❌ <b>Cancel</b> → stop tournament setup.</blockquote>\n\n"
-            "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
-        )
-        markup = group_choice_keyboard(tid)
-    elif status == "confirm_group":
-        text = render_group_review(tournament)
-        markup = final_create_keyboard(tid, group_review=True)
-    elif status == "final_confirm":
-        text = render_final_review(tournament)
-        markup = final_create_keyboard(tid)
-    elif status == "created":
-        ok, error = await create_registration_announcement(tid)
-        if not ok and error:
-            await app.send_message(chat_id, f"⚠️ Tournament restored, but the group board could not be recreated: <code>{esc(error)}</code>", parse_mode="HTML")
-        else:
-            await app.send_message(chat_id, "✅ <b>Tournament restored successfully.</b> The tournament continues from its saved state.", parse_mode="HTML")
-        await sync_tournament_session(tid)
-        return
-    else:
-        text = render_tournament_overview(tournament)
-        markup = cancel_keyboard(tid)
-
-    sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
-    await update_tournament(tid, prompt_message_id=int(sent["message_id"]), overview_message_id=int(sent["message_id"]))
-    await sync_tournament_session(tid)
-
-
-@register_callback("tour_teamown_tourpick")
-async def on_teamown_tournament_pick(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 5:
-        return
-    tid, target_id, remove_flag, host_id = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    if uid != host_id:
-        await app.answer_callback_query(callback_query["id"], "Only the tournament host can use this menu.", show_alert=True)
-        return
-    tournament = await get_tournament(tid)
-    if not tournament or not _tournament_owner_ok(tournament, uid) or str(tournament.get("status") or "") != "created":
-        await app.answer_callback_query(callback_query["id"], "That tournament is no longer available.", show_alert=True)
-        return
-    target = await fetchrow("SELECT * FROM users WHERE user_id=$1 LIMIT 1;", target_id)
-    if not target:
-        await app.answer_callback_query(callback_query["id"], "Target user no longer exists.", show_alert=True)
-        return
-    chat = callback_query.get("message") or {}
-    chat_id = int((chat.get("chat") or {}).get("id") or 0)
-    await app.edit_message_text(
-        chat_id,
-        int(chat.get("message_id") or 0),
-        "<b>╭━━〔 🏟️ TOURNAMENT SELECTED 〕━━╮</b>\n\n"
-        f"🏆 <b>Tournament</b>: {esc(tournament.get('tournament_name') or tournament.get('tournament_code'))}\n"
-        f"👤 <b>User</b>      : {esc(target.get('first_name') or target.get('username') or target_id)}\n"
-        f"🆔 <b>ID</b>        : <code>{target_id}</code>\n\n"
-        "Proceeding to the team ownership step...\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-        parse_mode="HTML",
-        reply_markup=NO_KEYBOARD,
-    )
-    await _teamown_present_action(chat_id, uid, target, tournament, remove=bool(remove_flag))
-    await app.answer_callback_query(callback_query["id"], "Tournament selected.")
-
-
-@register_callback("tour_end_pick")
-async def on_endtour_pick(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 3:
-        return
-    tid, host_id = int(parts[1]), int(parts[2])
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    if uid != host_id:
-        await app.answer_callback_query(callback_query["id"], "Only the tournament host can use this menu.", show_alert=True)
-        return
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid) or str(tournament.get("status") or "") not in RUNNING_TOURNAMENT_STATUSES:
-        await app.answer_callback_query(callback_query["id"], "That tournament is no longer running.", show_alert=True)
-        return
-    msg = callback_query.get("message") or {}
-    await _show_endtour_confirmation(
-        int((msg.get("chat") or {}).get("id") or 0), tournament, uid,
-        message_id=int(msg.get("message_id") or 0),
-    )
-    await app.answer_callback_query(callback_query["id"], "Tournament selected.")
-
-
-@register_callback("tour_end_cancel")
-async def on_endtour_cancel(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) < 2 or uid != int(parts[1]):
-        await app.answer_callback_query(callback_query["id"], "This menu belongs to another host.", show_alert=True)
-        return
-    msg = callback_query.get("message") or {}
-    try:
-        await app.edit_message_text(
-            int((msg.get("chat") or {}).get("id") or 0), int(msg.get("message_id") or 0),
-            "<b>❌ Action cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD,
-        )
-    except Exception:
-        pass
-    await app.answer_callback_query(callback_query["id"], "Cancelled.")
-
-
-@register_callback("tour_end_confirm")
-async def on_endtour_confirm(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 3:
-        return
-    tid, host_id = int(parts[1]), int(parts[2])
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    if uid != host_id:
-        await app.answer_callback_query(callback_query["id"], "Only the tournament host can end this tournament.", show_alert=True)
-        return
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid) or str(tournament.get("status") or "") not in RUNNING_TOURNAMENT_STATUSES:
-        await app.answer_callback_query(callback_query["id"], "That tournament is no longer running.", show_alert=True)
-        return
-    chat_id = int((callback_query.get("message") or {}).get("chat", {}).get("id") or 0)
-    message_id = int((callback_query.get("message") or {}).get("message_id") or 0)
-    # Retire the live group board before removing the tournament rows. The
-    # historical board remains visible as an ended notice instead of a stale
-    # registration menu.
-    group_id = int(tournament.get("host_group_id") or 0)
-    board_id = int(tournament.get("group_registration_message_id") or 0)
-    if group_id and board_id:
-        try:
-            await app.edit_message_text(
-                group_id, board_id,
-                f"<b>⛔ TOURNAMENT ENDED</b>\n\n"
-                f"🏆 <b>{esc(tournament.get('tournament_name') or tournament.get('tournament_code') or 'Tournament')}</b>\n"
-                "This tournament has been ended by the host. Its verified backup can be restored by the host.",
-                parse_mode="HTML", reply_markup=NO_KEYBOARD,
-            )
-        except Exception as exc:
-            print(f"[tournament] could not retire group board: {exc!r}")
-    try:
-        backup = await create_tournament_backup(tid)
-    except Exception as exc:
-        print(f"[tournament] endtour backup failed: {exc!r}")
-        await app.answer_callback_query(callback_query["id"], "Backup failed. The tournament was not ended.", show_alert=True)
-        return
-    try:
-        if message_id:
-            await app.delete_message(chat_id, message_id)
-    except Exception:
-        pass
-    await _send_endtour_backup(chat_id, backup)
-    await app.answer_callback_query(callback_query["id"], "Tournament ended and backup created.")
-
-
-@register_callback("tour_restore_cancel")
-async def on_restore_cancel(callback_query: dict):
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) < 2 or uid != int(parts[1]):
-        await app.answer_callback_query(callback_query["id"], "This restore action belongs to another user.", show_alert=True)
-        return
-    msg = callback_query.get("message") or {}
-    try:
-        await app.edit_message_text(
-            int((msg.get("chat") or {}).get("id") or 0), int(msg.get("message_id") or 0),
-            "<b>❌ Restore cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD,
-        )
-    except Exception:
-        pass
-    await app.answer_callback_query(callback_query["id"], "Restore cancelled.")
-
-
-@register_callback("tour_restore_confirm")
-async def on_restore_confirm(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 3:
-        return
-    backup_id, host_id = int(parts[1]), int(parts[2])
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    if uid != host_id:
-        await app.answer_callback_query(callback_query["id"], "This restore belongs to another user.", show_alert=True)
-        return
-    row = await fetchrow("SELECT * FROM auction_tournament_backups WHERE backup_id=$1 AND creator_id=$2 LIMIT 1;", backup_id, uid)
-    if not row:
-        await app.answer_callback_query(callback_query["id"], "That backup is not owned by you.", show_alert=True)
-        return
-    chat_id = int((callback_query.get("message") or {}).get("chat", {}).get("id") or 0)
-    message_id = int((callback_query.get("message") or {}).get("message_id") or 0)
-    try:
-        tournament = await restore_tournament_backup(dict(row))
-    except Exception as exc:
-        print(f"[tournament] restore failed: {exc!r}")
-        await app.answer_callback_query(callback_query["id"], "Restore failed. The backup was not changed.", show_alert=True)
-        return
-    try:
-        if message_id:
-            await app.delete_message(chat_id, message_id)
-    except Exception:
-        pass
-    await _restore_stage_to_host(chat_id, tournament)
-    await app.answer_callback_query(callback_query["id"], "Tournament restored.")
-
-
-@register_callback("tour_teamown_pick")
-async def on_teamown_pick(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 4:
-        return
-    tid, target_id, team_code = int(parts[1]), int(parts[2]), parts[3].upper()
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "Only the tournament host can assign teams.", show_alert=True)
-        return
-    team = await get_team(tid, team_code)
-    if not team or team["owner_user_id"]:
-        await app.answer_callback_query(callback_query["id"], "That team is already assigned.", show_alert=True)
-        return
-    target = await fetchrow("SELECT * FROM users WHERE user_id=$1 LIMIT 1;", target_id)
-    if not target:
-        await app.answer_callback_query(callback_query["id"], "That user is not registered with the bot.", show_alert=True)
-        return
-    existing = await get_user_registration(tid, target_id)
-    if existing:
-        await app.answer_callback_query(callback_query["id"], f"That user already owns {existing['team_code']}.", show_alert=True)
-        return
-
-    await app.edit_message_text(
-        int((callback_query.get("message") or {}).get("chat", {}).get("id") or 0),
-        int((callback_query.get("message") or {}).get("message_id") or 0),
-        "<b>╭━━〔 👑 ASSIGN FRANCHISE 〕━━╮</b>\n\n"
-        f"👤 <b>User</b> : {esc(target.get('first_name') or target.get('username') or target_id)}\n"
-        f"🆔 <b>ID</b>   : <code>{target_id}</code>\n"
-        f"🏷️ <b>Team</b> : {esc(IPL_TEAM_MAP.get(team_code, team_code))}\n\n"
-        f"<b>Are you sure you want to assign this user to {esc(IPL_TEAM_MAP.get(team_code, team_code))}?</b>\n\n"
-        "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>",
-        parse_mode="HTML",
-        reply_markup=teamown_confirm_keyboard(tid, target_id, team_code),
-    )
-    await app.answer_callback_query(callback_query["id"], "Review the assignment.")
-
-
-@register_callback("tour_teamown_confirm")
-async def on_teamown_confirm(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 4:
-        return
-    tid, target_id, team_code = int(parts[1]), int(parts[2]), parts[3].upper()
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "Only the host can assign teams.", show_alert=True)
-        return
-    target = await fetchrow("SELECT * FROM users WHERE user_id=$1 LIMIT 1;", target_id)
-    if not target:
-        await app.answer_callback_query(callback_query["id"], "Target user no longer exists.", show_alert=True)
-        return
-    success, reason = await assign_team(
-        tid,
-        team_code,
-        target_id,
-        target.get("username"),
-        target.get("first_name"),
-        "manual",
-    )
-    if not success:
-        await app.answer_callback_query(callback_query["id"], reason, show_alert=True)
-        return
-    await update_group_board(tid)
-    mid = int((callback_query.get("message") or {}).get("message_id") or 0)
-    cid = int((callback_query.get("message") or {}).get("chat", {}).get("id") or 0)
-    if mid:
-        await app.edit_message_text(
-            cid,
-            mid,
-            f"<b>✅ TEAM ASSIGNED</b>\n\n{esc(target.get('first_name') or target.get('username') or target_id)} now owns <b>{esc(IPL_TEAM_MAP.get(team_code, team_code))}</b>.",
-            parse_mode="HTML",
-            reply_markup=NO_KEYBOARD,
-        )
-    await app.answer_callback_query(callback_query["id"], "Team assigned.")
-
-
-@register_callback("tour_teamown_remove")
-async def on_teamown_remove(callback_query: dict):
-    parts = str(callback_query.get("data") or "").split(":")
-    if len(parts) != 4:
-        return
-    tid, target_id, team_code = int(parts[1]), int(parts[2]), parts[3].upper()
-    uid = int((callback_query.get("from") or {}).get("id") or 0)
-    tournament = await get_tournament(tid)
-    if not _tournament_owner_ok(tournament, uid):
-        await app.answer_callback_query(callback_query["id"], "Only the host can remove teams.", show_alert=True)
-        return
-    success, reason = await remove_team_owner(tid, team_code, target_id)
-    if not success:
-        await app.answer_callback_query(callback_query["id"], reason, show_alert=True)
-        return
-    await update_group_board(tid)
-    mid = int((callback_query.get("message") or {}).get("message_id") or 0)
-    cid = int((callback_query.get("message") or {}).get("chat", {}).get("id") or 0)
-    if mid:
-        await app.edit_message_text(
-            cid,
-            mid,
-            f"<b>✅ TEAM OWNER REMOVED</b>\n\n<b>{esc(IPL_TEAM_MAP.get(team_code, team_code))}</b> is available again.",
-            parse_mode="HTML",
-            reply_markup=NO_KEYBOARD,
-        )
-    await app.answer_callback_query(callback_query["id"], "Team owner removed.")
+    await _send(chat_id, f"✅ <b>Schedule saved</b> — {res['matches']} matches over {res['days']} match days.\nPlayers can also play earlier any time with /tplay.",
+                tx.markup([tx.hub_button(tid)]))

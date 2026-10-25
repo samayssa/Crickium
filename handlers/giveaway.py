@@ -911,14 +911,17 @@ async def _announce(g: dict) -> None:
         elif g["status"] == "ended":
             await _announce_no_winner(g)
         else:  # cancelled
-            try:
-                await app.send_message(
-                    int(g["main_chat_id"]),
-                    f"🛑 <b>Giveaway #{gid} ({gw.esc(_prize_line(g))}) was cancelled.</b>",
-                    parse_mode="HTML",
-                )
-            except Exception as exc:
-                print(f"[giveaway] cancel notice failed: {exc!r}")
+            # A giveaway cancelled before its start time was never shown to anybody
+            # (broadcast_state is still 'pending'), so there is nothing to retract in public.
+            if str(g.get("broadcast_state") or "pending") != "pending":
+                try:
+                    await app.send_message(
+                        int(g["main_chat_id"]),
+                        f"🛑 <b>Giveaway #{gid} ({gw.esc(_prize_line(g))}) was cancelled.</b>",
+                        parse_mode="HTML",
+                    )
+                except Exception as exc:
+                    print(f"[giveaway] cancel notice failed: {exc!r}")
         await repo.mark_announced(gid)
     except Exception:
         print(f"[giveaway] announce #{gid} crashed:")
