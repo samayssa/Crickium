@@ -29,7 +29,6 @@ from database.migrate import migrate
 from engines.probability_engine import reload_probability_profile_cache
 from handlers.claim import start_claim_maintenance
 from services.quest_engine import start_quest_maintenance
-from services.auction_tournament_session import rebuild_active_sessions
 
 MAX_CONCURRENT_UPDATES = 12
 MAX_PENDING_UPDATES = 100
@@ -320,6 +319,14 @@ async def handle_message(_, message):
         # a bot here, because different update paths can omit that nested user.
         reply = payload.get("reply_to_message") or {}
         if reply:
+            # Owner replying to a /giveaway "custom time" prompt.
+            try:
+                from handlers.giveaway import handle_setup_reply
+                if await handle_setup_reply(payload):
+                    return
+            except Exception:
+                print("[main.py] Giveaway reply dispatch failed:")
+                traceback.print_exc()
             try:
                 consumed = await handle_non_command_message(payload)
                 if consumed:
@@ -516,7 +523,6 @@ async def main():
         await migrate()
         await reload_probability_profile_cache()
         print("[main.py] Probability profile cache loaded.")
-        await rebuild_active_sessions()
         await start_claim_maintenance()
         print("[main.py] Claim maintenance worker started.")
         await start_quest_maintenance()
@@ -527,6 +533,19 @@ async def main():
 
     app_client = await _start_client_with_persistent_session()
     app.bind_client(app_client)
+    try:
+        from handlers.giveaway import start_giveaway_worker
+        start_giveaway_worker()
+    except Exception:
+        print("[main.py] Giveaway worker failed to start:")
+        traceback.print_exc()
+    try:
+        from services import tournament_auction, tournament_runtime
+        tournament_auction.start_worker()
+        tournament_runtime.start_worker()
+    except Exception:
+        print("[main.py] Tournament workers failed to start:")
+        traceback.print_exc()
     me = await app.get_me()
     print(f"[main.py] Logged in as: id={me['id']} username=@{me.get('username')} is_bot={me.get('is_bot')}")
 
