@@ -1478,7 +1478,9 @@ def resolve_weights(
     # Flat pitch uses a standard 5% wicket probability floor. This is the
     # requested flat-pitch-only tuning; every other pitch keeps its existing
     # wicket profile unchanged.
-    if str(pitch or "even").strip().lower() == "flat":
+    # A free hit stays wicket-proof: the floor must not re-add the wicket
+    # chance that the free-hit rule removed earlier.
+    if str(pitch or "even").strip().lower() == "flat" and not free_hit_next_ball:
         _set_probability_floor(weights, "W", 0.05)
 
     return {key: max(0.0, value) for key, value in weights.items()}
