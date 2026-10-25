@@ -43,9 +43,21 @@ def _playing_xi_text(match: dict, challenger_xi: list[dict], opponent_xi: list[d
     )
 
 
+async def _xis(match: dict) -> tuple[list[dict], list[dict]]:
+    """Both Playing XIs - the auctioned ones in an auction tournament, otherwise each player's own."""
+    try:
+        from services.tournament_engines import custom_squads
+        squads = await custom_squads(int(match["match_id"]))
+    except Exception as exc:
+        print(f"[play] tournament XI lookup failed: {exc!r}")
+        squads = None
+    if squads and int(match["challenger_id"]) in squads and int(match["opponent_id"]) in squads:
+        return squads[int(match["challenger_id"])]["xi"], squads[int(match["opponent_id"])]["xi"]
+    return (await load_current_xi(match["challenger_id"]) or []), (await load_current_xi(match["opponent_id"]) or [])
+
+
 async def send_playing_xi(chat_id, match: dict) -> None:
-    challenger_xi = await load_current_xi(match["challenger_id"]) or []
-    opponent_xi = await load_current_xi(match["opponent_id"]) or []
+    challenger_xi, opponent_xi = await _xis(match)
 
     text = _playing_xi_text(match, challenger_xi, opponent_xi)
     keyboard = start_match_keyboard(match["match_id"])
@@ -76,8 +88,7 @@ async def on_play_start(callback_query):
 
     await app.answer_callback_query(callback_query["id"], "🏁 Match starting soon!", show_alert=True)
 
-    challenger_xi = await load_current_xi(match["challenger_id"]) or []
-    opponent_xi = await load_current_xi(match["opponent_id"]) or []
+    challenger_xi, opponent_xi = await _xis(match)
     text = _playing_xi_text(match, challenger_xi, opponent_xi)
 
     await app.edit_message_text(

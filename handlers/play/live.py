@@ -159,8 +159,21 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         bowling_team_id = toss_winner_id
         batting_team_id = opponent_id if bowling_team_id == challenger_id else challenger_id
 
-    batting_squad = await load_current_xi(batting_team_id) or []
-    bowling_squad = await load_current_xi(bowling_team_id) or []
+    # Auction tournament on the Custom engine: the auctioned squads (and stored best XIs) replace the players' own cards.
+    tour_squads = None
+    try:
+        from services.tournament_engines import custom_squads
+        tour_squads = await custom_squads(int(match["match_id"]))
+    except Exception as exc:
+        print(f"[play] tournament squad lookup failed; using personal squads: {exc!r}")
+    if tour_squads and batting_team_id in tour_squads and bowling_team_id in tour_squads:
+        match["_tour_auction"] = True
+        batting_squad = list(tour_squads[batting_team_id]["xi"])
+        bowling_squad = list(tour_squads[bowling_team_id]["xi"])
+    else:
+        tour_squads = None
+        batting_squad = await load_current_xi(batting_team_id) or []
+        bowling_squad = await load_current_xi(bowling_team_id) or []
 
     batting_display = _team_display(match, batting_team_id)
     bowling_display = _team_display(match, bowling_team_id)
@@ -179,34 +192,41 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         batting_squad=batting_squad,
         bowling_squad=bowling_squad,
     )
-    try:
-        session.full_squads = {
-            int(batting_team_id): [dict(p) for p in (await get_team_squad(batting_team_id) or batting_squad)],
-            int(bowling_team_id): [dict(p) for p in (await get_team_squad(bowling_team_id) or bowling_squad)],
-        }
-    except Exception as exc:
-        print(f"[play] Full squad lookup failed; using Playing XI as impact pool: {exc!r}")
-        session.full_squads = {int(batting_team_id): [dict(p) for p in batting_squad], int(bowling_team_id): [dict(p) for p in bowling_squad]}
-    try:
-        from database.player_upgrades_repo import restore_snapshot
-        existing_snapshot = await restore_snapshot(int(match["match_id"]))
-        if existing_snapshot:
-            session.upgrade_snapshot = existing_snapshot
-            session.upgrade_snapshot_restored = True
-        else:
-            snapshot = await load_snapshot_players(
-                [challenger_id, opponent_id],
-                {challenger_id: await load_current_xi(challenger_id) or [], opponent_id: await load_current_xi(opponent_id) or []},
-            )
-            session.upgrade_snapshot = snapshot
-            await persist_snapshot(int(match["match_id"]), snapshot)
-    except Exception as exc:
-        print(f"[play] Upgrade snapshot unavailable; continuing without upgrades: {exc!r}")
-        session.upgrade_snapshot = {}
+    if tour_squads:
+        session.full_squads = {int(batting_team_id): [dict(p) for p in tour_squads[batting_team_id]["squad"]],
+                               int(bowling_team_id): [dict(p) for p in tour_squads[bowling_team_id]["squad"]]}
+        session.upgrade_snapshot = {}      # auctioned cards carry no personal upgrades
+    else:
+        try:
+            session.full_squads = {
+                int(batting_team_id): [dict(p) for p in (await get_team_squad(batting_team_id) or batting_squad)],
+                int(bowling_team_id): [dict(p) for p in (await get_team_squad(bowling_team_id) or bowling_squad)],
+            }
+        except Exception as exc:
+            print(f"[play] Full squad lookup failed; using Playing XI as impact pool: {exc!r}")
+            session.full_squads = {int(batting_team_id): [dict(p) for p in batting_squad], int(bowling_team_id): [dict(p) for p in bowling_squad]}
+        try:
+            from database.player_upgrades_repo import restore_snapshot
+            existing_snapshot = await restore_snapshot(int(match["match_id"]))
+            if existing_snapshot:
+                session.upgrade_snapshot = existing_snapshot
+                session.upgrade_snapshot_restored = True
+            else:
+                snapshot = await load_snapshot_players(
+                    [challenger_id, opponent_id],
+                    {challenger_id: await load_current_xi(challenger_id) or [], opponent_id: await load_current_xi(opponent_id) or []},
+                )
+                session.upgrade_snapshot = snapshot
+                await persist_snapshot(int(match["match_id"]), snapshot)
+        except Exception as exc:
+            print(f"[play] Upgrade snapshot unavailable; continuing without upgrades: {exc!r}")
+            session.upgrade_snapshot = {}
 
     start_new_partnership(session)
 
-    ready = await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match), reply_markup=match_scoring_keyboard("PLAY", int(match["match_id"])))
+    _kb = match_scoring_keyboard("PLAY", int(match["match_id"]))
+    from services.tournament_ready import send as _tour_ready
+    ready = await _tour_ready("PLAY", match, _kb) or await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match), reply_markup=_kb)
     session.ready_message_id = ready["message_id"]
     try:
         await app.pin_chat_message(chat_id, ready["message_id"], disable_notification=True)
@@ -757,6 +777,8 @@ async def _record_player_squad_stats(session, innings_1: dict, innings_2: dict) 
     The shared helper is idempotent and also works for special-edition player
     IDs, so one special player can no longer roll back the whole match ledger.
     """
+    if (session.match or {}).get("_tour_auction"):
+        return      # auctioned cards are not the players' own cards
     try:
         await record_session_player_stats(session)
     except Exception as exc:
