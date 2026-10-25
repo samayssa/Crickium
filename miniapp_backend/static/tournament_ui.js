@@ -141,17 +141,18 @@
       : `<div class="tn-host"><span>👑 Host</span>${s.paused ? '<button class="tn-btn green" data-tn-ctl="resume">▶ Resume</button>' : '<button class="tn-btn" data-tn-ctl="pause">⏸ Pause</button>'}<button class="tn-btn danger" data-tn-ctl="ask">🛑 End</button></div>`) : "";
     let stage = "";
     if (l) {
-      const sec = leftNow();
+      const sec = l.status === "live" ? leftNow() : null;
       const lead = l.leader_short ? `<div class="tn-lead-team"><small>HIGHEST BIDDER</small><b>${esc(l.leader_short)}</b><span>${esc(l.leader_owner || "")}</span></div>` : `<div class="tn-lead-team none"><small>NO BIDS YET</small><b>Base ${esc(l.base_text)}</b></div>`;
       const sold = l.status !== "live";
-      const bidBtn = !me ? `<button class="tn-bid" disabled>👀 Spectating</button>`
-        : l.can_bid ? `<button class="tn-bid" data-tn-bid="${l.ord}:${l.next_lakh}" ${pending ? "disabled" : ""}>💰 BID ${esc(l.next_text)}</button>`
-        : `<button class="tn-bid" disabled>${s.paused ? "⏸ Paused" : sold ? "Lot closed" : l.leader_team_no === me.no ? "✅ You lead" : l.bid_block ? esc({ purse: "Not enough purse", squad_full: "Squad full", overseas_full: "Overseas limit" }[l.bid_block] || "Cannot bid") : "Waiting…"}</button>`;
+      const banner = l.status === "sold"
+        ? `<div class="tn-sold"><b>🔨 SOLD</b><span>to <b>${esc(l.sold_team || "")}</b>${l.sold_owner ? " · " + esc(l.sold_owner) : ""}</span><strong>${esc(l.sold_text || l.cur_text)}</strong><small>Base ${esc(l.base_text)} · next player in a moment…</small></div>`
+        : l.status === "unsold" ? `<div class="tn-sold unsold"><b>❌ UNSOLD</b><span>No bids · base ${esc(l.base_text)}</span><small>Next player in a moment…</small></div>` : "";
+      const bidBtn = banner || `<div class="tn-howto">💬 ${me ? `Send <b>/bid</b> in the group to bid ${esc(l.next_text)}` : "Team owners bid with <b>/bid</b> in the group"}</div>`;
       stage = `<section class="tn-lot ${l.round > 1 ? "accel" : ""}"><div class="tn-lot-top"><span>${esc(l.set || "")} · ${l.set_pos}/${l.set_size}</span><span>Lot ${l.ord}/${s.total_lots}${l.round > 1 ? " · ⚡ Accelerated" : ""}</span></div>
         <div class="tn-lot-body"><div class="tn-player"><div class="tn-ovr">${l.ovr}<small>OVR</small></div><h3>${esc(l.name)}</h3>
           <p>${esc(l.role_icon)} ${esc(l.role_label)} ${l.country ? "· " + esc(l.country) : ""} ${l.overseas ? "· ✈️" : ""}</p>
           <div class="tn-chips2"><span>🏏 ${l.bat}</span><span>⚡ ${l.bowl}</span><span>${esc(l.bat_hand || "")}</span><span>${esc(l.bowl_hand || "")}</span></div></div>${ring(sec)}</div>
-        <div class="tn-price"><div><small>CURRENT PRICE</small><b>${esc(l.cur_text)}</b></div>${lead}</div>${bidBtn}
+        <div class="tn-price"><div><small>${sold && l.status === "sold" ? "SOLD PRICE" : "CURRENT PRICE"}</small><b>${esc(l.status === "sold" && l.sold_text ? l.sold_text : l.cur_text)}</b></div>${lead}</div>${bidBtn}
         <div class="tn-bids">${(l.bids || []).map((b, i) => `<div class="${i === 0 ? "top" : ""}"><b>${esc(b.team)}</b><span>${esc(b.amount_text)}</span></div>`).join("")}</div></section>`;
     } else {
       stage = `<section class="tn-lot idle"><div class="tn-empty">${s.status === "done" ? "🏁 Auction finished" : "⏳ Next player coming up…"}</div>${s.status === "done" ? `<button class="tn-btn gold" data-tn-squads="${c.id}">👥 View all squads &amp; prices</button>` : ""}</section>`;
@@ -170,7 +171,7 @@
       const r = await app().api(`/api/tournaments/${tid}/auction`);
       snap = r; snapAt = Date.now();
       if (r.tournament && r.tournament.status === "live" && r.status === "done") { /* auction over */ }
-      const key = JSON.stringify([r.version, r.status, r.lot && r.lot.cur_lakh, r.lot && r.lot.status, r.my_team && r.my_team.purse, r.can_control, confirmEnd, pending]);
+      const key = JSON.stringify([r.version, r.status, r.lot && r.lot.cur_lakh, r.lot && r.lot.status, r.my_team && r.my_team.purse, r.can_control, confirmEnd, r.lot && r.lot.leader_team_no]);
       if (key !== lastVer) { lastVer = key; paintRoom(); }
     } catch (e) { if (!snap) fail(e); }
     if (mode === "room") poll = setTimeout(pollRoom, document.hidden ? 4000 : 1000);
@@ -188,14 +189,6 @@
     app().shell(`<div id="tn-root"><div class="loading-line">Entering the auction room…</div></div>`, "Auction Room", "LIVE BIDDING");
     clock = setInterval(tickRoom, 250);
     await pollRoom();
-  }
-  async function bid(ord, price) {
-    if (pending) return; pending = true; lastVer = -1; paintRoom();
-    try {
-      const r = await app().api(`/api/tournaments/${tid}/bid`, { method: "POST", body: JSON.stringify({ ord, price }) });
-      app().ping("medium"); app().toast(r.message || "Bid placed!");
-    } catch (e) { app().ping("error"); app().toast((e.payload && (e.payload.message || e.payload.detail)) || e.message, true); }
-    pending = false; lastVer = -1; clearTimeout(poll); await pollRoom();
   }
   async function control(action) {
     try { const r = await app().api(`/api/tournaments/${tid}/control`, { method: "POST", body: JSON.stringify({ action }) }); app().toast(r.message || "Done"); }
@@ -219,7 +212,6 @@
       if (box) box.innerHTML = `<div class="tn-sec">Squad</div>` + (r.players.length ? r.players.map((p) => `<div class="tn-sale"><span>${p.xi ? "⭐ " : ""}${esc(p.role_icon)} ${esc(p.name)}</span><b>${esc(p.price_text)}</b></div>`).join("") : '<p class="tn-empty">No players yet.</p>');
       return;
     }
-    if ((el = g("[data-tn-bid]"))) { const [o, p] = el.dataset.tnBid.split(":"); bid(Number(o), Number(p)); return; }
     if ((el = g("[data-tn-ctl]"))) {
       const a = el.dataset.tnCtl;
       if (a === "ask") { confirmEnd = true; lastVer = -1; paintRoom(); }

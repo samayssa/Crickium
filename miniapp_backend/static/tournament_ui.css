@@ -141,3 +141,14 @@
 .tn-squadbox summary small { color: var(--gold); font-size: 10px; }
 .tn-squadbox .tn-sale { margin: 0 10px 6px; }
 .tn-squadbox[open] summary { border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+
+.tn-sold { margin-top: 12px; padding: 14px; border-radius: 18px; text-align: center; display: grid; gap: 4px; background: linear-gradient(145deg, rgba(239,198,107,.22), rgba(0,0,0,.3)); border: 1px solid rgba(239,198,107,.55); box-shadow: 0 0 26px rgba(239,198,107,.18); animation: tnpop .35s ease-out; }
+.tn-sold b { font-size: 18px; letter-spacing: .08em; color: var(--gold); }
+.tn-sold span { font-size: 14px; }
+.tn-sold strong { font-size: 30px; color: var(--lime); font-variant-numeric: tabular-nums; }
+.tn-sold small { color: var(--muted); font-size: 11px; }
+.tn-sold.unsold { border-color: rgba(255,126,114,.4); background: rgba(255,126,114,.08); }
+.tn-sold.unsold b { color: #ff9a90; }
+@keyframes tnpop { from { transform: scale(.94); opacity: 0; } to { transform: none; opacity: 1; } }
+.tn-howto { margin-top: 12px; padding: 12px; border-radius: 15px; text-align: center; font-size: 13px; color: var(--muted); background: rgba(197,239,97,.06); border: 1px dashed rgba(197,239,97,.3); }
+.tn-howto b { color: var(--lime); }
