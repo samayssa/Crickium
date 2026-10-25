@@ -34,6 +34,11 @@ def build_caption(payload: dict[str, Any], match_number: int) -> str:
 
 
 async def send_report(app: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
+    try:   # tournament fixtures learn their result here, before (and independent of) the report document
+        from services.tournament_hooks import on_match_report
+        await on_match_report(payload)
+    except Exception as exc:
+        print(f"[tournament] result hook failed: {exc!r}")
     try:
         reserved, should_send = await reserve_report(
             engine=str(payload.get("engine") or "UNKNOWN"),
