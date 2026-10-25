@@ -220,7 +220,9 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         session.full_squads = {int(uid): [dict(p) for p in players] for uid, players in match["_full_squads"].items()}
     start_new_partnership(session)
 
-    ready = await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match), reply_markup=match_scoring_keyboard("PLAYWPL", int(match["match_id"])))
+    _kb = match_scoring_keyboard("PLAYWPL", int(match["match_id"]))
+    from services.tournament_ready import send as _tour_ready
+    ready = await _tour_ready("PLAYWPL", match, _kb) or await _send_match_ready(chat_id, match["stadium"], _match_ready_text(match), reply_markup=_kb)
     session.ready_message_id = ready["message_id"]
     try:
         await app.pin_chat_message(chat_id, ready["message_id"], disable_notification=True)
