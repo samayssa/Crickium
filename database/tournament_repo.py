@@ -150,10 +150,12 @@ SCHEMA_STATEMENTS = [
         b_msg_id BIGINT,
         said_once BOOLEAN NOT NULL DEFAULT FALSE,
         said_twice BOOLEAN NOT NULL DEFAULT FALSE,
+        said_mask INTEGER NOT NULL DEFAULT 0,
         shown INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (tid, ord)
     );
     """,
+    "ALTER TABLE tour_lots ADD COLUMN IF NOT EXISTS said_mask INTEGER NOT NULL DEFAULT 0;",
     "CREATE INDEX IF NOT EXISTS idx_tour_lots_status ON tour_lots(tid, status, ord);",
     """
     CREATE TABLE IF NOT EXISTS tour_bids(

@@ -163,7 +163,7 @@ async def begin_lot(tid: int, ord_: int, bid_seconds: int | None = None) -> dict
         row = await conn.fetchrow(
             """
             UPDATE tour_lots SET status='live', started_at=NOW(), deadline_at = NOW() + ($3::int * INTERVAL '1 second'),
-                   cur_bid_lakh=0, bid_count=0, leader_team_no=NULL, said_once=FALSE, said_twice=FALSE
+                   cur_bid_lakh=0, bid_count=0, leader_team_no=NULL, said_once=FALSE, said_twice=FALSE, said_mask=0
             WHERE tid=$1 AND ord=$2 AND status='pending' RETURNING *;
             """,
             int(tid), int(ord_), int(bid_seconds))
@@ -205,6 +205,14 @@ async def mark_said(tid: int, ord_: int, which: str) -> bool:
     row = await fetchrow(
         f"UPDATE tour_lots SET {col}=TRUE WHERE tid=$1 AND ord=$2 AND {col}=FALSE AND status='live' RETURNING ord;",
         int(tid), int(ord_))
+    return row is not None
+
+
+async def mark_countdown(tid: int, ord_: int, bit: int) -> bool:
+    """Claim the "N seconds remaining" notice with this bit (exactly once per timer run; a bid resets the mask)."""
+    row = await fetchrow(
+        "UPDATE tour_lots SET said_mask = said_mask + $3 WHERE tid=$1 AND ord=$2 AND status='live' AND (said_mask / $3) % 2 = 0 RETURNING ord;",
+        int(tid), int(ord_), int(bit))
     return row is not None
 
 
@@ -338,7 +346,7 @@ async def place_bid(tid: int, ord_: int, team_no: int, user_id: int | None, expe
         updated = await conn.fetchrow(
             """
             UPDATE tour_lots SET cur_bid_lakh=$3, leader_team_no=$4, bid_count=bid_count+1,
-                   deadline_at = NOW() + ($5::int * INTERVAL '1 second'), said_once=FALSE, said_twice=FALSE
+                   deadline_at = NOW() + ($5::int * INTERVAL '1 second'), said_once=FALSE, said_twice=FALSE, said_mask=0
             WHERE tid=$1 AND ord=$2 RETURNING *;
             """,
             int(tid), int(ord_), price, int(team_no), int(bid_seconds))
@@ -434,7 +442,7 @@ async def tick_state(tid: int) -> dict | None:
         SELECT a.status AS a_status, a.cur_ord, a.round, a.total_lots, a.version, a.next_lot_at, a.accel_done,
                a.paused_left_ms, a.pinned_msg_id, a.pin_failed, NOW() AS db_now,
                l.status AS l_status, l.deadline_at, l.bid_count, l.cur_bid_lakh, l.leader_team_no,
-               l.said_once, l.said_twice, l.base_lakh, l.shown, l.a_msg_id, l.b_msg_id
+               l.said_once, l.said_twice, l.said_mask, l.base_lakh, l.shown, l.a_msg_id, l.b_msg_id
         FROM tour_auction a LEFT JOIN tour_lots l ON l.tid = a.tid AND l.ord = a.cur_ord
         WHERE a.tid = $1;
         """,

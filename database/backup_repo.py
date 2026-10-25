@@ -95,6 +95,19 @@ FULL_BACKUP_TABLES = [
     "h2h_matches",
     "trade_requests",
     "game_session_snapshots",
+    "tour_tournaments",
+    "tour_teams",
+    "tour_members",
+    "tour_auction",
+    "tour_lots",
+    "tour_bids",
+    "tour_squad",
+    "tour_fixtures",
+    "tour_days",
+    "tour_player_match",
+    "giveaways",
+    "giveaway_entries",
+    "giveaway_deliveries",
 ]
 
 assert set(CLEARDATA_BACKUP_TABLES).isdisjoint(NEVER_CLEARED_TABLES), (
