@@ -158,7 +158,7 @@ async def _send_static(send, path: str):
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
     # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
-    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js", "giveaway_ui.css", "giveaway_ui.js"}
+    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js", "giveaway_ui.css", "giveaway_ui.js", "tournament_ui.css", "tournament_ui.js"}
     cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
     await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
 
@@ -276,6 +276,26 @@ class CrickiumMiniApp:
                     return
             from . import game_api
             status, data = await game_api.handle(viewer, method, path, query, payload)
+            await _send_json(send, data, status)
+            return
+
+        if path == "/api/tournaments" or path.startswith("/api/tournaments/"):
+            # The live auction room polls about once a second: its own, higher budget.
+            if _rate_limited(f"{viewer.id}:tour", _GAME_LIMIT):
+                await _send_json(send, {"ok": False, "detail": "Slow down a little"}, 429)
+                return
+            payload = {}
+            if method == "POST":
+                try:
+                    body = await _body(receive)
+                    payload = json.loads(body.decode("utf-8") or "{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("JSON body must be an object")
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                    await _send_json(send, {"detail": str(exc)}, 400)
+                    return
+            from . import tournament_api
+            status, data = await tournament_api.handle(viewer, method, path, query, payload)
             await _send_json(send, data, status)
             return
 
