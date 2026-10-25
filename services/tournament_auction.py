@@ -15,6 +15,8 @@ been shown (``shown``), so a restarted bot simply carries on.
 from __future__ import annotations
 
 import asyncio
+import re
+import math
 import collections
 import time
 import traceback
@@ -34,7 +36,7 @@ MIN_EDIT_GAP = 3.5            # seconds between two edits of the same live messa
 MIN_CALL_GAP = 1.2            # seconds between two Telegram calls into the same group
 CALLS_PER_MINUTE_LOW = 14     # live-message edits are held back when the group already got this many calls this minute
 CALLS_PER_MINUTE_HIGH = 19    # structural messages (new lot, result) may use the whole budget
-POLL_BUSY = 1.0               # worker period while an auction is running
+POLL_BUSY = 0.4               # worker period while an auction is running
 POLL_IDLE = 5.0
 
 _ACTIVE: set[int] = set()
@@ -123,10 +125,14 @@ class Presenter:
         self._push("new", int(ord_))
 
     def changed(self, ord_: int, urgent: bool = False) -> None:
-        if int(ord_) in self.pending_changed and not urgent:
-            return
-        self.pending_changed.add(int(ord_))
-        self._push("changed", (int(ord_), bool(urgent)))
+        """Kept for callers; the group no longer has an edited "live" message - every bid / notice is its own message."""
+        return
+
+    def bid(self, ord_: int, team: dict, price: int) -> None:
+        self._push("bid", (int(ord_), dict(team), int(price)))
+
+    def countdown(self, ord_: int, n: int) -> None:
+        self._push("count", (int(ord_), int(n), time.monotonic()))
 
     def result(self, ord_: int, skipped: bool = False) -> None:
         self._push("result", (int(ord_), bool(skipped)))
@@ -156,8 +162,10 @@ class Presenter:
             try:
                 if kind == "new":
                     await self._show_new(arg)
-                elif kind == "changed":
-                    await self._show_changed(*arg)
+                elif kind == "bid":
+                    await self._show_bid(*arg)
+                elif kind == "count":
+                    await self._show_count(*arg)
                 elif kind == "result":
                     await self._show_result(*arg)
                 elif kind == "text":
@@ -250,15 +258,50 @@ class Presenter:
         return {"team_no": lot["leader_team_no"], "short": lot.get("leader_short"), "base_code": lot.get("leader_base"),
                 "name": lot.get("leader_name"), "owner_name": lot.get("leader_owner")}
 
-    async def _ticker_payload(self, lot: dict, t: dict, total: int) -> tuple[str, dict]:
-        bids = await ar.recent_bids(self.tid, int(lot["ord"]), 3) if int(lot.get("bid_count") or 0) else []
-        note = ""
-        if self.paused:
-            note = "⏸ <b>Auction paused</b>"
-        elif int(lot.get("bid_count") or 0) > 0:
-            note = tx.going_note("twice" if lot.get("said_twice") else "once" if lot.get("said_once") else "")
-        text = tx.ticker(t, lot, total, self._leader(lot), bids, note)
-        return text, ticker_markup(self.tid, lot, paused=self.paused)
+    async def _lot_photo(self, lot: dict) -> bytes | None:
+        """The card image of the lot's player (None when it cannot be produced - the card then goes out as text)."""
+        try:
+            from services.card_provider import get_player_card_bytes
+            player = None
+            raw = lot.get("card")
+            if isinstance(raw, str):
+                import json as _json
+                raw = _json.loads(raw)
+            if isinstance(raw, dict) and str(raw.get("player_kind") or "global") in ("special", "showcase"):
+                from services.giveaway import resolve_live_card
+                player = await resolve_live_card(raw)
+            if player is None:
+                from database.query import fetchrow
+                row = await fetchrow("SELECT * FROM players WHERE LOWER(name)=LOWER($1) LIMIT 1;", str(lot.get("name") or ""))
+                player = dict(row) if row else {"name": lot.get("name"), "role": lot.get("role"), "country": lot.get("country"),
+                                                "bat_level": lot.get("bat_level"), "bowl_level": lot.get("bowl_level"),
+                                                "batting_hand": lot.get("batting_hand"), "bowling_hand": lot.get("bowling_hand")}
+            data, _custom = await get_player_card_bytes(player)
+            return data
+        except Exception as exc:
+            print(f"[tournament/auction] card image unavailable for lot {lot.get('ord')} of #{self.tid}: {exc!r}")
+            return None
+
+    async def _send_card(self, chat_id: int, lot: dict, t: dict, total: int) -> int | None:
+        price = tc.next_bid(int(lot.get("cur_bid_lakh") or 0), int(lot.get("base_lakh") or 0), int(lot.get("bid_count") or 0) > 0, t.get("ladder"))
+        text = tx.lot_card(t, lot, total, price)
+        if len(re.sub(r"<[^>]+>", "", text)) > 900:
+            text = tx.lot_card(t, lot, total, price, compact=True)
+        markup = lot_card_markup(self.tid)
+        adapter = _tg.get()
+        if hasattr(adapter, "send_photo"):
+            photo = await self._lot_photo(lot)
+            if photo:
+                for attempt in range(2):
+                    await self._pace(True)
+                    try:
+                        mid = await adapter.send_photo(chat_id, photo, text, markup)
+                        if mid:
+                            return mid
+                    except Exception as exc:
+                        print(f"[tournament/auction] photo send failed (#{self.tid}): {exc!r}")
+                        await asyncio.sleep(1.0)
+        return await self._send(chat_id, text, markup)
 
     async def _show_new(self, ord_: int) -> None:
         lot, t, auction = await self._view(ord_)
@@ -271,41 +314,32 @@ class Presenter:
             return
         if int(lot.get("shown") or 0) >= 2:
             return
-        a_id = lot.get("a_msg_id")
-        if not a_id:
-            a_id = await self._send(chat_id, tx.lot_card(t, lot, total), lot_card_markup(self.tid))
+        if not lot.get("a_msg_id"):
+            a_id = await self._send_card(chat_id, lot, t, total)    # photo + details + Open Auction Room, posted automatically ...
             if a_id:
                 await ar.set_lot_messages(self.tid, ord_, a_msg_id=a_id)
-                await self._pin(chat_id, a_id)                     # the new player is pinned FIRST ...
-        b_id = lot.get("b_msg_id")
-        if not b_id:
-            fresh = await ar.lot_view(self.tid, ord_) or lot
-            fresh["_ladder"] = t.get("ladder")
-            text, markup = await self._ticker_payload(fresh, t, total)
-            b_id = await self._send(chat_id, text, markup)         # ... then the live bidding message
-            if b_id:
-                await ar.set_lot_messages(self.tid, ord_, b_msg_id=b_id)
-                self.last_render[ord_] = text + repr(markup)
-        self.last_edit_at[ord_] = time.monotonic()
+                await self._pin(chat_id, a_id)                      # ... and pinned
         await ar.set_shown(self.tid, ord_, 1)
 
-    async def _show_changed(self, ord_: int, urgent: bool) -> None:
-        gap = MIN_CALL_GAP if urgent else MIN_EDIT_GAP
-        wait = self.last_edit_at.get(ord_, 0.0) + gap - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self.pending_changed.discard(ord_)                       # events that arrive from here on need a new render
+    async def _show_bid(self, ord_: int, team: dict, price: int) -> None:
         lot, t, auction = await self._view(ord_)
-        if lot is None or lot["status"] != "live" or not lot.get("b_msg_id") or not t.get("host_chat_id"):
+        if lot is None or not t.get("host_chat_id"):
             return
         total = int((auction or {}).get("total_lots") or 0)
-        text, markup = await self._ticker_payload(lot, t, total)
-        signature = text + repr(markup)
-        if self.last_render.get(ord_) == signature:
+        await self._send(int(t["host_chat_id"]), tx.bid_accepted(t, lot, team, price, total), tx.markup([tx.room_button(self.tid)]))
+
+    async def _show_count(self, ord_: int, n: int, queued_at: float) -> None:
+        """"N seconds remaining" - dropped when it is stale (a bid reset the clock, or the lot is over)."""
+        if time.monotonic() - queued_at > 2.5:
             return
-        if await self._edit(int(t["host_chat_id"]), int(lot["b_msg_id"]), text, markup, high=urgent):
-            self.last_render[ord_] = signature
-        self.last_edit_at[ord_] = time.monotonic()
+        lot, t, _auction = await self._view(ord_)
+        if lot is None or lot["status"] != "live" or not t.get("host_chat_id") or self.paused:
+            return
+        left = (lot["deadline_at"] - await _db_now()).total_seconds() if lot.get("deadline_at") else None
+        if left is None or math.ceil(left) != n:
+            return
+        leader = self._leader(lot)
+        await self._send(int(t["host_chat_id"]), tx.countdown(n, lot, leader), tx.markup([tx.room_button(self.tid)]))
 
     async def _show_result(self, ord_: int, skipped: bool) -> None:
         lot, t, auction = await self._view(ord_)
@@ -318,12 +352,7 @@ class Presenter:
             text = tx.sold_text(t, lot, team, total)
         else:
             text = tx.unsold_text(t, lot, total, skipped=skipped)
-        markup = tx.markup([tx.room_button(self.tid)])
-        done = False
-        if lot.get("b_msg_id"):
-            done = await self._edit(chat_id, int(lot["b_msg_id"]), text, markup, high=True)
-        if not done:
-            await self._send(chat_id, text, markup)
+        await self._send(chat_id, text, tx.markup([tx.room_button(self.tid)]))
         if lot.get("a_msg_id"):
             await self._unpin(chat_id, int(lot["a_msg_id"]))
         await ar.set_shown(self.tid, ord_, 2)
@@ -335,6 +364,11 @@ class Presenter:
         t = await self._tournament()
         if t.get("host_chat_id"):
             await self._send(int(t["host_chat_id"]), text, markup)
+
+
+async def _db_now():
+    row = await ar._quiet_fetchrow("SELECT NOW() AS n;")
+    return row["n"]
 
 
 def presenter(tid: int) -> Presenter:
@@ -466,9 +500,8 @@ async def bid(tid: int, ord_: int, user_id: int, expected_lakh: int | None = Non
             return {"ok": False, "reason": "busy"}
         raise
     if result.get("ok"):
-        pres = _PRESENTERS.get(int(tid))
-        if pres is not None:
-            pres.changed(int(ord_))
+        pres = _PRESENTERS.get(int(tid)) or presenter(tid)
+        pres.bid(int(ord_), dict(result.get("team") or team), int(result.get("price") or 0))
         wake()
     return result
 
@@ -674,13 +707,11 @@ async def _tick(tid: int) -> None:
         if result:
             pres.result(int(ord_))
         return
-    if int(st.get("bid_count") or 0) > 0:
-        if left <= tc.GOING_TWICE_AT and not st.get("said_twice"):
-            if await ar.mark_said(tid, int(ord_), "twice"):
-                pres.changed(int(ord_), urgent=True)
-        elif left <= tc.GOING_ONCE_AT and not st.get("said_once"):
-            if await ar.mark_said(tid, int(ord_), "once"):
-                pres.changed(int(ord_), urgent=True)
+    n = math.ceil(left)
+    if n in tx.COUNTDOWN_AT:
+        bit = 1 << tx.COUNTDOWN_AT.index(n)
+        if not (int(st.get("said_mask") or 0) // bit) % 2 and await ar.mark_countdown(tid, int(ord_), bit):
+            pres.countdown(int(ord_), n)
 
 
 async def _worker() -> None:

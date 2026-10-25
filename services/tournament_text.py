@@ -11,6 +11,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 from services import tournament_core as tc
+from utils.mentions import mention_html
 from utils.country_flags import flag_for
 from utils.style import batting_style_text, bowling_style_text
 
@@ -118,26 +119,61 @@ def multiple(final: int, base: int) -> str:
 # ---------------------------------------------------------------------------
 # auction messages
 # ---------------------------------------------------------------------------
-def lot_card(t: Mapping[str, Any], lot: Mapping[str, Any], total_lots: int) -> str:
-    """Message A - the player's card, pinned in the group."""
+def owner_tag(team: Mapping[str, Any] | None, owner_id: Any = None, owner_name: Any = None, owner_username: Any = None) -> str:
+    """The team owner as a clickable mention (@username when there is one)."""
+    uid = owner_id if owner_id is not None else (team or {}).get("owner_id")
+    name = owner_name or (team or {}).get("owner_name") or (team or {}).get("leader_owner") or "Owner"
+    uname = owner_username or (team or {}).get("owner_username")
+    if uid is None:
+        return esc(name)
+    return mention_html(int(uid), uname, name)
+
+
+def lot_card(t: Mapping[str, Any], lot: Mapping[str, Any], total_lots: int, next_price: int | None = None, compact: bool = False) -> str:
+    """The player's card (photo caption, so it stays below Telegram's 1024 character limit); pinned in the group."""
     ovr = tc.player_ovr(lot)
-    round_tag = "  ·  ⚡ <b>Accelerated round</b>" if int(lot.get("round") or 1) > 1 else ""
+    round_tag = " · ⚡ Accelerated" if int(lot.get("round") or 1) > 1 else ""
     set_line = f"{esc(lot.get('set_name'))} ({int(lot.get('set_pos') or 1)}/{int(lot.get('set_size') or 1)})"
-    pool_name = esc(lot.get("pool_name")) if lot.get("pool_name") else ""
+    country = esc(lot.get("country") or "—")
+    head = f"🏛 <b>AUCTION</b> · {esc(t.get('name'))}{round_tag}\n<blockquote>{player_heading(lot)}</blockquote>"
+    if compact:
+        body = (f"<blockquote>⭐ <b>{ovr}</b> · 🏏 {int(lot.get('bat_level') or 0)} · ⚡ {int(lot.get('bowl_level') or 0)} · {esc(role_label(lot.get('role')))}</blockquote>"
+                f"<blockquote>💰 <b>Base</b> ➤ <b>{money(lot.get('base_lakh'))}</b> · 📦 {set_line} · 🔢 {int(lot.get('ord') or 0)}/{int(total_lots or 0)}</blockquote>")
+    else:
+        body = (f"<blockquote>🎭 <b>Role</b> ➤ {esc(role_label(lot.get('role')))}\n🌍 <b>Country</b> ➤ {country}\n"
+                f"⭐ <b>Overall</b> ➤ {ovr}\n🏏 <b>Bat</b> ➤ {int(lot.get('bat_level') or 0)}   ⚡ <b>Bowl</b> ➤ {int(lot.get('bowl_level') or 0)}\n"
+                f"🧤 <b>Bat Style</b> ➤ {esc(batting_style_text(lot.get('batting_hand')))}\n"
+                f"🎯 <b>Bowl Style</b> ➤ {esc(bowling_style_text(lot.get('bowling_hand')))}</blockquote>"
+                f"<blockquote>💰 <b>Base Price</b> ➤ <b>{money(lot.get('base_lakh'))}</b>\n📦 <b>Set</b> ➤ {set_line}\n"
+                f"🔢 <b>Lot</b> ➤ {int(lot.get('ord') or 0)} of {int(total_lots or 0)}</blockquote>")
+    nxt = f" — next bid <b>{money(next_price)}</b>" if next_price else ""
+    return head + body + f"💬 Team owners: send <b>/bid</b> to bid{nxt}\n⏱ <i>{tc.BID_SECONDS}s · the clock resets on every bid</i>"
+
+
+def bid_accepted(t: Mapping[str, Any], lot: Mapping[str, Any], team: Mapping[str, Any], price: int, total_lots: int = 0) -> str:
+    """One message per accepted /bid (text only; always carries the Open Auction Room button)."""
     return (
-        f"🏛 <b>AUCTION</b> · {esc(t.get('name'))}{round_tag}\n"
+        f"✅ <b>BID ACCEPTED</b> · Lot {int(lot.get('ord') or 0)}/{int(total_lots or 0)}\n"
         f"<blockquote>{player_heading(lot)}</blockquote>"
-        f"<blockquote>🎭 <b>Role</b> ➤ {esc(role_label(lot.get('role')))}\n"
-        f"⭐ <b>Overall</b> ➤ {ovr}\n"
-        f"🏏 <b>Bat</b> ➤ {int(lot.get('bat_level') or 0)}   ⚡ <b>Bowl</b> ➤ {int(lot.get('bowl_level') or 0)}\n"
-        f"🧤 <b>Bat Style</b> ➤ {esc(batting_style_text(lot.get('batting_hand')))}\n"
-        f"🎯 <b>Bowl Style</b> ➤ {esc(bowling_style_text(lot.get('bowling_hand')))}</blockquote>"
-        f"<blockquote>💰 <b>Base Price</b> ➤ <b>{money(lot.get('base_lakh'))}</b>\n"
-        f"📦 <b>Set</b> ➤ {set_line}\n"
-        f"{('🏷 <b>Pool</b> ➤ ' + pool_name + chr(10)) if pool_name else ''}"
-        f"🔢 <b>Lot</b> ➤ {int(lot.get('ord') or 0)} of {int(total_lots or 0)}</blockquote>"
-        f"⏱ <i>{tc.BID_SECONDS}s timer — it resets on every bid</i>"
+        f"🏷 <b>Team</b> ➤ {team_label(team, owner=False)}\n"
+        f"👤 <b>Owner</b> ➤ {owner_tag(team)}\n"
+        f"💵 <b>Base price</b> ➤ {money(lot.get('base_lakh'))}\n"
+        f"💰 <b>Current price</b> ➤ <b>{money(price)}</b>\n"
+        f"👑 <b>Highest bidder</b> ➤ <b>{esc(team_short(team))}</b>"
     )
+
+
+COUNTDOWN_AT = (10, 5, 4, 3, 2, 1)
+
+
+def countdown(n: int, lot: Mapping[str, Any], leader: Mapping[str, Any] | None) -> str:
+    icon = "⏳" if n > 5 else "⚠️" if n > 3 else "🚨"
+    word = "second" if n == 1 else "seconds"
+    if leader and int(lot.get("bid_count") or 0) > 0:
+        tail = f"\n👑 {esc(team_short(leader))} leads at <b>{money(lot.get('cur_bid_lakh'))}</b> — send /bid to take it!"
+    else:
+        tail = f"\n💵 No bid yet · base <b>{money(lot.get('base_lakh'))}</b> — send /bid!"
+    return f"{icon} <b>{n} {word} remaining</b> · {player_heading(lot)}{tail}"
 
 
 def _bid_trail(bids: Sequence[Mapping[str, Any]], limit: int = 3) -> str:
@@ -180,9 +216,11 @@ def sold_text(t: Mapping[str, Any], lot: Mapping[str, Any], team: Mapping[str, A
                  f"<b>Squad</b> ➤ {int(team.get('squad_count') or 0)}/{int((t or {}).get('squad_max') or 0)}")
     return (
         f"🔨 <b>SOLD!</b>  ·  Lot {int(lot.get('ord') or 0)}/{int(total_lots or 0)}\n"
-        f"<blockquote>{player_heading(lot)}</blockquote>"
-        f"🏆 <b>Bought by</b> ➤ {team_label(team)}\n"
-        f"💰 <b>Price</b> ➤ <b>{money(final)}</b> <i>(base {money(base)}{multiple(final, base)})</i>"
+        f"<blockquote>{player_heading(lot)}\n⭐ {tc.player_ovr(lot)} · 🏏 {int(lot.get('bat_level') or 0)} · ⚡ {int(lot.get('bowl_level') or 0)} · {esc(role_label(lot.get('role')))}</blockquote>"
+        f"🏆 <b>Sold to</b> ➤ {team_label(team, owner=False)}\n"
+        f"👤 <b>Owner</b> ➤ {owner_tag(team)}\n"
+        f"💵 <b>Base price</b> ➤ {money(base)}\n"
+        f"💰 <b>Sold price</b> ➤ <b>{money(final)}</b>{multiple(final, base)}"
         f"{purse}"
     )
 
@@ -191,8 +229,8 @@ def unsold_text(t: Mapping[str, Any], lot: Mapping[str, Any], total_lots: int, s
     why = "skipped by the host" if skipped else "no bids"
     return (
         f"❌ <b>UNSOLD</b>  ·  Lot {int(lot.get('ord') or 0)}/{int(total_lots or 0)}\n"
-        f"<blockquote>{player_heading(lot)}</blockquote>"
-        f"💰 <b>Base price</b> ➤ {money(lot.get('base_lakh'))}  <i>({why})</i>"
+        f"<blockquote>{player_heading(lot)}\n⭐ {tc.player_ovr(lot)} · {esc(role_label(lot.get('role')))}</blockquote>"
+        f"💵 <b>Base price</b> ➤ {money(lot.get('base_lakh'))}  <i>({why})</i>"
     )
 
 

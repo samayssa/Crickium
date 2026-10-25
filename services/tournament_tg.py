@@ -17,6 +17,11 @@ class AppTelegram:
         msg = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         return int((msg or {}).get("message_id") or 0) or None
 
+    async def send_photo(self, chat_id: int, photo: bytes, caption: str, markup: dict | None = None) -> int | None:
+        from app import app
+        msg = await app.send_photo(chat_id, photo=photo, caption=caption, parse_mode="HTML", reply_markup=markup)
+        return int((msg or {}).get("message_id") or 0) or None
+
     async def send_rich(self, chat_id: int, html_text: str, markup: dict | None = None) -> bool:
         """Rich Message (headings, lists). False when Telegram does not accept it - the caller then sends a normal message."""
         from services.giveaway import tg_call
