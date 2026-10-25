@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from services.tournament_virtual import base_code as _vbase
+
 TEAM_MAP = {
     'IND': 'India', 'AUS': 'Australia', 'ENG': 'England', 'NZ': 'New Zealand',
     'SA': 'South Africa', 'BAN': 'Bangladesh', 'PAK': 'Pakistan', 'SL': 'Sri Lanka',
@@ -20,7 +22,8 @@ def normalize_team_keyword(value: str):
 
 
 def team_name(code):
-    return TEAM_MAP[code]
+    # Tournament teams use virtual codes (IND12): show the nation they are dressed as.
+    return TEAM_MAP[_vbase(code)]
 
 
 def team_flag(code):

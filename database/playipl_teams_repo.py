@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from services.tournament_virtual import base_code as _vbase
+
 TEAM_MAP = {
     'CSK': 'Chennai Super Kings',
     'DC': 'Delhi Capitals',
@@ -38,29 +40,30 @@ def normalize_team_keyword(value: str):
 
 
 def team_name(code: str) -> str:
-    return TEAM_MAP[str(code).upper()]
+    # Tournament teams use virtual codes (CSK12): show the franchise they are dressed as.
+    return TEAM_MAP[_vbase(code)]
 
 
 def team_short(code: str) -> str:
-    return str(code).upper()
+    return _vbase(code)
 
 
 def team_color(code: str) -> str:
-    return TEAM_COLOR.get(str(code).upper(), '🏏')
+    return TEAM_COLOR.get(_vbase(code), '🏏')
 
 
 def team_label(code: str) -> str:
     from utils.PremiumEmoji import ipl_team_emoji_html
-    code = str(code).upper()
+    code = _vbase(code)
     return f"{ipl_team_emoji_html(code)} {team_name(code)}"
 
 
 def team_short_label(code: str) -> str:
     from utils.PremiumEmoji import ipl_team_emoji_html
-    code = str(code).upper()
+    code = _vbase(code)
     return f"{ipl_team_emoji_html(code)} {team_short(code)}"
 
 
 def team_button_label(code: str) -> str:
-    code = str(code).upper()
+    code = _vbase(code)
     return f"{team_color(code)} {team_short(code)}"
