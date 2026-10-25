@@ -197,6 +197,9 @@ async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
                           "card_image": ((lot.get("card") or {}).get("image") if isinstance(lot.get("card"), dict) else None),
                           "can_bid": bool(mine) and lot["status"] == "live" and a["status"] == "running" and ok and int(lot.get("leader_team_no") or 0) != int((mine or {}).get("team_no") or -1),
                           "bid_block": why if (mine and not ok) else "",
+                          "sold_team": tx.team_short(next((x for x in teams_l if int(x["team_no"]) == int(lot["sold_team_no"])), None)) if lot.get("sold_team_no") is not None else None,
+                          "sold_owner": next((x.get("owner_name") for x in teams_l if int(x["team_no"]) == int(lot["sold_team_no"])), None) if lot.get("sold_team_no") is not None else None,
+                          "sold_text": _money(lot.get("sold_lakh")) if lot.get("sold_lakh") is not None else None,
                           "bids": [{"team": tx.team_short({"short": b.get("short"), "base_code": b.get("base_code")}), "amount_text": _money(b["amount_lakh"]), "owner": b.get("owner_name")} for b in await ar.bids(tid, int(lot["ord"]), 6)]}
     out["recent"] = [{"ord": int(r["ord"]), "name": r["name"], "role": r["role"], "status": r["status"], "price_text": _money(r.get("sold_lakh")) if r["status"] == "sold" else "Unsold",
                       "team": r.get("base_code")} for r in await ar.recent_sales(tid, 10)]
@@ -237,7 +240,7 @@ async def handle(viewer, method: str, path: str, query: dict, payload: dict) -> 
                 data = None
             return (200, data) if data is not None else (404, {"ok": False, "detail": "Not found"})
         if sub == "bid":
-            return await place_bid(viewer, tid, int(payload.get("ord") or 0), int(payload.get("price") or 0))
+            return 403, {"ok": False, "detail": "Bid with the /bid command in the group."}
         if sub == "control":
             return await control(viewer, tid, str(payload.get("action") or ""))
     except (ValueError, IndexError):
