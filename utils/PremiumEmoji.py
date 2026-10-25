@@ -70,11 +70,13 @@ TEAM_FALLBACK_EMOJIS: dict[str, str] = {
 
 def get_ipl_team_emoji(team_code: str) -> str | None:
     """Return the configured custom emoji ID for an IPL team code."""
-    return IPL_TEAM_EMOJIS.get(str(team_code or "").strip().upper())
+    from services.tournament_virtual import base_code
+    return IPL_TEAM_EMOJIS.get(base_code(team_code))
 
 
 def get_ipl_team_fallback_emoji(team_code: str) -> str:
-    return TEAM_FALLBACK_EMOJIS.get(str(team_code or "").strip().upper(), "🏏")
+    from services.tournament_virtual import base_code
+    return TEAM_FALLBACK_EMOJIS.get(base_code(team_code), "🏏")
 
 
 def ipl_team_emoji_html(team_code: str) -> str:

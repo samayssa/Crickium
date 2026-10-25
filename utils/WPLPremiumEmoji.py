@@ -26,13 +26,13 @@ WPL_TEAM_FALLBACK_EMOJIS: dict[str, str] = {
 
 
 def get_wpl_team_emoji(team_code: str) -> str | None:
-    return WPL_TEAM_EMOJIS.get(str(team_code or "").strip().upper())
+    from services.tournament_virtual import base_code
+    return WPL_TEAM_EMOJIS.get(base_code(team_code))
 
 
 def get_wpl_team_fallback_emoji(team_code: str) -> str:
-    return WPL_TEAM_FALLBACK_EMOJIS.get(
-        str(team_code or "").strip().upper(), "🏏"
-    )
+    from services.tournament_virtual import base_code
+    return WPL_TEAM_FALLBACK_EMOJIS.get(base_code(team_code), "🏏")
 
 
 def wpl_team_emoji_html(team_code: str) -> str:
