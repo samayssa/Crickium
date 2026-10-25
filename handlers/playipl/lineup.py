@@ -4,7 +4,7 @@ from handlers.registry import register_callback
 from app import app
 from database.playipl_repo import get_match,set_xi,set_xi_confirmed,get_recent_playing_xi,save_recent_playing_xi
 from database.playipl_repo import get_team_players
-from database.playipl_teams_repo import team_name,team_label
+from database.playipl_teams_repo import team_name,team_label,team_short
 from utils.PremiumEmoji import ipl_team_emoji_html
 from buttons.playipl_challenger_buttons import challenger_xi_keyboard
 from buttons.playipl_opponent_buttons import opponent_xi_keyboard
@@ -25,15 +25,6 @@ def _chosen_in_order(players, selected_ids):
 
 def _xi_keyboard(match_id, code, players, selected_ids, is_challenger):
     return (challenger_xi_keyboard if is_challenger else opponent_xi_keyboard)(match_id, code, players, selected_ids)
-
-def _role_emoji(player):
-    role=str(player.get('role') or player.get('player_role') or '').strip().lower().replace('-', '').replace(' ', '')
-    if 'keeper' in role or role in {'wk','wicketkeeper'}: return '🧤'
-    if 'allround' in role or role in {'ar','allrounder'}: return '🔄'
-    if 'bowl' in role: return '🎯'
-    if 'bat' in role: return '🏏'
-    bat=int(player.get('bat_level') or 0); bowl=int(player.get('bowl_level') or 0)
-    return '🎯' if bowl > bat + 3 else '🏏' if bat > bowl + 3 else '🔄'
 
 def _role_counts(players):
     c={'Batsman':0,'AllRounder':0,'Bowler':0,'Wicketkeeper':0}
@@ -60,9 +51,9 @@ def _build_text(code,players,selected):
     overseas_count=count_overseas(chosen)
     status='✅ Team Valid' if _valid(chosen) else '⚠️ Team Invalid'
     team_display=f"{ipl_team_emoji_html(code)} {team_name(code).upper()}"
-    lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_display} ({code})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
+    lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_display} ({team_short(code)})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
     chosen=_chosen_in_order(players, selected)
-    lines.extend([f"{_role_emoji(p)} {p.get('name','Player')}" for p in chosen])
+    lines.extend([p.get('name','Player') for p in chosen])
     lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",f"🌍 Overseas: {overseas_count}/{MAX_OVERSEAS_PLAYERS}",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
     return '\n'.join(lines)
 
@@ -74,7 +65,7 @@ async def send_build_messages(chat_id,match):
     for uid,field,code,is_ch in [(match['challenger_id'],'challenger_xi',match['challenger_team_code'],True),(match['opponent_id'],'opponent_xi',match['opponent_team_code'],False)]:
         players=await _players(code)
         if len(players) < 11:
-            await app.send_message(chat_id, f'<b>⚠️ {team_label(code)} ({code}) does not have at least 11 uploaded players.</b>', parse_mode='HTML')
+            await app.send_message(chat_id, f'<b>⚠️ {team_label(code)} ({team_short(code)}) does not have at least 11 uploaded players.</b>', parse_mode='HTML')
             return
         sent=await app.send_message(chat_id,_build_text(code,players,[]),parse_mode='HTML',reply_markup=_xi_keyboard(match['match_id'],code,players,[],is_ch));
         # Separate build messages are retained; store latest one for cleanup only.
@@ -171,7 +162,7 @@ async def playipl_xi_confirm(callback_query):
         if int(p.get('player_id') or 0) not in selected: bench.append(p)
         if len(bench)>=5: break
     final=("<b>╭━━〔 🏏 PLAYING XI CONFIRMED 〕━━╮</b>\n\n"
-           f"🏏 <b>{player_mention} • {team_display} ({code})</b>\n\n"
+           f"🏏 <b>{player_mention} • {team_display} ({team_short(code)})</b>\n\n"
            "<blockquote><b>🏏 PLAYING XI</b>\n"+"\n".join(f"{i+1}. {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for i,p in enumerate(chosen))+"</blockquote>\n\n"
            "<blockquote><b>🪑 BENCH / SUBSTITUTES</b>\n"+"\n".join(f"• {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for p in bench)+"</blockquote>\n\n🔒 <b>Playing XI Locked</b>\n\n╰━━━━━━━━━━━━━━━━━━╯")
     await app.send_message(callback_query['message']['chat']['id'],final,parse_mode='HTML')
