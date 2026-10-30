@@ -237,6 +237,16 @@ async def _expected_users(engine: str, match: Any) -> list[int]:
     return []
 
 
+def _state_dict(value: Any) -> dict:
+    """PLAYSO state may arrive from the driver as a JSON string or as a dict."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _signature_value(v: Any):
     if hasattr(v, "__dict__"):
         return str(v)
@@ -352,7 +362,10 @@ def _start(engine: str, match_id: int, chat_id: int, user: dict[str, Any]) -> No
 async def _default_timeout_callback(match: dict, timed_out: dict, winner: dict) -> None:
     engine = _engine_for_match(match)
     from services.match_rewards import award_timeout_rewards, build_timeout_message
-    await award_timeout_rewards(int(winner["id"]), int(timed_out["id"]))
+    try:
+        await award_timeout_rewards(int(winner["id"]), int(timed_out["id"]))
+    except Exception as exc:   # a reward failure must never leave the timed-out match half closed
+        print(f"[inactivity] timeout rewards failed for {engine}:{match.get('match_id')}: {exc!r}")
     # Build/send the report before runtime cleanup so complete telemetry survives.
     try:
         payload = None
@@ -373,12 +386,18 @@ async def _default_timeout_callback(match: dict, timed_out: dict, winner: dict) 
             session = get_playwpl_session(int(match["match_id"]))
             payload = collect_runtime_session("PLAYWPL", session, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout") if session else collect_match_row("PLAYWPL", dict(match), termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
         elif engine == "PLAYSO":
-            state = dict(match.get("state") or {})
+            state = _state_dict(match.get("state"))
             payload = collect_playso_match(dict(match), state, termination="timed_out", winner_id=int(winner["id"]), loser_id=int(timed_out["id"]), ended_by_user_id=int(timed_out["id"]), reason="inactivity timeout")
         if payload:
             await send_report(app, payload)
     except Exception as exc:
         print(f"[match_analysis] timeout report failed: {exc!r}")
+    if engine == "PLAYSO":
+        try:   # a timed-out Super Over also ends the tied original match
+            from services.super_over_bridge import force_close_origin
+            await force_close_origin(_state_dict(match.get("state")), "timed_out")
+        except Exception as exc:
+            print(f"[inactivity] origin close failed for PLAYSO:{match['match_id']}: {exc!r}")
     await _clear_engine_session(engine, int(match["match_id"]))
     await _clear_engine_messages(match)
     winner_mention = _display(winner)
