@@ -24,6 +24,51 @@ _LOCKS: dict[int, asyncio.Lock] = {}
 _DEDUP: dict[tuple[int, str, int, int], float] = {}
 
 
+PERSIST_KEYS = ("origin_engine", "origin_match_id", "origin_chat_id", "origin_innings", "origin_pitch",
+                "origin_xp_awarded", "super_over_rounds", "stadium", "weather")
+
+
+def persist_keys(state: dict[str, Any] | None) -> dict[str, Any]:
+    """State that must survive every innings / round reset of a Super Over.
+
+    ``set_state`` REPLACES the whole JSON, so without this the link to the original match (origin_*) was lost
+    after the first Super Over innings and the original match could never be finished (stuck game).
+    """
+    state = state or {}
+    return {k: state[k] for k in PERSIST_KEYS if k in state}
+
+
+def mode_title(state: dict[str, Any] | None) -> str:
+    origin = str((state or {}).get("origin_engine") or "PLAYSO")
+    return origin if origin in {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"} else "PLAYSO"
+
+
+async def sync_clock(match_id: int, actor_id: int | None = None) -> None:
+    """(Re)start the 3-minute inactivity clock for whoever is expected to act in this Super Over."""
+    try:
+        from utils.game_inactivity import sync_after_change
+        await sync_after_change("PLAYSO", int(match_id), actor_id)
+    except Exception as exc:
+        print(f"[playso] inactivity sync failed for {match_id}: {exc!r}")
+
+
+def cancel_inactivity_match(engine: str, match_id: int) -> None:
+    try:
+        from utils.game_inactivity import cancel_match
+        cancel_match(engine, int(match_id))
+    except Exception:
+        pass
+
+
+def eligible_bowlers(xi: list[dict[str, Any]], locked: int | None = None) -> list[int]:
+    """Player ids that may bowl. A locked bowler is released if nobody else could bowl (no dead end)."""
+    roles = [int(p.get("player_id") or 0) for p in xi if str(p.get("role") or "") in {"Bowler", "AllRounder"}]
+    if not roles:                       # a XI without any bowler must still be able to play the over
+        roles = [int(p.get("player_id") or 0) for p in xi]
+    free = [pid for pid in roles if locked is None or pid != int(locked)]
+    return free or roles
+
+
 def match_lock(match_id: int) -> asyncio.Lock:
     return _LOCKS.setdefault(int(match_id), asyncio.Lock())
 

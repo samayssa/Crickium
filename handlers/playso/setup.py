@@ -7,7 +7,7 @@ from app import app
 from buttons.playso_buttons import bowler_selection_keyboard, batter_selection_keyboard
 from database.playso_repo import get_match, update_locked, set_message_id, set_basic
 from engines.lineup_engine import load_current_xi
-from handlers.playso.common import current_xi, bowling_family, player_line, mention_html, role_emoji, match_lock, callback_message_is_current, dedup_selection_click, bowling_family_label
+from handlers.playso.common import mode_title as _mode_title, eligible_bowlers, sync_clock, current_xi, bowling_family, player_line, mention_html, role_emoji, match_lock, callback_message_is_current, dedup_selection_click, bowling_family_label
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -28,8 +28,7 @@ def _users_for_innings(match: dict, innings_no: int):
 
 def _bowler_text(match: dict, batting_id: int, bowling_id: int, players: list[dict], selected: int | None = None, locked: int | None = None) -> str:
     bowling_mention = mention_html(bowling_id, match.get("challenger_username") if bowling_id == int(match["challenger_id"]) else match.get("opponent_username"), match.get("challenger_name") if bowling_id == int(match["challenger_id"]) else match.get("opponent_name"))
-    mode = str((match.get("state") or {}).get("origin_engine") or "PLAYSO")
-    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL"}.get(mode, "PLAYSO")
+    mode_title = _mode_title(match.get("state"))
     lines = [f"<b>╭━━〔 🎯 {mode_title} • SUPER OVER • BOWLER SELECT 〕━━╮</b>", "", f"👤 {bowling_mention}", "", "<b>Choose your one bowler for this Super Over.</b>", ""]
     if selected:
         p = next((x for x in players if int(x.get("player_id") or 0) == int(selected)), None)
@@ -43,8 +42,7 @@ def _bat_text(match: dict, batting_id: int, bowling_id: int, players: list[dict]
     batting_mention = mention_html(batting_id, match.get("challenger_username") if batting_id == int(match["challenger_id"]) else match.get("opponent_username"), match.get("challenger_name") if batting_id == int(match["challenger_id"]) else match.get("opponent_name"))
     slot = {pid: i+1 for i,pid in enumerate(selected)}
     chosen = [next((p for p in players if int(p.get("player_id") or 0)==pid), None) for pid in selected]
-    mode = str((match.get("state") or {}).get("origin_engine") or "PLAYSO")
-    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL"}.get(mode, "PLAYSO")
+    mode_title = _mode_title(match.get("state"))
     lines = [f"<b>╭━━〔 🏏 {mode_title} • SUPER OVER • BATTERS 〕━━╮</b>", "", f"👤 {batting_mention}", "", "<b>Select your three batters:</b>", ""]
     for i, p in enumerate(chosen, start=1):
         if p:
@@ -61,7 +59,11 @@ async def start_setup(chat_id: int, match: dict, innings_no: int = 1):
     batting_xi = await current_xi(batting_id); bowling_xi = await current_xi(bowling_id)
     state = match.get("state") or {}
     previous = state.get("previous_bowlers") or {}
-    locked = previous.get(str(bowling_id)) if innings_no == 1 and state.get("is_repeat_super_over") else None
+    locked = previous.get(str(bowling_id)) if state.get("is_repeat_super_over") else None
+    if locked is not None and int(locked) not in eligible_bowlers(bowling_xi, None):
+        locked = None
+    elif locked is not None and eligible_bowlers(bowling_xi, int(locked)) == eligible_bowlers(bowling_xi, None):
+        locked = None                   # the only possible bowler: the lock would be a dead end
     state.update({"innings_no": innings_no, "batting_user": batting_id, "bowling_user": bowling_id,
                   "bowling_xi": bowling_xi, "batting_xi": batting_xi, "selected_bowler": None,
                   "selected_batters": [], "locked_bowler": locked, "stage": "bowler_select"})
@@ -69,6 +71,7 @@ async def start_setup(chat_id: int, match: dict, innings_no: int = 1):
     await from_update_state(int(match["match_id"]), state, "lineup")
     sent = await app.send_message(chat_id, _bowler_text(match, batting_id, bowling_id, bowling_xi, None, locked), parse_mode="HTML", reply_markup=bowler_selection_keyboard(int(match["match_id"]), bowling_xi, None, locked))
     await set_message_id(int(match["match_id"]), int(sent["message_id"]))
+    await sync_clock(int(match["match_id"]))
 
 async def from_update_state(match_id: int, state: dict, status: str):
     from database.playso_repo import set_state
@@ -95,7 +98,7 @@ async def playso_bowler(callback_query):
             await app.answer_callback_query(callback_query["id"], "That player is not in the current Playing XI.", show_alert=True); return
         if state.get("locked_bowler") is not None and int(state["locked_bowler"]) == pid:
             await app.answer_callback_query(callback_query["id"], "This bowler cannot bowl this Super Over.", show_alert=True); return
-        if str(player.get("role") or "") not in {"Bowler", "AllRounder"}:
+        if pid not in eligible_bowlers(xi, None):
             await app.answer_callback_query(callback_query["id"], "This player is not an eligible bowler.", show_alert=True); return
         state["selected_bowler"] = None if state.get("selected_bowler") == pid else pid
         await from_update_state(mid, state, "lineup")
@@ -116,6 +119,7 @@ async def playso_bowler_confirm(callback_query):
             await app.answer_callback_query(callback_query["id"], "Select a bowler first.", show_alert=True); return
         state["stage"]="batter_select"
         await from_update_state(mid, state, "lineup")
+        await sync_clock(mid, uid)
         await app.answer_callback_query(callback_query["id"], "Bowler confirmed!")
         try: await app.delete_message(msg["chat"]["id"], msg["message_id"])
         except Exception: pass
@@ -147,6 +151,7 @@ async def playso_batter(callback_query):
             await app.answer_callback_query(callback_query["id"], "Three batters are already selected. Unselect one first.", show_alert=True); return
         state["selected_batters"]=selected
         await from_update_state(mid, state, "lineup")
+        await sync_clock(mid, uid)
         await app.answer_callback_query(callback_query["id"], "Selection updated.")
         await app.edit_message_text(msg["chat"]["id"], msg["message_id"], _bat_text(match, uid, int(state["bowling_user"]), xi, selected), parse_mode="HTML", reply_markup=batter_selection_keyboard(mid, xi, selected))
 
@@ -165,6 +170,7 @@ async def playso_batter_confirm(callback_query):
             await app.answer_callback_query(callback_query["id"], "Select exactly three batters.", show_alert=True); return
         state["stage"]="length"; state["ball_no"]=0; state["legal_balls"]=0; state["runs"]=0; state["wickets"]=0
         await from_update_state(mid,state,"live")
+        await sync_clock(mid, uid)
         await app.answer_callback_query(callback_query["id"], "Batters confirmed!")
         try: await app.delete_message(msg["chat"]["id"], msg["message_id"])
         except Exception: pass
