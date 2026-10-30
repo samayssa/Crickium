@@ -146,6 +146,10 @@ def _game_summary(
 
 
 async def _find_active(chat_id: int):
+    # A Super Over decider (linked to a tied original match) is the game actually being played.
+    decider = await get_playso_match_in_chat(chat_id)
+    if decider:
+        return dict(decider), "playso"
     # Live matches are kept in the in-memory runtime once the game starts.
     # Prefer that authoritative live state before falling back to the DB
     # stage/status lookup used for challenge/setup screens.
@@ -391,6 +395,8 @@ async def abandon_yes(callback_query):
             await update_playint_status(mid, "ended")
         elif engine == "playso":
             await set_playso_state(mid, match.get("state") or {}, status="ended")
+            from services.super_over_bridge import force_close_origin
+            await force_close_origin(match.get("state") or {}, "ended")
         elif engine == "playwpl":
             await update_playwpl_status(mid, "ended")
         else:

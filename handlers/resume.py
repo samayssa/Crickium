@@ -28,6 +28,14 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
     """Resolve a live match, restoring runtime state after a process restart."""
     uid = int(user_id)
 
+    # A Super Over decider takes priority: the tied original match only waits for it (its in-memory session
+    # still exists, and resuming that stale session would replay a finished match).
+    decider = await get_playso_active_for_user(uid)
+    if (decider and str(decider.get("status") or "") != "pending"
+            and (decider.get("state") or {}).get("origin_engine")
+            and (chat_id is None or int(decider.get("chat_id") or 0) == int(chat_id))):
+        return "PLAYSO", dict(decider)
+
     # Prefer the current chat so /resume in the game group is instantaneous.
     if chat_id is not None:
         from engines.play_runtime import get_session_in_chat

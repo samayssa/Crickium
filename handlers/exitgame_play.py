@@ -66,8 +66,12 @@ async def exitgame_command(message):
 
     print(f"[exitgame_play] /exitgame invoked by user_id={user_id} in chat_id={chat_id}")
 
-    match = await get_active_match_in_chat(chat_id)
-    engine = "play"
+    # A Super Over decider is the game that is really being played: the tied original match only waits for it.
+    match = await get_playso_match_in_chat(chat_id)
+    engine = "playso" if match else None
+    if not match:
+        match = await get_active_match_in_chat(chat_id)
+        engine = "play" if match else None
     if not match:
         match = await get_playint_match_in_chat(chat_id)
         engine = "playint" if match else None
@@ -556,6 +560,8 @@ async def on_playso_exit_yes(callback_query):
     try:
         await set_playso_state(match_id, match.get("state") or {}, status="ended")
         cancel_inactivity_match("PLAYSO", match_id)
+        from services.super_over_bridge import force_close_origin
+        await force_close_origin(match.get("state") or {}, "ended")
     except Exception as exc:
         print(f"[exitgame_play] Failed ending PlaySO match_id={match_id}: {exc!r}")
 
