@@ -643,6 +643,18 @@ def collect_runtime_session(engine: str, session: Any, *, termination: str = "co
     )
 
 
+def collect_snapshots(engine: str, match: dict[str, Any], innings: list[dict[str, Any]], *, termination: str = "completed", winner_id: int | None = None, loser_id: int | None = None, ended_by_user_id: int | None = None, reason: str | None = None) -> dict[str, Any]:
+    """Report built from stored innings snapshots only (used when the live session is gone, e.g. after a restart)."""
+    prepared = []
+    for snap in innings or []:
+        snap = deepcopy(snap)
+        prepared.append(snapshot_with_analysis(snap, list(snap.get("analysis_balls") or []), source="snapshot"))
+    return _base_payload(
+        engine=str(engine).upper(), match=dict(match or {}), innings=prepared, termination=termination,
+        winner_id=winner_id, loser_id=loser_id, ended_by_user_id=ended_by_user_id, reason=reason,
+    )
+
+
 def collect_legacy_session(session: Any, *, termination: str = "completed", winner_id: int | None = None, loser_id: int | None = None, ended_by_user_id: int | None = None, reason: str | None = None) -> dict[str, Any]:
     from services.match_summary import snapshot_normal_session
     innings = []
