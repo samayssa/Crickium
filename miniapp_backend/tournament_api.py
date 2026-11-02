@@ -31,6 +31,13 @@ def _money(lakh: Any) -> str:
     return tc.fmt_money(int(lakh or 0))
 
 
+def _rules_payload(t: dict) -> dict:
+    r = tc.tournament_rules(t)
+    return {"squad": [r["squad_min"], r["squad_max"]],
+            "roles": [{"role": k, "label": tc.ROLE_PLURAL[k], "icon": tc.ROLE_ICON[k], "min": r["role_rules"][k][0], "max": r["role_rules"][k][1]} for k in tc.ROLES],
+            "overseas": [r["overseas_squad_min"], r["overseas_squad_max"]] if (r["overseas_squad_max"] or r["overseas_squad_min"]) else None}
+
+
 def _team(x: dict | None) -> dict | None:
     if not x:
         return None
@@ -162,7 +169,13 @@ async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
     out: dict[str, Any] = {"ok": True, "now": _iso(now), "tournament": _card(t), "can_control": auc.can_control(t, uid), "my_team": _team(mine),
                            "teams": [_team(x) for x in teams_l], "status": a["status"] if a else "idle", "version": int(a["version"]) if a else 0,
                            "squad_max": int(t["squad_max"]), "squad_min": int(t["squad_min"]),
+                           "rules": _rules_payload(t),
                            "ladder": [list(r) for r in tc.ladder_rows(t.get("ladder"))]}
+    if mine is not None:
+        try:
+            out["my_roles"] = (await ar.team_role_counts(tid, int(mine["team_no"]))).get(int(mine["team_no"])) or {r: 0 for r in tc.ROLES}
+        except Exception:
+            out["my_roles"] = {r: 0 for r in tc.ROLES}
     if not a:
         return out
     out["counts"] = await ar.counts(tid)
@@ -183,7 +196,14 @@ async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
             ok, why = (True, "")
             if mine is not None and lot["status"] == "live":
                 try:
-                    ok, why = tc.check_bid_allowed(mine, lot, price, {"squad_max": t["squad_max"], "overseas_squad_max": t["overseas_squad_max"], "squad_min": t["squad_min"], "min_base": t["min_base_lakh"]})
+                    trules = tc.tournament_rules(t)
+                    mine_rc = out.get("my_roles") or {r: 0 for r in tc.ROLES}
+                    mine_x = {**mine, "role_counts": mine_rc}
+                    ok, why = tc.check_bid_allowed(mine_x, lot, price, trules)
+                    if not ok and why in ("role_full", "slots"):
+                        out["bid_note"] = tx.bid_feedback({"ok": False, "reason": why, "role": lot["role"],
+                                                           "role_max": trules["role_rules"][tc.norm_role(lot["role"])][1],
+                                                           "need": tc.needs_text(tc.squad_needs(mine_rc, int(mine.get("overseas_count") or 0), trules))})
                 except Exception:
                     ok, why = True, ""
             out["lot"] = {"ord": int(lot["ord"]), "name": lot["name"], "role": lot["role"], "role_label": tx.role_label(lot["role"]), "role_icon": tx.role_icon(lot["role"]),
