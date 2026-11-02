@@ -331,18 +331,25 @@ async def place_bid(tid: int, ord_: int, team_no: int, user_id: int | None, expe
             return {"ok": False, "reason": "no_team"}
         if lot["leader_team_no"] is not None and int(lot["leader_team_no"]) == int(team_no):
             return {"ok": False, "reason": "leading", "price": int(lot["cur_bid_lakh"])}
-        tour = await conn.fetchrow(
-            "SELECT ladder, squad_min, squad_max, overseas_squad_max, min_base_lakh FROM tour_tournaments WHERE tid=$1;", int(tid))
+        tour = await conn.fetchrow("SELECT * FROM tour_tournaments WHERE tid=$1;", int(tid))
         ladder = tc.normalize_ladder(json.loads(tour["ladder"]) if isinstance(tour["ladder"], str) else tour["ladder"])
         price = tc.next_bid(int(lot["cur_bid_lakh"]), int(lot["base_lakh"]), int(lot["bid_count"]) > 0, ladder)
         if expected_lakh is not None and int(expected_lakh) != price:
             return {"ok": False, "reason": "moved", "price": price}
-        rules = {"squad_min": tour["squad_min"], "squad_max": tour["squad_max"],
-                 "overseas_squad_max": tour["overseas_squad_max"], "min_base": tour["min_base_lakh"]}
-        allowed, reason = tc.check_bid_allowed(dict(team), {"overseas": bool(lot["overseas"])}, price, rules)
+        rules = tc.tournament_rules(dict(tour))
+        role_rows = await conn.fetch("SELECT role, COUNT(*) AS n FROM tour_squad WHERE tid=$1 AND team_no=$2 GROUP BY role;",
+                                     int(tid), int(team_no))
+        role_counts = {r: 0 for r in tc.ROLES}
+        for rr in role_rows:
+            role_counts[tc.norm_role(rr["role"])] += int(rr["n"])
+        team_d = {**dict(team), "role_counts": role_counts}
+        player = {"overseas": bool(lot["overseas"]), "role": lot["role"]}
+        allowed, reason = tc.check_bid_allowed(team_d, player, price, rules)
         if not allowed:
-            return {"ok": False, "reason": reason, "price": price,
-                    "limit": tc.max_bid_for_team(int(team["purse_left"]), int(team["squad_count"]), int(tour["squad_min"]), int(tour["min_base_lakh"]))}
+            needs = tc.squad_needs(role_counts, int(team["overseas_count"] or 0), rules)
+            return {"ok": False, "reason": reason, "price": price, "limit": tc.bid_limit(team_d, player, rules),
+                    "role": tc.norm_role(lot["role"]), "need": tc.needs_text(needs),
+                    "role_max": int(rules["role_rules"][tc.norm_role(lot["role"])][1])}
         updated = await conn.fetchrow(
             """
             UPDATE tour_lots SET cur_bid_lakh=$3, leader_team_no=$4, bid_count=bid_count+1,
@@ -517,6 +524,20 @@ async def all_squads(tid: int) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = {}
     for row in _rows(await fetch("SELECT * FROM tour_squad WHERE tid=$1 ORDER BY team_no, xi DESC, price_lakh DESC, name;", int(tid))):
         out.setdefault(int(row["team_no"]), []).append(row)
+    return out
+
+
+async def team_role_counts(tid: int, team_no: int | None = None) -> dict[int, dict[str, int]]:
+    """{team_no: {role: players}} (every role present) - for the squad role limits."""
+    args: list[Any] = [int(tid)]
+    where = ""
+    if team_no is not None:
+        args.append(int(team_no))
+        where = " AND team_no=$2"
+    out: dict[int, dict[str, int]] = {}
+    for row in await fetch(f"SELECT team_no, role, COUNT(*) AS n FROM tour_squad WHERE tid=$1{where} GROUP BY team_no, role;", *args):
+        d = out.setdefault(int(row["team_no"]), {r: 0 for r in tc.ROLES})
+        d[tc.norm_role(row["role"])] += int(row["n"])
     return out
 
 

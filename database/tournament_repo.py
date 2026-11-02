@@ -39,6 +39,8 @@ SCHEMA_STATEMENTS = [
         squad_max INTEGER NOT NULL DEFAULT 25,
         overseas_squad_max INTEGER NOT NULL DEFAULT 0,
         xi_overseas_max INTEGER NOT NULL DEFAULT 0,
+        overseas_squad_min INTEGER NOT NULL DEFAULT 0,
+        role_rules JSONB NOT NULL DEFAULT '{}'::jsonb,
         min_base_lakh INTEGER NOT NULL DEFAULT 20,
         window_start_min INTEGER NOT NULL DEFAULT 1020,
         window_end_min INTEGER NOT NULL DEFAULT 1260,
@@ -156,6 +158,8 @@ SCHEMA_STATEMENTS = [
     );
     """,
     "ALTER TABLE tour_lots ADD COLUMN IF NOT EXISTS said_mask INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE tour_tournaments ADD COLUMN IF NOT EXISTS overseas_squad_min INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE tour_tournaments ADD COLUMN IF NOT EXISTS role_rules JSONB NOT NULL DEFAULT '{}'::jsonb;",
     "CREATE INDEX IF NOT EXISTS idx_tour_lots_status ON tour_lots(tid, status, ord);",
     """
     CREATE TABLE IF NOT EXISTS tour_bids(
@@ -273,13 +277,13 @@ _ready = False
 
 LIVE_STATUSES = ("registration", "auction", "ready", "live")
 ACTIVE_STATUSES = ("setup", "registration", "auction", "ready", "live")
-_JSON_FIELDS = ("ladder", "prize", "card")
+_JSON_FIELDS = ("ladder", "prize", "card", "role_rules")
 
 # columns update_fields may touch (everything else goes through dedicated functions)
 _TOURNAMENT_FIELDS = {
     "kind", "name", "engine", "preset", "mode", "status", "creator_name", "host_chat_id", "host_chat_title",
     "max_teams", "purse_lakh", "ladder", "squad_min", "squad_max", "overseas_squad_max", "xi_overseas_max",
-    "min_base_lakh", "window_start_min", "window_end_min", "tz_min", "legs", "prize", "setup_step", "setup_msg_id",
+    "overseas_squad_min", "role_rules", "min_base_lakh", "window_start_min", "window_end_min", "tz_min", "legs", "prize", "setup_step", "setup_msg_id",
     "lobby_msg_id", "champion_team_no", "champion_user_id", "runner_up_team_no", "runner_up_user_id",
     "league_done", "current_day", "started_at", "completed_at", "cleaned",
 }
@@ -372,8 +376,8 @@ async def update_fields(tid: int, **fields: Any) -> dict | None:
     for key, value in fields.items():
         if key not in _TOURNAMENT_FIELDS:
             raise ValueError(f"unknown tournament field {key!r}")
-        args.append(json.dumps(value) if key in {"ladder", "prize"} else value)
-        sets.append(f"{key}=${len(args)}::jsonb" if key in {"ladder", "prize"} else f"{key}=${len(args)}")
+        args.append(json.dumps(value) if key in {"ladder", "prize", "role_rules"} else value)
+        sets.append(f"{key}=${len(args)}::jsonb" if key in {"ladder", "prize", "role_rules"} else f"{key}=${len(args)}")
     if not sets:
         return await get(tid)
     return _row(await fetchrow(f"UPDATE tour_tournaments SET {', '.join(sets)} WHERE tid=$1 RETURNING *;", *args))
@@ -386,8 +390,8 @@ async def cas_status(tid: int, from_statuses: Iterable[str], to_status: str, **e
     for key, value in extra.items():
         if key not in _TOURNAMENT_FIELDS:
             raise ValueError(f"unknown tournament field {key!r}")
-        args.append(json.dumps(value) if key in {"ladder", "prize"} else value)
-        sets.append(f"{key}=${len(args)}::jsonb" if key in {"ladder", "prize"} else f"{key}=${len(args)}")
+        args.append(json.dumps(value) if key in {"ladder", "prize", "role_rules"} else value)
+        sets.append(f"{key}=${len(args)}::jsonb" if key in {"ladder", "prize", "role_rules"} else f"{key}=${len(args)}")
     return _row(await fetchrow(
         f"UPDATE tour_tournaments SET {', '.join(sets)} WHERE tid=$1 AND status = ANY($2::text[]) RETURNING *;", *args))
 
