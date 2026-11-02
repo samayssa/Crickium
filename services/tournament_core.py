@@ -9,6 +9,7 @@ Prices are integers in **lakh** (1 Cr = 100 L).
 """
 from __future__ import annotations
 
+import json
 import math
 import random
 import re
@@ -61,7 +62,8 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
         "engine": "PLAYIPL", "pool_key": "IPL", "preset": "ipl", "short": "IPL",
         "title": "Indian Premier League", "icon": "🏏", "auction": True,
         "purse_lakh": 12000, "purse_presets": (6000, 9000, 10000, 12000, 12500),
-        "squad_min": 18, "squad_max": 25, "overseas_squad_max": 8, "xi_overseas_max": 4,
+        "squad_min": 18, "squad_max": 25, "overseas_squad_max": 8, "overseas_squad_min": 0, "xi_overseas_max": 4,
+        "role_rules": {ROLE_BAT: (4, 9), ROLE_WK: (2, 4), ROLE_AR: (3, 8), ROLE_BOWL: (5, 10)}, "domestic": True,
         "min_teams": 2, "max_teams": 10,
         "base_tiers": ((0.03, 200), (0.08, 150), (0.15, 125), (0.25, 100), (0.40, 75), (0.60, 50), (0.80, 30), (1.00, 20)),
     },
@@ -69,7 +71,8 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
         "engine": "PLAYWPL", "pool_key": "WPL", "preset": "wpl", "short": "WPL",
         "title": "Women's Premier League", "icon": "👑", "auction": True,
         "purse_lakh": 1500, "purse_presets": (1000, 1250, 1500, 1800),
-        "squad_min": 15, "squad_max": 18, "overseas_squad_max": 6, "xi_overseas_max": 4,
+        "squad_min": 15, "squad_max": 18, "overseas_squad_max": 6, "overseas_squad_min": 0, "xi_overseas_max": 4,
+        "role_rules": {ROLE_BAT: (3, 6), ROLE_WK: (1, 3), ROLE_AR: (3, 6), ROLE_BOWL: (4, 7)}, "domestic": True,
         "min_teams": 2, "max_teams": 5,
         "base_tiers": ((0.05, 50), (0.15, 40), (0.35, 30), (0.65, 20), (1.00, 10)),
     },
@@ -77,7 +80,8 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
         "engine": "PLAYINT", "pool_key": "T20I", "preset": "t20wc", "short": "T20 WC",
         "title": "T20 World Cup", "icon": "🌍", "auction": True,
         "purse_lakh": 10000, "purse_presets": (5000, 8000, 10000, 12000),
-        "squad_min": 15, "squad_max": 20, "overseas_squad_max": 0, "xi_overseas_max": 0,
+        "squad_min": 15, "squad_max": 20, "overseas_squad_max": 0, "overseas_squad_min": 0, "xi_overseas_max": 0,
+        "role_rules": {ROLE_BAT: (4, 7), ROLE_WK: (1, 3), ROLE_AR: (3, 6), ROLE_BOWL: (4, 7)}, "domestic": False,
         "min_teams": 2, "max_teams": 16,
         "base_tiers": ((0.03, 200), (0.08, 150), (0.15, 125), (0.25, 100), (0.40, 75), (0.60, 50), (0.80, 30), (1.00, 20)),
     },
@@ -85,7 +89,8 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
         "engine": "PLAY", "pool_key": "CUSTOM", "preset": "custom", "short": "Custom",
         "title": "Custom (regular /play game)", "icon": "🎮", "auction": True,
         "purse_lakh": 10000, "purse_presets": (5000, 8000, 10000, 12000),
-        "squad_min": 15, "squad_max": 20, "overseas_squad_max": 0, "xi_overseas_max": 0,
+        "squad_min": 15, "squad_max": 20, "overseas_squad_max": 0, "overseas_squad_min": 0, "xi_overseas_max": 0,
+        "role_rules": {ROLE_BAT: (4, 7), ROLE_WK: (1, 3), ROLE_AR: (3, 6), ROLE_BOWL: (4, 7)}, "domestic": False,
         "min_teams": 2, "max_teams": 16,
         "base_tiers": ((0.03, 200), (0.08, 150), (0.15, 125), (0.25, 100), (0.40, 75), (0.60, 50), (0.80, 30), (1.00, 20)),
     },
@@ -592,31 +597,49 @@ def pick_best_xi(players: Sequence[Mapping[str, Any]], xi_overseas_max: int = 0)
 
 def plan_autofill(squad: Sequence[Mapping[str, Any]], candidates: Iterable[Mapping[str, Any]], rules: Mapping[str, Any],
                   purse_left: int) -> list[tuple[dict[str, Any], int]]:
-    """Players (and the price they cost) to add so the squad reaches its minimum size and can field a legal XI.
+    """Players (and the price they cost) to add so the squad reaches its minimum size, every role / overseas
+    minimum and can field a legal XI - never breaking a role or overseas maximum.
 
     ``candidates`` are players nobody bought; each has ``base_lakh``. ``rules``: squad_min, squad_max,
-    overseas_squad_max, xi_overseas_max."""
+    overseas_squad_max, overseas_squad_min, xi_overseas_max, role_rules."""
     have = [dict(p) for p in squad]
     pool = sorted((dict(c) for c in candidates), key=lambda p: -player_value(p))
     squad_min, squad_max = int(rules.get("squad_min") or 0), int(rules.get("squad_max") or 99)
     os_cap, xi_cap = int(rules.get("overseas_squad_max") or 0), int(rules.get("xi_overseas_max") or 0)
+    os_min = int(rules.get("overseas_squad_min") or 0)
+    rr = rules.get("role_rules") or {}
     added: list[tuple[dict[str, Any], int]] = []
     purse = int(purse_left)
 
+    def counts_now() -> tuple[dict[str, int], int]:
+        return role_counts(have), sum(1 for p in have if is_overseas(p.get("country")))
+
     def short() -> bool:
-        return len(have) < squad_min or not xi_feasible(have, xi_cap)
+        counts, os_now = counts_now()
+        return (len(have) < squad_min or not xi_feasible(have, xi_cap)
+                or bool(squad_needs(counts, os_now, rules).get("overseas"))
+                or any(counts[r] < int((rr.get(r) or (0, 0))[0]) for r in ROLES))
 
     while short() and len(have) < squad_max and pool:
-        overseas_now = sum(1 for p in have if is_overseas(p.get("country")))
+        counts, overseas_now = counts_now()
+        want_os = bool(os_min) and overseas_now < os_min
         chosen = None
-        for role in roles_needed(have, squad_min):
-            for cand in pool:
-                if norm_role(cand.get("role")) != role:
+        for need_os in ((True, False) if want_os else (False,)):
+            for role in roles_needed(have, squad_min, rr):
+                if counts[role] >= int((rr.get(role) or (0, 99))[1]):
                     continue
-                if os_cap and is_overseas(cand.get("country")) and overseas_now >= os_cap:
-                    continue
-                chosen = cand
-                break
+                for cand in pool:
+                    if norm_role(cand.get("role")) != role:
+                        continue
+                    cand_os = bool(is_overseas(cand.get("country")))
+                    if need_os and not cand_os:
+                        continue
+                    if os_cap and cand_os and overseas_now >= os_cap:
+                        continue
+                    chosen = cand
+                    break
+                if chosen is not None:
+                    break
             if chosen is not None:
                 break
         if chosen is None:
@@ -632,9 +655,15 @@ def plan_autofill(squad: Sequence[Mapping[str, Any]], candidates: Iterable[Mappi
 _IDEAL_SHARE = {ROLE_BAT: 0.28, ROLE_WK: 0.10, ROLE_AR: 0.24, ROLE_BOWL: 0.38}
 
 
-def roles_needed(players: Sequence[Mapping[str, Any]], target_size: int) -> list[str]:
-    """Roles to add next, most useful first (used by the end-of-auction squad completion)."""
+def roles_needed(players: Sequence[Mapping[str, Any]], target_size: int, role_rules: Mapping[str, Sequence[int]] | None = None) -> list[str]:
+    """Roles to add next, most useful first (used by the end-of-auction squad completion).
+
+    With ``role_rules`` the roles still below their minimum come first (biggest gap first)."""
     counts = role_counts(players)
+    gaps: list[str] = []
+    if role_rules:
+        gaps = sorted((r for r in ROLES if counts[r] < int((role_rules.get(r) or (0, 0))[0])),
+                      key=lambda r: counts[r] - int(role_rules[r][0]))
     hard = []
     if counts[ROLE_WK] < 1:
         hard.append(ROLE_WK)
@@ -644,30 +673,224 @@ def roles_needed(players: Sequence[Mapping[str, Any]], target_size: int) -> list
         hard.append(ROLE_AR)
     if counts[ROLE_BOWL] < 3:
         hard.append(ROLE_BOWL)
+    hard = gaps + [r for r in hard if r not in gaps]
     size = max(int(target_size), len(players) + 1)
     soft = sorted(ROLES, key=lambda r: counts[r] - _IDEAL_SHARE[r] * size)
     return hard + [r for r in soft if r not in hard]
 
 
-def max_bid_for_team(purse_left: int, squad_count: int, squad_min: int, min_base: int) -> int:
+def max_bid_for_team(purse_left: int, squad_count: int, squad_min: int, min_base: int, extra_slots: int = 0) -> int:
     """Highest price a team may pay *now* while still being able to afford the cheapest
-    players it needs to reach its minimum squad size."""
-    slots_after = max(0, int(squad_min) - int(squad_count) - 1)
+    players it needs to reach its minimum squad size (``extra_slots``: more slots that must still be
+    filled after this buy, e.g. because of role / overseas minimums)."""
+    slots_after = max(int(extra_slots), max(0, int(squad_min) - int(squad_count) - 1))
     return int(purse_left) - slots_after * int(min_base)
 
 
+# ---------------------------------------------------------------------------
+# role (batter / keeper / all-rounder / bowler) and overseas squad rules
+# ---------------------------------------------------------------------------
+ROLE_PLURAL = {ROLE_BAT: "Batters", ROLE_WK: "Wicket-keepers", ROLE_AR: "All-rounders", ROLE_BOWL: "Bowlers"}
+ROLE_ALIASES = {
+    "bat": ROLE_BAT, "batter": ROLE_BAT, "batters": ROLE_BAT, "batsman": ROLE_BAT, "batsmen": ROLE_BAT,
+    "wk": ROLE_WK, "keeper": ROLE_WK, "keepers": ROLE_WK, "wicketkeeper": ROLE_WK, "wicketkeepers": ROLE_WK,
+    "ar": ROLE_AR, "allrounder": ROLE_AR, "allrounders": ROLE_AR, "all": ROLE_AR,
+    "bowl": ROLE_BOWL, "bowler": ROLE_BOWL, "bowlers": ROLE_BOWL,
+}
+
+
+def default_role_rules(engine: str) -> dict[str, list[int]]:
+    return {r: [int(lo), int(hi)] for r, (lo, hi) in profile(engine)["role_rules"].items()}
+
+
+def normalize_role_rules(raw: Any, fallback: Mapping[str, Any] | None = None) -> dict[str, list[int]]:
+    """{role: [min, max]} with every role present (missing / broken ones come from ``fallback``)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = {}
+    raw = raw if isinstance(raw, Mapping) else {}
+    fb = fallback or {}
+    out: dict[str, list[int]] = {}
+    for role in ROLES:
+        val = raw.get(role)
+        if not (isinstance(val, (list, tuple)) and len(val) == 2):
+            val = fb.get(role) or (0, 99)
+        try:
+            lo, hi = max(0, int(val[0])), max(0, int(val[1]))
+        except (TypeError, ValueError):
+            lo, hi = 0, 99
+        out[role] = [lo, max(lo, hi)]
+    return out
+
+
+def tournament_rules(t: Mapping[str, Any]) -> dict[str, Any]:
+    """The squad rules of a tournament row, as the dict the bid / autofill checks use."""
+    prof = profile(t.get("engine"))
+    return {
+        "squad_min": int(t.get("squad_min") or 0), "squad_max": int(t.get("squad_max") or 99),
+        "overseas_squad_max": int(t.get("overseas_squad_max") or 0), "overseas_squad_min": int(t.get("overseas_squad_min") or 0),
+        "xi_overseas_max": int(t.get("xi_overseas_max") or 0), "min_base": int(t.get("min_base_lakh") or 0),
+        "role_rules": normalize_role_rules(t.get("role_rules"), default_role_rules(t.get("engine") or "PLAYIPL")),
+        "domestic": bool(prof.get("domestic")),
+    }
+
+
+def validate_squad_rules(squad_min: int, squad_max: int, role_rules: Mapping[str, Sequence[int]],
+                         overseas_min: int = 0, overseas_max: int = 0) -> str | None:
+    """None when the rules are playable, else a short reason (used when a host edits the Custom rules)."""
+    if squad_min < 11:
+        return "Minimum squad must be at least 11 (a team needs an XI)."
+    if squad_max < squad_min:
+        return "Maximum squad cannot be smaller than the minimum."
+    if squad_max > 40:
+        return "Maximum squad can be 40 at most."
+    for r in ROLES:
+        if int(role_rules[r][0]) > int(role_rules[r][1]):
+            return f"{ROLE_PLURAL[r]}: minimum is bigger than maximum."
+    mins = sum(int(role_rules[r][0]) for r in ROLES)
+    maxs = sum(int(role_rules[r][1]) for r in ROLES)
+    if mins > squad_max:
+        return f"Role minimums add up to {mins} but the squad maximum is only {squad_max}."
+    if maxs < squad_min:
+        return f"Role maximums add up to {maxs}, which cannot reach the minimum squad of {squad_min}."
+    if int(role_rules[ROLE_BAT][1]) < 1 or int(role_rules[ROLE_WK][1]) < 1:
+        return "At least 1 batter and 1 wicket-keeper must be allowed (a legal XI needs them)."
+    if int(role_rules[ROLE_AR][1]) < 2:
+        return "At least 2 all-rounders must be allowed (a legal XI needs 2-4)."
+    if int(role_rules[ROLE_BOWL][1]) < 3:
+        return "At least 3 bowlers must be allowed (a legal XI needs 3-4)."
+    if overseas_max and overseas_min > overseas_max:
+        return "Overseas minimum is bigger than the overseas maximum."
+    if overseas_min > squad_max:
+        return "Overseas minimum is bigger than the squad maximum."
+    return None
+
+
+def squad_needs(counts: Mapping[str, int], overseas_count: int, rules: Mapping[str, Any]) -> dict[str, int]:
+    """What a squad still MUST sign: {role: missing, 'overseas': missing, 'squad': missing to reach squad_min}."""
+    rr = rules.get("role_rules") or {}
+    out: dict[str, int] = {}
+    for r in ROLES:
+        lo = int((rr.get(r) or (0, 99))[0])
+        if int(counts.get(r) or 0) < lo:
+            out[r] = lo - int(counts.get(r) or 0)
+    os_min = int(rules.get("overseas_squad_min") or 0)
+    if os_min and int(overseas_count or 0) < os_min:
+        out["overseas"] = os_min - int(overseas_count or 0)
+    total = sum(int(counts.get(r) or 0) for r in ROLES)
+    if total < int(rules.get("squad_min") or 0):
+        out["squad"] = int(rules.get("squad_min") or 0) - total
+    return out
+
+
+def needs_text(needs: Mapping[str, int]) -> str:
+    """'2 Bowlers, 1 Wicket-keeper, 1 overseas' (for messages)."""
+    bits = [f"{int(needs[r])} {ROLE_PLURAL[r] if int(needs[r]) != 1 else ROLE_LABEL[r]}" for r in ROLES if needs.get(r)]
+    if needs.get("overseas"):
+        bits.append(f"{int(needs['overseas'])} overseas")
+    return ", ".join(bits)
+
+
+def slots_to_reserve(counts: Mapping[str, int], overseas_count: int, rules: Mapping[str, Any]) -> int:
+    """How many more players the squad must still sign (purse for them is kept at the minimum base price)."""
+    needs = squad_needs(counts, overseas_count, rules)
+    role_slots = sum(int(needs.get(r) or 0) for r in ROLES)
+    return max(role_slots, int(needs.get("overseas") or 0), int(needs.get("squad") or 0))
+
+
+def _after_buy(team: Mapping[str, Any], player: Mapping[str, Any]) -> tuple[dict[str, int], int]:
+    counts = {r: int((team.get("role_counts") or {}).get(r) or 0) for r in ROLES}
+    counts[norm_role(player.get("role"))] += 1
+    return counts, int(team.get("overseas_count") or 0) + (1 if player.get("overseas") else 0)
+
+
+def bid_limit(team: Mapping[str, Any], player: Mapping[str, Any], rules: Mapping[str, Any]) -> int:
+    """Highest price this team may bid for ``player`` (purse minus the cheapest players it still has to sign)."""
+    if team.get("role_counts") is None or not rules.get("role_rules"):
+        return max_bid_for_team(int(team.get("purse_left") or 0), int(team.get("squad_count") or 0),
+                                int(rules.get("squad_min") or 0), int(rules.get("min_base") or 0))
+    counts, os_after = _after_buy(team, player)
+    return int(team.get("purse_left") or 0) - slots_to_reserve(counts, os_after, rules) * int(rules.get("min_base") or 0)
+
+
 def check_bid_allowed(team: Mapping[str, Any], player: Mapping[str, Any], price: int, rules: Mapping[str, Any]) -> tuple[bool, str]:
-    """(ok, reason). Reasons: squad_full / overseas_full / purse."""
+    """(ok, reason). Reasons: squad_full / role_full / overseas_full / slots (no room left for the roles or
+    overseas players the team must still sign) / purse.
+
+    ``team`` may carry ``role_counts`` ({role: n}); without it the role rules are skipped (old callers)."""
     if int(team.get("squad_count") or 0) >= int(rules.get("squad_max") or 99):
         return False, "squad_full"
     cap = int(rules.get("overseas_squad_max") or 0)
     if cap and player.get("overseas") and int(team.get("overseas_count") or 0) >= cap:
         return False, "overseas_full"
-    limit = max_bid_for_team(int(team.get("purse_left") or 0), int(team.get("squad_count") or 0),
-                             int(rules.get("squad_min") or 0), int(rules.get("min_base") or 0))
-    if price > limit:
+    rr = rules.get("role_rules")
+    if rr and team.get("role_counts") is not None:
+        role = norm_role(player.get("role"))
+        if int(team["role_counts"].get(role) or 0) >= int((rr.get(role) or (0, 99))[1]):
+            return False, "role_full"
+        counts, os_after = _after_buy(team, player)
+        free = int(rules.get("squad_max") or 99) - (int(team.get("squad_count") or 0) + 1)
+        needs = squad_needs(counts, os_after, rules)
+        if sum(int(needs.get(r) or 0) for r in ROLES) > free or int(needs.get("overseas") or 0) > free:
+            return False, "slots"
+    if price > bid_limit(team, player, rules):
         return False, "purse"
     return True, ""
+
+
+def top_up_pool(chosen: list[dict[str, Any]], full_pool: Iterable[Mapping[str, Any]], n_teams: int, rules: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Make sure the auction pool holds enough players of every role (and overseas) for every team's minimum:
+    missing ones are added from the rest of the player pool (best first). Returns the new list."""
+    out = [dict(p) for p in chosen]
+    have = {player_key(p.get("name")) for p in out}
+    rest = [dict(p) for p in full_pool if player_key(p.get("name")) not in have]
+    rest.sort(key=lambda p: -player_value(p))
+    rr = rules.get("role_rules") or {}
+    wants = [(lambda p, r=r: norm_role(p.get("role")) == r, int(n_teams) * int((rr.get(r) or (0, 0))[0])) for r in ROLES]
+    os_min = int(rules.get("overseas_squad_min") or 0)
+    if os_min:
+        wants.append((lambda p: bool(is_overseas(p.get("country"))), int(n_teams) * os_min))
+    for pred, need in wants:
+        short = need - sum(1 for p in out if pred(p))
+        for cand in list(rest):
+            if short <= 0:
+                break
+            if pred(cand):
+                out.append(cand)
+                rest.remove(cand)
+                short -= 1
+    return out
+
+
+def pool_supply_error(pool: Sequence[Mapping[str, Any]], n_teams: int, rules: Mapping[str, Any]) -> str | None:
+    """None if the pool can supply every team's role / overseas minimums, else a plain-language reason."""
+    rr = rules.get("role_rules") or {}
+    counts = role_counts(pool)
+    for r in ROLES:
+        need = int(n_teams) * int((rr.get(r) or (0, 0))[0])
+        if counts[r] < need:
+            return f"The player pool has only {counts[r]} {ROLE_PLURAL[r].lower()}; {need} are needed for {n_teams} teams."
+    os_min = int(rules.get("overseas_squad_min") or 0)
+    if os_min:
+        n_os = sum(1 for p in pool if is_overseas(p.get("country")))
+        if n_os < int(n_teams) * os_min:
+            return f"The player pool has only {n_os} overseas players; {int(n_teams) * os_min} are needed for {n_teams} teams."
+    return None
+
+
+def rules_lines(rules: Mapping[str, Any]) -> list[str]:
+    """Plain lines describing the squad rules (squad, roles, overseas)."""
+    rr = rules.get("role_rules") or {}
+    lines = [f"Squad: {int(rules.get('squad_min') or 0)}–{int(rules.get('squad_max') or 0)}"]
+    for r in ROLES:
+        lo, hi = (rr.get(r) or (0, 99))
+        lines.append(f"{ROLE_ICON[r]} {ROLE_PLURAL[r]}: {int(lo)}–{int(hi)}")
+    omax, omin = int(rules.get("overseas_squad_max") or 0), int(rules.get("overseas_squad_min") or 0)
+    if omax or omin:
+        lines.append(f"✈️ Overseas: {omin}–{omax if omax else 'any'}")
+    return lines
 
 
 # ---------------------------------------------------------------------------

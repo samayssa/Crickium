@@ -234,10 +234,19 @@ def unsold_text(t: Mapping[str, Any], lot: Mapping[str, Any], total_lots: int, s
     )
 
 
+def role_rules_text(t: Mapping[str, Any]) -> str:
+    """One line per role: 🏏 Batters ➤ 4–9 ... (empty if the tournament has no rules)."""
+    rules = tc.tournament_rules(dict(t))
+    rr = rules["role_rules"]
+    return "".join(f"{tc.ROLE_ICON[r]} <b>{tc.ROLE_PLURAL[r]}</b> ➤ {rr[r][0]}–{rr[r][1]}\n" for r in tc.ROLES)
+
+
 def intro(t: Mapping[str, Any], teams: Sequence[Mapping[str, Any]], total_lots: int, n_sets: int, start_in: int) -> str:
     ladder = tc.ladder_rows(t.get("ladder"))
     ladder_text = "\n".join(f"   {esc(a)} ➤ <b>{esc(b)}</b>" for a, b in ladder)
     overseas = int(t.get("overseas_squad_max") or 0)
+    omin = int(t.get("overseas_squad_min") or 0)
+    overseas_range = (f"min {omin}, max {overseas}" if omin else f"max {overseas}") + " in a squad"
     team_rows = "\n".join(
         f"{i}. {team_label(team)}" for i, team in enumerate(teams, start=1)
     )
@@ -247,7 +256,8 @@ def intro(t: Mapping[str, Any], teams: Sequence[Mapping[str, Any]], total_lots: 
         f"<blockquote>🏏 <b>Players</b> ➤ {int(total_lots)} in {int(n_sets)} sets\n"
         f"💼 <b>Purse</b> ➤ {money(t.get('purse_lakh'))} per team\n"
         f"👥 <b>Squad</b> ➤ {int(t.get('squad_min') or 0)}–{int(t.get('squad_max') or 0)} players"
-        f"{(chr(10) + '✈️ <b>Overseas</b> ➤ max ' + str(overseas) + ' in a squad') if overseas else ''}\n"
+        f"{(chr(10) + '✈️ <b>Overseas</b> ➤ ' + overseas_range) if overseas else ''}\n"
+        f"{role_rules_text(t)}"
         f"⏱ <b>Timer</b> ➤ {tc.BID_SECONDS}s, resets on every bid</blockquote>"
         f"<blockquote>📈 <b>Bid increments</b>\n{ladder_text}</blockquote>"
         f"<b>Teams</b>\n{team_rows}\n\n"
@@ -320,6 +330,13 @@ def bid_feedback(result: Mapping[str, Any]) -> str:
         return "🚫 Your squad is full."
     if reason == "overseas_full":
         return "🚫 Your overseas quota is full."
+    if reason == "role_full":
+        role = tc.norm_role(result.get("role"))
+        mx = result.get("role_max")
+        return f"🚫 You already have the maximum {tc.ROLE_PLURAL[role]}" + (f" ({int(mx)})." if mx is not None else ".")
+    if reason == "slots":
+        need = result.get("need")
+        return "🚫 No spare squad slot for this player — you must still sign " + (str(need) if need else "other roles") + "."
     if reason == "purse":
         left = f" You can bid up to {money(limit)}." if limit is not None and int(limit) > 0 else ""
         return f"💸 Not enough purse for {money(price)}.{left}"

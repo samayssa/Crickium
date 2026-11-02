@@ -462,12 +462,20 @@ async def start_auction(tid: int, by_user: int) -> dict[str, Any]:
     if not tc.pool_is_enough(len(teams), int(t.get("squad_min") or 0), len(pool)):
         need = int(len(teams) * int(t.get("squad_min") or 0) * 1.15) + 1
         return {"ok": False, "error": f"The player pool has only {len(pool)} players; {need} are needed for {len(teams)} teams."}
+    squad_rules = tc.tournament_rules(t)
+    why_not = tc.pool_supply_error(pool, len(teams), squad_rules)
+    if why_not and t.get("engine") == "PLAY":
+        return {"ok": False, "error": why_not + " Lower the role minimums (/setroles) or the number of teams."}
+    if why_not:
+        # official leagues: a thin player database must not block the auction - the shortfall is reported at the end
+        print(f"[tournament/auction] pool cannot cover every role minimum: {why_not}")
     claimed = await tr.cas_status(tid, ["registration"], "auction")
     if claimed is None:
         return {"ok": False, "error": "The auction is already starting."}
     try:
         target = tc.pool_target(len(teams), int(t.get("squad_max") or 20), len(pool))
         chosen = tc.select_pool(pool, target)
+        chosen = tc.top_up_pool(chosen, pool, len(teams), squad_rules)
         sets = tc.build_auction_sets(chosen, prof)
         lots = tc.flatten_sets(sets)
         if not lots:
@@ -553,8 +561,7 @@ async def complete_squads(tid: int) -> None:
     t = await tr.get(tid)
     if t is None:
         return
-    rules = {"squad_min": t["squad_min"], "squad_max": t["squad_max"],
-             "overseas_squad_max": t["overseas_squad_max"], "xi_overseas_max": t["xi_overseas_max"]}
+    rules = tc.tournament_rules(t)
     teams = await tr.teams(tid)
     random.shuffle(teams)
     squads = await ar.all_squads(tid)
@@ -572,6 +579,26 @@ async def complete_squads(tid: int) -> None:
             }, price, source="autofill")
             if added:
                 taken.add(player["pkey"])
+
+
+async def rule_shortfalls(tid: int) -> list[str]:
+    """Teams that still miss a role / overseas / squad minimum after the auction (not enough players were left)."""
+    t = await tr.get(tid)
+    if t is None:
+        return []
+    rules = tc.tournament_rules(t)
+    squads = await ar.all_squads(tid)
+    out: list[str] = []
+    for team in await tr.teams(tid):
+        squad = squads.get(int(team["team_no"]), [])
+        os_now = sum(1 for p in squad if p.get("overseas"))
+        need = tc.squad_needs(tc.role_counts(squad), os_now, rules)
+        txt = tc.needs_text({k: v for k, v in need.items() if k != "squad"})
+        if need.get("squad"):
+            txt = (txt + ", " if txt else "") + f"{need['squad']} more to reach the squad minimum"
+        if txt:
+            out.append(f"{tx.team_short(team)}: {txt}")
+    return out
 
 
 async def pick_xis(tid: int) -> list[str]:
@@ -617,6 +644,13 @@ async def _finish(tid: int, ended_early: bool = False) -> None:
         text = tx.finish_text(t or {}, teams, summary["buys"], summary["sold"], summary["unsold"], ended_early=ended_early)
         if broken:
             text += "\n⚠️ <b>No legal XI possible:</b> " + ", ".join(tx.esc(b) for b in broken)
+        try:
+            short_rules = await rule_shortfalls(tid)
+        except Exception:
+            traceback.print_exc()
+            short_rules = []
+        if short_rules:
+            text += "\n⚠️ <b>Squad rules not fully met</b> (not enough players left):\n" + "\n".join(tx.esc(x) for x in short_rules)
         pres.say(text, tx.markup([tx.room_button(tid)], [tx.hub_button(tid)]))
         try:
             from services import tournament_squads
@@ -781,10 +815,17 @@ async def status_card(tid: int, viewer_id: int | None = None) -> tuple[str, dict
                        if int(lot.get("bid_count") or 0) else f"base {tc.fmt_money(lot['base_lakh'])}")
                 lines.append(f"<blockquote>{tx.player_heading(lot)}\n{cur}</blockquote>")
     rows = []
+    try:
+        role_map = await ar.team_role_counts(tid)
+    except Exception:
+        role_map = {}
     for team in sorted(teams, key=lambda x: int(x["team_no"])):
-        rows.append(f"<b>{tx.esc(tx.team_short(team))}</b> · {int(team.get('squad_count') or 0)}/{int(t.get('squad_max') or 0)} · {tc.fmt_money(team.get('purse_left'))}")
+        rc = role_map.get(int(team["team_no"]))
+        mix = (" · " + " ".join(f"{tc.ROLE_SHORT[r][0] if r != tc.ROLE_BOWL else 'Bo'}{rc[r]}" for r in tc.ROLES)) if rc else ""
+        rows.append(f"<b>{tx.esc(tx.team_short(team))}</b> · {int(team.get('squad_count') or 0)}/{int(t.get('squad_max') or 0)} · {tc.fmt_money(team.get('purse_left'))}{mix}")
     if rows:
         lines.append("<blockquote>" + "\n".join(rows) + "</blockquote>")
+        lines.append("<i>B batters · W keepers · A all-rounders · Bo bowlers</i>")
     keyboard = [[tx.room_button(tid)]]
     if a and a["status"] in ("running", "paused") and can_control(t, viewer_id):
         keyboard.append(host_markup_rows(tid)[0])
