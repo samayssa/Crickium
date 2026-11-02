@@ -152,3 +152,8 @@
 @keyframes tnpop { from { transform: scale(.94); opacity: 0; } to { transform: none; opacity: 1; } }
 .tn-howto { margin-top: 12px; padding: 12px; border-radius: 15px; text-align: center; font-size: 13px; color: var(--muted); background: rgba(197,239,97,.06); border: 1px dashed rgba(197,239,97,.3); }
 .tn-howto b { color: var(--lime); }
+
+.tn-rules{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px;font-size:12px}
+.tn-rules span{padding:3px 8px;border-radius:10px;background:rgba(127,127,127,.15)}
+.tn-rules span.need{background:rgba(230,160,0,.25)}
+.tn-rules span.full{background:rgba(220,60,60,.25)}

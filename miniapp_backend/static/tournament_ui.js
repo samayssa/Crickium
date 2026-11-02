@@ -158,11 +158,15 @@
       stage = `<section class="tn-lot idle"><div class="tn-empty">${s.status === "done" ? "🏁 Auction finished" : "⏳ Next player coming up…"}</div>${s.status === "done" ? `<button class="tn-btn gold" data-tn-squads="${c.id}">👥 View all squads &amp; prices</button>` : ""}</section>`;
     }
     const mine = me ? `<div class="tn-me">🎽 <b>${esc(me.short)}</b> · 💰 Purse <b>${esc(me.purse_text)}</b> · 👥 ${me.squad}/${s.squad_max}</div>` : '<div class="tn-me">👀 You are watching — only team owners can bid.</div>';
+    const rl = s.rules && s.rules.roles ? s.rules.roles : [];
+    const mr = s.my_roles || {};
+    const roleBar = rl.length ? `<div class="tn-rules">${rl.map((r) => { const n = mr[r.role] || 0; const cls = me && n < r.min ? "need" : (me && n >= r.max ? "full" : ""); return `<span class="${cls}" title="${esc(r.label)}">${esc(r.icon)} ${me ? n + " · " : ""}${r.min}–${r.max}</span>`; }).join("")}${s.rules.overseas ? `<span title="Overseas">✈️ ${me ? (me.overseas || 0) + " · " : ""}${s.rules.overseas[0]}–${s.rules.overseas[1] || "any"}</span>` : ""}</div>` : "";
+    const note = s.bid_note ? `<div class="tn-howto">${esc(s.bid_note)}</div>` : "";
     const purses = `<div class="tn-sec">Teams</div><div class="tn-purses">${s.teams.map((t) => `<div class="${me && t.no === me.no ? "me" : ""} ${l && l.leader_team_no === t.no ? "lead" : ""}"><b>${esc(t.short)}</b><span>${esc(t.purse_text)}</span><small>${t.squad}/${s.squad_max}</small></div>`).join("")}</div>`;
     const recent = (s.recent || []).length ? `<div class="tn-sec">Recent</div>${s.recent.map((r) => `<div class="tn-sale ${r.status}"><span>${r.status === "sold" ? "✅" : "❌"} ${esc(r.name)}</span><b>${esc(r.status === "sold" ? r.team + " · " + r.price_text : "Unsold")}</b></div>`).join("")}` : "";
     const upc = (s.upcoming || []).length ? `<div class="tn-sec">Up next</div>${s.upcoming.map((r) => `<div class="tn-sale"><span>${esc(r.name)}</span><b>${esc(r.base_text)}</b></div>`).join("")}` : "";
     const cnt = s.counts ? `<div class="tn-counts"><span>✅ ${s.counts.sold} sold</span><span>❌ ${s.counts.unsold} unsold</span><span>⏳ ${s.counts.pending + s.counts.live} left</span></div>` : "";
-    return head + host + stage + mine + cnt + purses + recent + upc;
+    return head + host + stage + note + mine + roleBar + cnt + purses + recent + upc;
   }
   function paintRoom() { if (mode === "room" && root() && snap) { root().innerHTML = roomHtml(); } }
   async function pollRoom() {
