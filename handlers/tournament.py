@@ -216,7 +216,8 @@ async def _finish_wizard(t: dict, window: tuple[int, int], cq: dict) -> None:
     row = await tr.cas_status(tid, ["setup"], "registration", window_start_min=window[0], window_end_min=window[1], setup_step="done",
                               purse_lakh=int(prof["purse_lakh"]), squad_min=int(prof["squad_min"]) if t["mode"] == "auction" else 11,
                               squad_max=int(prof["squad_max"]), overseas_squad_max=int(prof["overseas_squad_max"]),
-                              xi_overseas_max=int(prof["xi_overseas_max"]))
+                              xi_overseas_max=int(prof["xi_overseas_max"]), overseas_squad_min=int(prof["overseas_squad_min"]),
+                              role_rules=tc.default_role_rules(t["engine"]))
     if row is None:
         await _answer(cq, "Already created.")
         return
@@ -424,6 +425,7 @@ def _panel(t: dict, teams: list[dict]) -> tuple[str, dict]:
             rows.append([tx.button(tc.fmt_money(v), f"trm:{tid}:pu:{v}") for v in prof["purse_presets"][:4]])
             rows.append([tx.button("📈 IPL steps", f"trm:{tid}:ld:ipl"), tx.button("⚡ Fast steps", f"trm:{tid}:ld:fast")])
             rows.append([tx.button("🏛 Start auction", f"trm:{tid}:sa", style="success")])
+            lines.append("<i>Squad rules: /rules" + (" · Custom: /setroles /setsquad /setoverseas" if t.get("engine") == "PLAY" else " (official, fixed like the real auction)") + "</i>")
             lines.append("<i>Custom purse: /setpurse 120cr · custom steps (lakh): /setsteps 5 10 20 25 (below 1cr, 1–2cr, 2–5cr, above 5cr) or /setsteps 10 for flat</i>")
         else:
             rows.append([tx.button("🚀 Start tournament", f"trm:{tid}:st", style="success")])
@@ -569,6 +571,134 @@ async def setsteps_command(message):
         return
     await tr.update_fields(int(t["tid"]), ladder=tc.ladder_to_json(ladder))
     await _send(chat_id, "📈 Bid steps saved:\n" + "\n".join(f"• {tx.esc(a)} → +{tx.esc(b)}" for a, b in tc.ladder_rows(ladder)))
+
+
+# ---------------------------------------------------------------------------
+# squad rules: /rules (everyone) and /setroles /setsquad /setoverseas (Custom hosts)
+# ---------------------------------------------------------------------------
+def _rules_view(t: dict) -> str:
+    r = tc.tournament_rules(t)
+    rr = r["role_rules"]
+    lines = [f"📋 <b>Squad rules</b> · {tx.esc(t['name'])}", "<blockquote>"
+             f"👥 Squad ➤ {r['squad_min']}–{r['squad_max']} players"]
+    for role in tc.ROLES:
+        lines.append(f"{tc.ROLE_ICON[role]} {tc.ROLE_PLURAL[role]} ➤ {rr[role][0]}–{rr[role][1]}")
+    if r["overseas_squad_max"] or r["overseas_squad_min"]:
+        lines.append(f"✈️ Overseas ➤ {r['overseas_squad_min']}–{r['overseas_squad_max'] or 'any'}"
+                     + (f" · max {r['xi_overseas_max']} in the XI" if r["xi_overseas_max"] else ""))
+    elif t.get("engine") == "PLAYINT":
+        lines.append("✈️ Overseas ➤ not applicable (national teams)")
+    lines.append("</blockquote>The auction enforces these for every team: a bid is refused if it would break a maximum, "
+                 "or leave no slot for a role you still must sign. Teams still short at the end are topped up with unsold players.")
+    return "\n".join(lines)
+
+
+@register("rules")
+async def rules_command(message):
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"])
+    if not t or t.get("mode") != "auction":
+        await _send(chat_id, "No auction tournament found here.")
+        return
+    await _send(chat_id, _rules_view(t))
+
+
+async def _custom_rules_target(message) -> tuple[int, dict | None]:
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"], statuses=("registration",))
+    if not t or not rt.can_manage(t, u["id"]) or t.get("mode") != "auction":
+        await _send(chat_id, "No auction tournament of yours is in registration here.")
+        return chat_id, None
+    if t.get("engine") != "PLAY":
+        await _send(chat_id, "🔒 IPL / WPL / T20 WC use the official fixed squad rules. Only <b>Custom</b> tournaments can change them.\n\n" + _rules_view(t))
+        return chat_id, None
+    return chat_id, t
+
+
+@register("setroles")
+async def setroles_command(message):
+    chat_id, t = await _custom_rules_target(message)
+    if t is None:
+        return
+    words = _args(message).lower().replace(",", " ").split()
+    usage = ("Usage: <code>/setroles bat 4 9 wk 1 3 ar 3 6 bowl 4 7</code>\n(role, minimum, maximum — roles: bat · wk · ar · bowl; "
+             "you can send only the ones you want to change)\n\n" + _rules_view(t))
+    rules = tc.tournament_rules(t)
+    rr = {k: list(v) for k, v in rules["role_rules"].items()}
+    i = 0
+    if not words:
+        await _send(chat_id, usage)
+        return
+    while i < len(words):
+        role = tc.ROLE_ALIASES.get(words[i])
+        if role is None or i + 2 >= len(words):
+            await _send(chat_id, usage)
+            return
+        try:
+            lo, hi = int(words[i + 1]), int(words[i + 2])
+        except ValueError:
+            await _send(chat_id, usage)
+            return
+        if lo < 0 or hi < lo or hi > 30:
+            await _send(chat_id, f"❌ {tc.ROLE_PLURAL[role]}: use a minimum and a maximum (min ≤ max ≤ 30).")
+            return
+        rr[role] = [lo, hi]
+        i += 3
+    why = tc.validate_squad_rules(rules["squad_min"], rules["squad_max"], rr, rules["overseas_squad_min"], rules["overseas_squad_max"])
+    if why:
+        await _send(chat_id, "❌ " + tx.esc(why))
+        return
+    await tr.update_fields(int(t["tid"]), role_rules=rr)
+    t["role_rules"] = rr
+    await _send(chat_id, "✅ Role limits saved.\n\n" + _rules_view(t))
+
+
+@register("setsquad")
+async def setsquad_command(message):
+    chat_id, t = await _custom_rules_target(message)
+    if t is None:
+        return
+    words = _args(message).replace(",", " ").split()
+    try:
+        lo, hi = int(words[0]), int(words[1])
+    except (IndexError, ValueError):
+        await _send(chat_id, "Usage: <code>/setsquad 15 20</code> (minimum and maximum squad size)\n\n" + _rules_view(t))
+        return
+    rules = tc.tournament_rules(t)
+    why = tc.validate_squad_rules(lo, hi, rules["role_rules"], rules["overseas_squad_min"], rules["overseas_squad_max"])
+    if why:
+        await _send(chat_id, "❌ " + tx.esc(why))
+        return
+    await tr.update_fields(int(t["tid"]), squad_min=lo, squad_max=hi)
+    t["squad_min"], t["squad_max"] = lo, hi
+    await _send(chat_id, "✅ Squad size saved.\n\n" + _rules_view(t))
+
+
+@register("setoverseas")
+async def setoverseas_command(message):
+    chat_id, t = await _custom_rules_target(message)
+    if t is None:
+        return
+    words = _args(message).replace(",", " ").split()
+    try:
+        lo, hi = int(words[0]), int(words[1])
+    except (IndexError, ValueError):
+        await _send(chat_id, "Usage: <code>/setoverseas 2 6</code> (minimum and maximum overseas players per squad; <code>/setoverseas 0 0</code> = no overseas rule)\n\n" + _rules_view(t))
+        return
+    rules = tc.tournament_rules(t)
+    if lo < 0 or hi < 0 or (hi and lo > hi):
+        await _send(chat_id, "❌ Use minimum ≤ maximum (0 0 switches the overseas rule off).")
+        return
+    why = tc.validate_squad_rules(rules["squad_min"], rules["squad_max"], rules["role_rules"], lo, hi)
+    if why:
+        await _send(chat_id, "❌ " + tx.esc(why))
+        return
+    xi = min(4, hi) if hi else 0
+    await tr.update_fields(int(t["tid"]), overseas_squad_min=lo, overseas_squad_max=hi, xi_overseas_max=xi)
+    t.update(overseas_squad_min=lo, overseas_squad_max=hi, xi_overseas_max=xi)
+    await _send(chat_id, "✅ Overseas rule saved.\n\n" + _rules_view(t))
 
 
 # ---------------------------------------------------------------------------
