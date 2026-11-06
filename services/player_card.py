@@ -135,7 +135,7 @@ def overall_rating(bat_level, bowl_level) -> int:
     return _overall_rating(bat_level, bowl_level)
 
 
-def render_player_card(player: dict, template_bytes: bytes | None = None, card_type: str = "bat") -> bytes:
+def render_player_card(player: dict, template_bytes: bytes | None = None, card_type: str = "bat", fmt: str = "PNG") -> bytes:
     """
     Draws `player`'s stats onto the card template and returns PNG bytes.
     `player` is a row from the `players` table (name, country, role,
@@ -212,5 +212,10 @@ def render_player_card(player: dict, template_bytes: bytes | None = None, card_t
     _draw_left_middle(draw, country, cfg.COUNTRY_BOX, font, cfg.TEAL)
 
     out = BytesIO()
-    image.save(out, format="PNG")
+    if str(fmt).upper() in ("JPEG", "JPG"):
+        # Telegram re-compresses photos to JPEG anyway: sending JPEG is ~6x smaller (much faster upload) and
+        # ~10x quicker to encode than the 1.9 MB PNG - important on a small CPU.
+        image.save(out, format="JPEG", quality=92, subsampling=0)
+    else:
+        image.save(out, format="PNG")
     return out.getvalue()

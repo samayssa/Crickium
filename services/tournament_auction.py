@@ -27,13 +27,14 @@ from database import tournament_auction_repo as ar
 from database import tournament_repo as tr
 from services import tournament_core as tc
 from services import tournament_text as tx
+from services import tournament_media as tm
 from services import tournament_tg as _tg
 
 # --- tunables (tests shrink them) -----------------------------------------------------------------
 INTRO_SECONDS = 45            # from "Start auction" to the first lot
 OPENING_GRACE = 3             # the first bid window is a little longer: the group messages need a moment to appear
 MIN_EDIT_GAP = 3.5            # seconds between two edits of the same live message
-MIN_CALL_GAP = 1.2            # seconds between two Telegram calls into the same group
+MIN_CALL_GAP = 1.0            # seconds between two Telegram calls into the same group
 CALLS_PER_MINUTE_LOW = 14     # live-message edits are held back when the group already got this many calls this minute
 CALLS_PER_MINUTE_HIGH = 19    # structural messages (new lot, result) may use the whole budget
 POLL_BUSY = 0.4               # worker period while an auction is running
@@ -113,6 +114,10 @@ class Presenter:
         self.seen_status: str | None = None
         self.recovered = False
         self.pin_warned = False
+        self.total_lots = 0
+        self.lot_media: dict[int, tuple[str | None, str | None]] = {}   # ord -> (card key, Telegram file_id of the lot picture)
+        self.prefetched: dict[int, "tm.LotMedia"] = {}
+        self.prefetching: set[int] = set()
 
     # -- queueing -----------------------------------------------------------------------------------
     def _push(self, kind: str, arg: Any) -> None:
@@ -128,8 +133,16 @@ class Presenter:
         """Kept for callers; the group no longer has an edited "live" message - every bid / notice is its own message."""
         return
 
-    def bid(self, ord_: int, team: dict, price: int) -> None:
-        self._push("bid", (int(ord_), dict(team), int(price)))
+    def bid(self, ord_: int, team: dict, price: int, lot: dict | None = None) -> None:
+        """Queue the BID ACCEPTED message. Messages of this lot that are still waiting (an older bid, the countdown of
+        the old clock) are out of date the moment a new bid lands - drop them, so a burst of bids never builds a
+        backlog that makes the newest bidder wait for everybody else's messages."""
+        o = int(ord_)
+        if self.queue:
+            keep = collections.deque(x for x in self.queue
+                                     if not ((x[0] == "bid" and x[1][0] == o) or (x[0] == "count" and x[1][0] == o)))
+            self.queue = keep
+        self._push("bid", (o, dict(team), int(price), dict(lot) if lot else None))
 
     def countdown(self, ord_: int, n: int) -> None:
         self._push("count", (int(ord_), int(n), time.monotonic()))
@@ -258,50 +271,78 @@ class Presenter:
         return {"team_no": lot["leader_team_no"], "short": lot.get("leader_short"), "base_code": lot.get("leader_base"),
                 "name": lot.get("leader_name"), "owner_name": lot.get("leader_owner")}
 
-    async def _lot_photo(self, lot: dict) -> bytes | None:
-        """The card image of the lot's player (None when it cannot be produced - the card then goes out as text)."""
-        try:
-            from services.card_provider import get_player_card_bytes
-            player = None
-            raw = lot.get("card")
-            if isinstance(raw, str):
-                import json as _json
-                raw = _json.loads(raw)
-            if isinstance(raw, dict) and str(raw.get("player_kind") or "global") in ("special", "showcase"):
-                from services.giveaway import resolve_live_card
-                player = await resolve_live_card(raw)
-            if player is None:
-                from database.query import fetchrow
-                row = await fetchrow("SELECT * FROM players WHERE LOWER(name)=LOWER($1) LIMIT 1;", str(lot.get("name") or ""))
-                player = dict(row) if row else {"name": lot.get("name"), "role": lot.get("role"), "country": lot.get("country"),
-                                                "bat_level": lot.get("bat_level"), "bowl_level": lot.get("bowl_level"),
-                                                "batting_hand": lot.get("batting_hand"), "bowling_hand": lot.get("bowling_hand")}
-            data, _custom = await get_player_card_bytes(player)
-            return data
-        except Exception as exc:
-            print(f"[tournament/auction] card image unavailable for lot {lot.get('ord')} of #{self.tid}: {exc!r}")
-            return None
+    async def _photo_call(self, adapter: Any, chat_id: int, photo: Any, caption: str, markup: dict | None) -> tuple[int | None, str | None]:
+        ex = getattr(adapter, "send_photo_ex", None)
+        if ex is not None:
+            return await ex(chat_id, photo, caption, markup)
+        if isinstance(photo, (bytes, bytearray)):
+            return await adapter.send_photo(chat_id, photo, caption, markup), None
+        raise RuntimeError("adapter cannot send by file_id")
 
     async def _send_card(self, chat_id: int, lot: dict, t: dict, total: int) -> int | None:
+        """The lot card: picture + details. The picture's Telegram file_id is stored the moment it exists
+        (memory, database, lot row) - every BID ACCEPTED message of this lot re-uses it."""
+        ord_ = int(lot["ord"])
         price = tc.next_bid(int(lot.get("cur_bid_lakh") or 0), int(lot.get("base_lakh") or 0), int(lot.get("bid_count") or 0) > 0, t.get("ladder"))
         text = tx.lot_card(t, lot, total, price)
         if len(re.sub(r"<[^>]+>", "", text)) > 900:
             text = tx.lot_card(t, lot, total, price, compact=True)
         markup = lot_card_markup(self.tid)
         adapter = _tg.get()
-        if hasattr(adapter, "send_photo"):
-            photo = await self._lot_photo(lot)
-            if photo:
-                for attempt in range(2):
-                    await self._pace(True)
-                    try:
-                        mid = await adapter.send_photo(chat_id, photo, text, markup)
-                        if mid:
-                            return mid
-                    except Exception as exc:
-                        print(f"[tournament/auction] photo send failed (#{self.tid}): {exc!r}")
+        if hasattr(adapter, "send_photo") or hasattr(adapter, "send_photo_ex"):
+            media = self.prefetched.pop(ord_, None) or await tm.prepare(lot)
+            for attempt in range(2):
+                if media is None:
+                    break
+                photo = media.file_id or media.data
+                if photo is None:
+                    break
+                await self._pace(True)
+                try:
+                    mid, fid = await self._photo_call(adapter, chat_id, photo, text, markup)
+                except Exception as exc:
+                    print(f"[tournament/auction] photo send failed (#{self.tid}, {'file_id' if media.file_id else 'upload'}): {exc!r}")
+                    if media.file_id:                         # a stored file_id Telegram no longer accepts: draw / download again
+                        await tm.forget(media.key)
+                        data = await tm.bytes_for(lot, media)
+                        media = tm.LotMedia(media.key, None, data, media.custom) if data else None
+                    else:
                         await asyncio.sleep(1.0)
+                    continue
+                if mid:
+                    sent_fid = fid or media.file_id
+                    if sent_fid:
+                        self.lot_media[ord_] = (media.key, sent_fid)
+                        if media.data is not None:             # a fresh upload: this file_id is now the picture of that card
+                            await tm.remember(media.key, sent_fid, media.custom)
+                        try:
+                            await ar.set_lot_media(self.tid, ord_, media.key, sent_fid)
+                        except Exception as exc:
+                            print(f"[tournament/auction] could not store the lot file_id: {exc!r}")
+                    return mid
         return await self._send(chat_id, text, markup)
+
+    def _prefetch(self, next_ord: int) -> None:
+        """While a lot is being bid on, get the NEXT lot's picture ready (render off the event loop / look up its file_id)."""
+        if next_ord in self.prefetched or next_ord in self.prefetching:
+            return
+        self.prefetching.add(next_ord)
+
+        async def _job():
+            try:
+                lot = await ar.lot_view(self.tid, next_ord)
+                if lot is not None and not lot.get("a_msg_id"):
+                    media = await tm.prepare(lot)
+                    if media is not None:
+                        self.prefetched[next_ord] = media
+                        while len(self.prefetched) > 3:
+                            self.prefetched.pop(next(iter(self.prefetched)))
+            except Exception as exc:
+                print(f"[tournament/auction] prefetch failed for lot {next_ord} of #{self.tid}: {exc!r}")
+            finally:
+                self.prefetching.discard(next_ord)
+
+        asyncio.create_task(_job())
 
     async def _show_new(self, ord_: int) -> None:
         lot, t, auction = await self._view(ord_)
@@ -309,6 +350,7 @@ class Presenter:
             return
         chat_id = int(t["host_chat_id"])
         total = int((auction or {}).get("total_lots") or 0)
+        self.total_lots = total or self.total_lots
         if lot["status"] not in ("live", "pending") and int(lot.get("shown") or 0) < 2:
             await self._show_result(ord_, False)         # settled before we got to show it: go straight to the result
             return
@@ -320,13 +362,37 @@ class Presenter:
                 await ar.set_lot_messages(self.tid, ord_, a_msg_id=a_id)
                 await self._pin(chat_id, a_id)                      # ... and pinned
         await ar.set_shown(self.tid, ord_, 1)
+        self._prefetch(int(ord_) + 1)
 
-    async def _show_bid(self, ord_: int, team: dict, price: int) -> None:
-        lot, t, auction = await self._view(ord_)
-        if lot is None or not t.get("host_chat_id"):
+    async def _show_bid(self, ord_: int, team: dict, price: int, lot: dict | None = None) -> None:
+        """BID ACCEPTED - straight from the bid result (no re-read of the database), with the lot's picture re-used
+        through its stored Telegram file_id when there is one."""
+        t = await self._tournament()
+        if not t.get("host_chat_id"):
             return
-        total = int((auction or {}).get("total_lots") or 0)
-        await self._send(int(t["host_chat_id"]), tx.bid_accepted(t, lot, team, price, total), tx.markup([tx.room_button(self.tid)]))
+        if lot is None:
+            lot, t, auction = await self._view(ord_)
+            if lot is None:
+                return
+        if not self.total_lots:
+            a = await ar.get_auction(self.tid)
+            self.total_lots = int((a or {}).get("total_lots") or 0)
+        chat_id = int(t["host_chat_id"])
+        text = tx.bid_accepted(t, lot, team, price, self.total_lots)
+        markup = tx.markup([tx.room_button(self.tid)])
+        known = self.lot_media.get(int(ord_))
+        file_id = (known[1] if known else None) or lot.get("card_file_id")
+        adapter = _tg.get()
+        if file_id and getattr(adapter, "send_photo_ex", None) is not None and len(re.sub(r"<[^>]+>", "", text)) <= 900:
+            await self._pace(True)
+            try:
+                mid, _fid = await adapter.send_photo_ex(chat_id, file_id, text, markup)
+                if mid:
+                    return
+            except Exception as exc:
+                print(f"[tournament/auction] bid photo by file_id failed (#{self.tid}): {exc!r}")
+                self.lot_media.pop(int(ord_), None)
+        await self._send(chat_id, text, markup)
 
     async def _show_count(self, ord_: int, n: int, queued_at: float) -> None:
         """"N seconds remaining" - dropped when it is stale (a bid reset the clock, or the lot is over)."""
@@ -487,6 +553,7 @@ async def start_auction(tid: int, by_user: int) -> dict[str, Any]:
         await tr.cas_status(tid, ["auction"], "registration")
         return {"ok": False, "error": f"Could not prepare the auction: {exc}"}
     _ACTIVE.add(int(tid))
+    forget_chat(t.get("host_chat_id"))
     pres = presenter(tid)
     pres.recovered = True
     pres.say(tx.intro(claimed, teams, len(lots), len(sets), INTRO_SECONDS), tx.markup([tx.room_button(tid)], *host_markup_rows(tid)))
@@ -497,19 +564,43 @@ async def start_auction(tid: int, by_user: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # bidding + host controls (also used by the Mini App API)
 # ---------------------------------------------------------------------------
-async def bid(tid: int, ord_: int, user_id: int, expected_lakh: int | None = None) -> dict[str, Any]:
-    team = await tr.team_of_user(tid, user_id)
-    if team is None:
-        return {"ok": False, "reason": "not_in"}
+_CHAT_AUCTION: dict[int, tuple[int | None, float]] = {}      # chat id -> (tournament id running an auction there | None, valid until)
+
+
+def forget_chat(chat_id: int | None = None) -> None:
+    if chat_id is None:
+        _CHAT_AUCTION.clear()
+    else:
+        _CHAT_AUCTION.pop(int(chat_id), None)
+
+
+async def auction_tid_for_chat(chat_id: int) -> int | None:
+    """The tournament whose auction is running in this group (None: nothing is being auctioned here).
+
+    Answered from memory for 60 s (3 s for "nothing"), so a /bid costs no lookup of its own."""
+    now = time.monotonic()
+    hit = _CHAT_AUCTION.get(int(chat_id))
+    if hit is not None and hit[1] > now:
+        return hit[0]
+    rows = await tr.for_chat(int(chat_id), ("auction",))
+    tid = int(rows[0]["tid"]) if rows else None
+    _CHAT_AUCTION[int(chat_id)] = (tid, now + (60.0 if tid else 3.0))
+    return tid
+
+
+async def bid(tid: int, ord_: int | None, user_id: int, expected_lakh: int | None = None) -> dict[str, Any]:
+    """An owner's bid. ``ord_`` None = the lot that is live right now. One database transaction does it all
+    (team lookup, rules, bid); the group message is built from its result."""
     try:
-        result = await ar.place_bid(tid, ord_, int(team["team_no"]), int(user_id), expected_lakh=expected_lakh)
+        result = await ar.place_bid(tid, ord_, None, int(user_id), expected_lakh=expected_lakh)
     except Exception as exc:
         if getattr(exc, "sqlstate", None) == "40001":
             return {"ok": False, "reason": "busy"}
         raise
     if result.get("ok"):
+        lot = result.get("lot") or {}
         pres = _PRESENTERS.get(int(tid)) or presenter(tid)
-        pres.bid(int(ord_), dict(result.get("team") or team), int(result.get("price") or 0))
+        pres.bid(int(lot.get("ord") or ord_ or 0), dict(result.get("team") or {}), int(result.get("price") or 0), lot)
         wake()
     return result
 
@@ -623,6 +714,7 @@ async def _finish(tid: int, ended_early: bool = False) -> None:
     if int(tid) in _FINISHING:
         return
     _FINISHING.add(int(tid))
+    forget_chat()
     try:
         pres = presenter(tid)
         if ended_early:

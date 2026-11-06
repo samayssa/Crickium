@@ -22,6 +22,13 @@ class AppTelegram:
         msg = await app.send_photo(chat_id, photo=photo, caption=caption, parse_mode="HTML", reply_markup=markup)
         return int((msg or {}).get("message_id") or 0) or None
 
+    async def send_photo_ex(self, chat_id: int, photo: bytes | str, caption: str, markup: dict | None = None) -> tuple[int | None, str | None]:
+        """Like :meth:`send_photo` (``photo`` may also be a Telegram file_id) but also returns the file_id of the sent picture."""
+        from app import app
+        msg = await app.send_photo(chat_id, photo=photo, caption=caption, parse_mode="HTML", reply_markup=markup)
+        msg = msg or {}
+        return (int(msg.get("message_id") or 0) or None), ((msg.get("photo") or {}).get("file_id") or None)
+
     async def send_rich(self, chat_id: int, html_text: str, markup: dict | None = None) -> bool:
         """Rich Message (headings, lists). False when Telegram does not accept it - the caller then sends a normal message."""
         from services.giveaway import tg_call

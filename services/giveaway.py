@@ -142,21 +142,29 @@ class TgError(RuntimeError):
         self.code = code
 
 
+_HTTP_BOT: Any = None
+_HTTP_MINI: Any = None
+
+
 async def tg_call(method: str, payload: dict | None = None, timeout: float = 15.0) -> Any:
+    """Raw Bot API call over ONE shared keep-alive client (no TLS handshake per call)."""
+    global _HTTP_BOT, _HTTP_MINI
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     try:
         import httpx  # Mini App process
     except ImportError:  # pragma: no cover - bot process without httpx
         httpx = None
     if httpx is not None:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, json=payload or {})
-            data = response.json()
+        if _HTTP_MINI is None or _HTTP_MINI.is_closed:
+            _HTTP_MINI = httpx.AsyncClient(timeout=timeout, limits=httpx.Limits(max_keepalive_connections=10, keepalive_expiry=60))
+        response = await _HTTP_MINI.post(url, json=payload or {}, timeout=timeout)
+        data = response.json()
     else:
         import aiohttp  # bot process
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-            async with session.post(url, json=payload or {}) as response:
-                data = await response.json()
+        if _HTTP_BOT is None or _HTTP_BOT.closed:
+            _HTTP_BOT = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=32, keepalive_timeout=75, ttl_dns_cache=300))
+        async with _HTTP_BOT.post(url, json=payload or {}, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+            data = await response.json(content_type=None)
     if not data.get("ok"):
         raise TgError(str(data.get("description") or "Telegram error"), data.get("error_code"))
     return data["result"]
