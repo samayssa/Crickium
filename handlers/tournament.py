@@ -1019,28 +1019,26 @@ async def auction_command(message):
 
 @register("bid")
 async def bid_command(message):
-    """Team owners bid with /bid in the host group: it always takes the next legal price."""
+    """Team owners bid with /bid in the host group: it always takes the next legal price.
+
+    Fast path: no lookups before the bid - the group's running auction comes from memory and ONE database
+    transaction finds the live lot, the owner's team, checks the rules and places the bid."""
     chat_id, ctype = _chat(message)
     u = _user(message)
     if not _is_group(ctype):
         await _send(chat_id, "🏛 Bid in the group where the auction is running.")
         return
-    rows = await tr.for_chat(chat_id, ("auction",))
-    if not rows:
+    tid = await auc.auction_tid_for_chat(chat_id)
+    if tid is None:
         return                                   # nothing is being auctioned here: stay silent
-    t = rows[0]
-    tid = int(t["tid"])
-    from database import tournament_auction_repo as ar
-    a = await ar.get_auction(tid)
-    lot = await ar.lot_view(tid, int(a["cur_ord"])) if a and a.get("cur_ord") is not None else None
-    if lot is None or lot["status"] != "live":
-        await _send(chat_id, "⏳ No player is open for bidding right now — the next one starts in a moment.")
-        return
     try:
-        res = await auc.bid(tid, int(lot["ord"]), u["id"])
+        res = await auc.bid(tid, None, u["id"])
     except Exception:
         traceback.print_exc()
         await _send(chat_id, "⚠️ Something went wrong, send /bid again.")
+        return
+    if res.get("reason") in ("no_lot", "closed") and not res.get("ok"):
+        await _send(chat_id, "⏳ No player is open for bidding right now — the next one starts in a moment.")
         return
     if not res.get("ok"):
         who = tv.owner_mention({"owner_id": u["id"], "owner_username": u["username"], "owner_name": u["first_name"]})
