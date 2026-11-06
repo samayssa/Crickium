@@ -158,6 +158,16 @@ SCHEMA_STATEMENTS = [
     );
     """,
     "ALTER TABLE tour_lots ADD COLUMN IF NOT EXISTS said_mask INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE tour_lots ADD COLUMN IF NOT EXISTS card_file_id TEXT;",
+    "ALTER TABLE tour_lots ADD COLUMN IF NOT EXISTS card_key TEXT;",
+    """
+    CREATE TABLE IF NOT EXISTS tour_card_files(
+        card_key TEXT PRIMARY KEY,
+        file_id TEXT NOT NULL,
+        is_custom BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
     "ALTER TABLE tour_tournaments ADD COLUMN IF NOT EXISTS overseas_squad_min INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE tour_tournaments ADD COLUMN IF NOT EXISTS role_rules JSONB NOT NULL DEFAULT '{}'::jsonb;",
     "CREATE INDEX IF NOT EXISTS idx_tour_lots_status ON tour_lots(tid, status, ord);",

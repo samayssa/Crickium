@@ -188,8 +188,10 @@ async def connect():
                 }
             _pool = await asyncpg.create_pool(
                 **connect_kwargs,
-                min_size=0,
-                max_size=5,
+                # One connection stays warm so the first /bid after a quiet minute does not pay a TLS + auth
+                # handshake; 10 can run in parallel (5 starved the auction worker, the presenter and the commands).
+                min_size=max(0, int(os.getenv("DB_POOL_MIN", "1"))),
+                max_size=max(2, int(os.getenv("DB_POOL_MAX", "10"))),
                 # Close idle connections after 5 minutes so Neon can autosuspend the
                 # compute endpoint; never let a stalled network wait forever.
                 max_inactive_connection_lifetime=300.0,

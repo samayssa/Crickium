@@ -1,5 +1,6 @@
 
 import asyncio
+import os
 import random
 
 from database.connection import (
@@ -9,6 +10,8 @@ from database.connection import (
     mark_database_quota_exhausted,
 )
 
+# Per-query logging (2 lines per query, with row previews) was a measurable cost on a small host: opt in with DB_QUERY_LOG=1.
+_LOG = os.getenv("DB_QUERY_LOG", "0") == "1"
 MAX_LOG_VALUE = 180
 MAX_LOG_QUERY = 120
 
@@ -38,13 +41,15 @@ def _short_args(args):
 
 
 async def execute(query, *args):
-    print(f"[db/query] EXECUTE: {_short(query)} | args={_short_args(args)}")
+    if _LOG:
+        print(f"[db/query] EXECUTE: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
     try:
         async with pool.acquire() as conn:
             result = await conn.execute(query, *args)
-        print(f"[db/query] EXECUTE OK: {result}")
+        if _LOG:
+            print(f"[db/query] EXECUTE OK: {result}")
         return result
     except Exception as e:
         if is_database_quota_error(e):
@@ -54,13 +59,15 @@ async def execute(query, *args):
 
 
 async def executemany(query, args):
-    print(f"[db/query] EXECUTEMANY: {_short(query)} | {len(args)} row(s)")
+    if _LOG:
+        print(f"[db/query] EXECUTEMANY: {_short(query)} | {len(args)} row(s)")
     pool = get_pool()
 
     try:
         async with pool.acquire() as conn:
             result = await conn.executemany(query, args)
-        print("[db/query] EXECUTEMANY OK")
+        if _LOG:
+            print("[db/query] EXECUTEMANY OK")
         return result
     except Exception as e:
         if is_database_quota_error(e):
@@ -70,13 +77,15 @@ async def executemany(query, args):
 
 
 async def fetch(query, *args):
-    print(f"[db/query] FETCH: {_short(query)} | args={_short_args(args)}")
+    if _LOG:
+        print(f"[db/query] FETCH: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
     try:
         async with pool.acquire() as conn:
             result = await conn.fetch(query, *args)
-        print(f"[db/query] FETCH OK: {len(result)} row(s)")
+        if _LOG:
+            print(f"[db/query] FETCH OK: {len(result)} row(s)")
         return result
     except Exception as e:
         if is_database_quota_error(e):
@@ -86,17 +95,15 @@ async def fetch(query, *args):
 
 
 async def fetchrow(query, *args):
-    print(f"[db/query] FETCHROW: {_short(query)} | args={_short_args(args)}")
+    if _LOG:
+        print(f"[db/query] FETCHROW: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
     try:
         async with pool.acquire() as conn:
             result = await conn.fetchrow(query, *args)
-        if result is None:
-            preview = None
-        else:
-            preview = _short_value(dict(result))
-        print(f"[db/query] FETCHROW OK: {preview}")
+        if _LOG:
+            print(f"[db/query] FETCHROW OK: {None if result is None else _short_value(dict(result))}")
         return result
     except Exception as e:
         if is_database_quota_error(e):
@@ -106,13 +113,15 @@ async def fetchrow(query, *args):
 
 
 async def fetchval(query, *args):
-    print(f"[db/query] FETCHVAL: {_short(query)} | args={_short_args(args)}")
+    if _LOG:
+        print(f"[db/query] FETCHVAL: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
     try:
         async with pool.acquire() as conn:
             result = await conn.fetchval(query, *args)
-        print(f"[db/query] FETCHVAL OK: {_short_value(result)}")
+        if _LOG:
+            print(f"[db/query] FETCHVAL OK: {_short_value(result)}")
         return result
     except Exception as e:
         if is_database_quota_error(e):

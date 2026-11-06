@@ -200,6 +200,29 @@ async def set_lot_messages(tid: int, ord_: int, a_msg_id: int | None = None, b_m
         await execute("UPDATE tour_lots SET b_msg_id=$3 WHERE tid=$1 AND ord=$2;", int(tid), int(ord_), int(b_msg_id))
 
 
+async def set_lot_media(tid: int, ord_: int, card_key: str | None, file_id: str | None) -> None:
+    """Remember the Telegram file_id of the lot's card image (the BID ACCEPTED messages re-use it)."""
+    await execute("UPDATE tour_lots SET card_key=$3, card_file_id=$4 WHERE tid=$1 AND ord=$2;",
+                  int(tid), int(ord_), card_key, file_id)
+
+
+async def get_card_file(card_key: str) -> str | None:
+    row = await _quiet_fetchrow("SELECT file_id FROM tour_card_files WHERE card_key=$1;", str(card_key))
+    return str(row["file_id"]) if row else None
+
+
+async def save_card_file(card_key: str, file_id: str, is_custom: bool = False) -> None:
+    await execute(
+        """
+        INSERT INTO tour_card_files(card_key, file_id, is_custom, updated_at) VALUES($1,$2,$3,NOW())
+        ON CONFLICT (card_key) DO UPDATE SET file_id=EXCLUDED.file_id, is_custom=EXCLUDED.is_custom, updated_at=NOW();
+        """, str(card_key), str(file_id), bool(is_custom))
+
+
+async def delete_card_file(card_key: str) -> None:
+    await execute("DELETE FROM tour_card_files WHERE card_key=$1;", str(card_key))
+
+
 async def mark_said(tid: int, ord_: int, which: str) -> bool:
     col = "said_once" if which == "once" else "said_twice"
     row = await fetchrow(
@@ -303,65 +326,104 @@ async def add_round(tid: int, round_no: int, lots: list[dict[str, Any]]) -> int:
 # ---------------------------------------------------------------------------
 # bidding + hammer
 # ---------------------------------------------------------------------------
-async def place_bid(tid: int, ord_: int, team_no: int, user_id: int | None, expected_lakh: int | None = None,
+def _jload(value: Any, default: Any) -> Any:
+    if isinstance(value, (str, bytes)):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return default
+    return default if value is None else value
+
+
+async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: int | None, expected_lakh: int | None = None,
                     bid_seconds: int | None = None) -> dict[str, Any]:
-    """Place the next legal bid for ``team_no``.
+    """Place the next legal bid for a team.
+
+    ``ord_`` None -> the lot that is live right now; ``team_no`` None -> the team owned by ``user_id``
+    (so the /bid command needs no lookups of its own).
 
     ``expected_lakh`` is the price the bidder *saw on their button*; if somebody
     bid in between, the call is refused (reason 'moved') instead of silently
     paying a higher price.
     Returns {"ok": True, ...} or {"ok": False, "reason": ...}.
+
+    Speed: three statements in one transaction (lot + auction + clock; team + rules + role counts; the bid,
+    its history row and the version bump as one CTE) instead of eleven round trips to the database.
     """
     bid_seconds = int(bid_seconds or tc.BID_SECONDS)
 
     async def _tx(conn):
-        lot = await conn.fetchrow("SELECT * FROM tour_lots WHERE tid=$1 AND ord=$2 FOR UPDATE;", int(tid), int(ord_))
-        if lot is None or lot["status"] != "live":
+        lot = await conn.fetchrow(
+            """
+            SELECT l.*, (SELECT status FROM tour_auction WHERE tid=$1) AS _a_status, NOW() AS _now
+            FROM tour_lots l
+            WHERE l.tid=$1 AND l.ord = COALESCE($2::int, (SELECT cur_ord FROM tour_auction WHERE tid=$1))
+            FOR UPDATE;
+            """, int(tid), None if ord_ is None else int(ord_))
+        if lot is None:
+            return {"ok": False, "reason": "no_lot" if ord_ is None else "closed"}
+        if lot["status"] != "live":
             return {"ok": False, "reason": "closed"}
-        auction = await conn.fetchrow("SELECT status FROM tour_auction WHERE tid=$1;", int(tid))
-        if auction is None or auction["status"] == "paused":
+        a_status = lot["_a_status"]
+        if a_status is None or a_status == "paused":
             return {"ok": False, "reason": "paused"}
-        if auction["status"] != "running":
+        if a_status != "running":
             return {"ok": False, "reason": "closed"}
-        now = await conn.fetchval("SELECT NOW();")
-        if lot["deadline_at"] is not None and lot["deadline_at"] <= now:
+        if lot["deadline_at"] is not None and lot["deadline_at"] <= lot["_now"]:
             return {"ok": False, "reason": "closed"}
-        team = await conn.fetchrow("SELECT * FROM tour_teams WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no))
+        lot_ord = int(lot["ord"])
+        team = await conn.fetchrow(
+            """
+            SELECT tm.*, t.engine AS _engine, t.ladder AS _ladder, t.squad_min AS _squad_min, t.squad_max AS _squad_max,
+                   t.overseas_squad_max AS _os_max, t.overseas_squad_min AS _os_min, t.xi_overseas_max AS _xi_os,
+                   t.min_base_lakh AS _min_base, t.role_rules AS _role_rules,
+                   COALESCE((SELECT jsonb_object_agg(r.role, r.n) FROM
+                             (SELECT role, COUNT(*) AS n FROM tour_squad WHERE tid=$1 AND team_no=tm.team_no GROUP BY role) r),
+                            '{}'::jsonb) AS _rc
+            FROM tour_teams tm JOIN tour_tournaments t ON t.tid = tm.tid
+            WHERE tm.tid=$1 AND (CASE WHEN $2::int IS NOT NULL THEN tm.team_no = $2::int ELSE tm.owner_id = $3::bigint END);
+            """, int(tid), None if team_no is None else int(team_no), None if user_id is None else int(user_id))
         if team is None:
-            return {"ok": False, "reason": "no_team"}
-        if lot["leader_team_no"] is not None and int(lot["leader_team_no"]) == int(team_no):
+            return {"ok": False, "reason": "no_team" if team_no is not None else "not_in"}
+        team_no_ = int(team["team_no"])
+        if lot["leader_team_no"] is not None and int(lot["leader_team_no"]) == team_no_:
             return {"ok": False, "reason": "leading", "price": int(lot["cur_bid_lakh"])}
-        tour = await conn.fetchrow("SELECT * FROM tour_tournaments WHERE tid=$1;", int(tid))
-        ladder = tc.normalize_ladder(json.loads(tour["ladder"]) if isinstance(tour["ladder"], str) else tour["ladder"])
+        ladder = tc.normalize_ladder(_jload(team["_ladder"], []))
         price = tc.next_bid(int(lot["cur_bid_lakh"]), int(lot["base_lakh"]), int(lot["bid_count"]) > 0, ladder)
         if expected_lakh is not None and int(expected_lakh) != price:
             return {"ok": False, "reason": "moved", "price": price}
-        rules = tc.tournament_rules(dict(tour))
-        role_rows = await conn.fetch("SELECT role, COUNT(*) AS n FROM tour_squad WHERE tid=$1 AND team_no=$2 GROUP BY role;",
-                                     int(tid), int(team_no))
+        rules = tc.tournament_rules({
+            "engine": team["_engine"], "squad_min": team["_squad_min"], "squad_max": team["_squad_max"],
+            "overseas_squad_max": team["_os_max"], "overseas_squad_min": team["_os_min"], "xi_overseas_max": team["_xi_os"],
+            "min_base_lakh": team["_min_base"], "role_rules": _jload(team["_role_rules"], {})})
         role_counts = {r: 0 for r in tc.ROLES}
-        for rr in role_rows:
-            role_counts[tc.norm_role(rr["role"])] += int(rr["n"])
-        team_d = {**dict(team), "role_counts": role_counts}
+        for role, n in (_jload(team["_rc"], {}) or {}).items():
+            role_counts[tc.norm_role(role)] += int(n)
+        team_d = {k: v for k, v in dict(team).items() if not k.startswith("_")}
+        team_c = {**team_d, "role_counts": role_counts}
         player = {"overseas": bool(lot["overseas"]), "role": lot["role"]}
-        allowed, reason = tc.check_bid_allowed(team_d, player, price, rules)
+        allowed, reason = tc.check_bid_allowed(team_c, player, price, rules)
         if not allowed:
-            needs = tc.squad_needs(role_counts, int(team["overseas_count"] or 0), rules)
-            return {"ok": False, "reason": reason, "price": price, "limit": tc.bid_limit(team_d, player, rules),
+            needs = tc.squad_needs(role_counts, int(team_d.get("overseas_count") or 0), rules)
+            return {"ok": False, "reason": reason, "price": price, "limit": tc.bid_limit(team_c, player, rules),
                     "role": tc.norm_role(lot["role"]), "need": tc.needs_text(needs),
                     "role_max": int(rules["role_rules"][tc.norm_role(lot["role"])][1])}
         updated = await conn.fetchrow(
             """
-            UPDATE tour_lots SET cur_bid_lakh=$3, leader_team_no=$4, bid_count=bid_count+1,
-                   deadline_at = NOW() + ($5::int * INTERVAL '1 second'), said_once=FALSE, said_twice=FALSE, said_mask=0
-            WHERE tid=$1 AND ord=$2 RETURNING *;
+            WITH u AS (
+                UPDATE tour_lots SET cur_bid_lakh=$3, leader_team_no=$4, bid_count=bid_count+1,
+                       deadline_at = NOW() + ($5::int * INTERVAL '1 second'), said_once=FALSE, said_twice=FALSE, said_mask=0
+                WHERE tid=$1 AND ord=$2 RETURNING *
+            ), b AS (
+                INSERT INTO tour_bids(tid, ord, bid_no, team_no, user_id, amount_lakh)
+                SELECT $1::bigint, $2::int, u.bid_count, $4::int, $6::bigint, $3 FROM u
+            ), v AS (
+                UPDATE tour_auction SET version=version+1 WHERE tid=$1
+            )
+            SELECT * FROM u;
             """,
-            int(tid), int(ord_), price, int(team_no), int(bid_seconds))
-        await conn.execute(
-            "INSERT INTO tour_bids(tid, ord, bid_no, team_no, user_id, amount_lakh) VALUES($1,$2,$3,$4,$5,$6);",
-            int(tid), int(ord_), int(updated["bid_count"]), int(team_no), user_id, price)
-        await conn.execute("UPDATE tour_auction SET version=version+1 WHERE tid=$1;", int(tid))
-        return {"ok": True, "price": price, "lot": dict(updated), "team": dict(team)}
+            int(tid), lot_ord, price, team_no_, int(bid_seconds), None if user_id is None else int(user_id))
+        return {"ok": True, "price": price, "lot": dict(updated), "team": team_d}
 
     out = await transaction(_tx)
     if out.get("lot"):

@@ -209,6 +209,36 @@ async def get_full_backup_tables() -> list[str]:
         return await _public_base_tables(conn)
 
 
+async def _encode_gzip_json(payload: dict) -> bytes:
+    """Same bytes-on-the-wire format as ``gzip.compress(json.dumps(payload))`` but produced cooperatively."""
+    import asyncio
+    import zlib
+
+    co = zlib.compressobj(6, zlib.DEFLATED, 31)          # 31 = gzip container
+    parts: list[bytes] = []
+
+    def feed(text: str) -> None:
+        parts.append(co.compress(text.encode("utf-8")))
+
+    def dump(obj) -> str:
+        return json.dumps(obj, default=_json_default, ensure_ascii=False, separators=(",", ":"))
+
+    head = dump({k: v for k, v in payload.items() if k != "tables"})
+    feed(('{"tables":{' if head == "{}" else head[:-1] + ',"tables":{'))
+    first = True
+    for name, rows in payload["tables"].items():
+        feed(("" if first else ",") + dump(name) + ":[")
+        first = False
+        for i in range(0, len(rows), 100):
+            feed(("," if i else "") + ",".join(dump(r) for r in rows[i:i + 100]))
+            await asyncio.sleep(0)
+        feed("]")
+    feed("}}")
+    parts.append(co.flush())
+    return b"".join(parts)
+
+
+
 async def export_tables(
     table_names: Iterable[str] | None = None,
     *,
@@ -279,17 +309,10 @@ async def export_tables(
         "tables": tables,
     }
 
-    raw = json.dumps(
-        payload,
-        default=_json_default,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    compressed = gzip.compress(
-        raw,
-        compresslevel=6,
-    )
+    # Serialised in small slices with an ``await asyncio.sleep(0)`` between them (and zlib in a streaming object):
+    # one big json.dumps + gzip of the whole database used to hold the event loop for seconds - on a small host the
+    # entire bot (every /bid, /claim, ...) froze each time the 30-minute auto-backup ran.
+    compressed = await _encode_gzip_json(payload)
 
     print(
         f"[backup_repo] export_tables({backup_type}) -> "
