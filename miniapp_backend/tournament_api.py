@@ -5,6 +5,8 @@ through services.tournament_auction so rules and permissions are exactly the bot
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -157,13 +159,69 @@ async def build_squads(tid: int) -> dict[str, Any] | None:
     return {"ok": True, "teams": out}
 
 
-async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
-    t = await tr.get(tid)
+_SNAP: dict[int, tuple[float, dict]] = {}
+_SNAP_INFLIGHT: dict[int, "asyncio.Future"] = {}
+SNAP_TTL = 0.7
+
+
+async def _load_snapshot(tid: int) -> dict | None:
+    """Everything of the auction room that is the same for every viewer, read with parallel queries."""
+    t, a, teams_l, role_map = await asyncio.gather(tr.get(tid), ar.get_auction(tid), tr.teams(tid), ar.team_role_counts(tid))
     if t is None:
         return None
+    snap: dict[str, Any] = {"t": t, "a": a, "teams": teams_l, "roles": role_map, "lot": None, "bids": [], "counts": None,
+                            "recent": [], "upcoming": [], "sets": []}
+    if not a:
+        return snap
+    lot = await ar.lot_view(tid, int(a["cur_ord"])) if a.get("cur_ord") is not None else None
+    jobs = [ar.counts(tid), ar.recent_sales(tid, 10), ar.upcoming(tid, 6), ar.set_progress(tid)]
+    if lot:
+        jobs.append(ar.bids(tid, int(lot["ord"]), 6))
+    res = await asyncio.gather(*jobs)
+    snap.update(counts=res[0], recent=res[1], upcoming=res[2], sets=res[3], lot=lot, bids=res[4] if lot else [])
+    return snap
+
+
+async def _snapshot(tid: int) -> dict | None:
+    """Shared, ~0.7 s fresh, one database read for any number of viewers (each Mini App polls every second:
+    with 10 viewers that was ~100 queries per second before)."""
+    hit = _SNAP.get(tid)
+    if hit and time.monotonic() - hit[0] < SNAP_TTL:
+        return hit[1]
+    fut = _SNAP_INFLIGHT.get(tid)
+    if fut is not None:
+        return await asyncio.shield(fut)
+    fut = asyncio.get_running_loop().create_future()
+    fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+    _SNAP_INFLIGHT[tid] = fut
+    try:
+        data = await _load_snapshot(tid)
+        _SNAP[tid] = (time.monotonic(), data)
+        if len(_SNAP) > 64:
+            _SNAP.pop(next(iter(_SNAP)))
+        fut.set_result(data)
+        return data
+    except BaseException as exc:
+        if not fut.done():
+            fut.set_exception(exc if isinstance(exc, Exception) else RuntimeError("cancelled"))
+        raise
+    finally:
+        _SNAP_INFLIGHT.pop(tid, None)
+
+
+def invalidate_snapshot(tid: int | None = None) -> None:
+    if tid is None:
+        _SNAP.clear()
+    else:
+        _SNAP.pop(int(tid), None)
+
+
+async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
+    snap = await _snapshot(tid)
+    if snap is None:
+        return None
+    t, a, teams_l = snap["t"], snap["a"], snap["teams"]
     uid = int(viewer.id)
-    a = await ar.get_auction(tid)
-    teams_l = await tr.teams(tid)
     mine = next((x for x in teams_l if x.get("owner_id") and int(x["owner_id"]) == uid), None)
     now = datetime.now(timezone.utc)
     out: dict[str, Any] = {"ok": True, "now": _iso(now), "tournament": _card(t), "can_control": auc.can_control(t, uid), "my_team": _team(mine),
@@ -173,18 +231,18 @@ async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
                            "ladder": [list(r) for r in tc.ladder_rows(t.get("ladder"))]}
     if mine is not None:
         try:
-            out["my_roles"] = (await ar.team_role_counts(tid, int(mine["team_no"]))).get(int(mine["team_no"])) or {r: 0 for r in tc.ROLES}
+            out["my_roles"] = snap["roles"].get(int(mine["team_no"])) or {r: 0 for r in tc.ROLES}
         except Exception:
             out["my_roles"] = {r: 0 for r in tc.ROLES}
     if not a:
         return out
-    out["counts"] = await ar.counts(tid)
+    out["counts"] = snap["counts"]
     out["total_lots"] = int(a.get("total_lots") or 0)
     out["round"] = int(a.get("round") or 1)
     out["paused"] = a["status"] == "paused"
     out["next_lot_at"] = _iso(a.get("next_lot_at"))
     if a.get("cur_ord") is not None:
-        lot = await ar.lot_view(tid, int(a["cur_ord"]))
+        lot = snap["lot"]
         if lot:
             has_bid = int(lot.get("bid_count") or 0) > 0
             price = tc.next_bid(int(lot.get("cur_bid_lakh") or 0), int(lot.get("base_lakh") or 0), has_bid, t.get("ladder"))
@@ -220,21 +278,23 @@ async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
                           "sold_team": tx.team_short(next((x for x in teams_l if int(x["team_no"]) == int(lot["sold_team_no"])), None)) if lot.get("sold_team_no") is not None else None,
                           "sold_owner": next((x.get("owner_name") for x in teams_l if int(x["team_no"]) == int(lot["sold_team_no"])), None) if lot.get("sold_team_no") is not None else None,
                           "sold_text": _money(lot.get("sold_lakh")) if lot.get("sold_lakh") is not None else None,
-                          "bids": [{"team": tx.team_short({"short": b.get("short"), "base_code": b.get("base_code")}), "amount_text": _money(b["amount_lakh"]), "owner": b.get("owner_name")} for b in await ar.bids(tid, int(lot["ord"]), 6)]}
+                          "bids": [{"team": tx.team_short({"short": b.get("short"), "base_code": b.get("base_code")}), "amount_text": _money(b["amount_lakh"]), "owner": b.get("owner_name")} for b in snap["bids"]]}
     out["recent"] = [{"ord": int(r["ord"]), "name": r["name"], "role": r["role"], "status": r["status"], "price_text": _money(r.get("sold_lakh")) if r["status"] == "sold" else "Unsold",
-                      "team": r.get("base_code")} for r in await ar.recent_sales(tid, 10)]
-    out["upcoming"] = [{"ord": int(r["ord"]), "name": r["name"], "role": r["role"], "base_text": _money(r["base_lakh"]), "set": r.get("set_name")} for r in await ar.upcoming(tid, 6)]
-    out["sets"] = [{"name": r["set_name"], "pool": r["pool_name"], "total": int(r["total"]), "done": int(r["done"] or 0)} for r in await ar.set_progress(tid)]
+                      "team": r.get("base_code")} for r in snap["recent"]]
+    out["upcoming"] = [{"ord": int(r["ord"]), "name": r["name"], "role": r["role"], "base_text": _money(r["base_lakh"]), "set": r.get("set_name")} for r in snap["upcoming"]]
+    out["sets"] = [{"name": r["set_name"], "pool": r["pool_name"], "total": int(r["total"]), "done": int(r["done"] or 0)} for r in snap["sets"]]
     return out
 
 
 async def place_bid(viewer, tid: int, ord_: int, price: int) -> tuple[int, dict]:
     res = await auc.bid(tid, ord_, int(viewer.id), expected_lakh=price)
+    invalidate_snapshot(tid)
     return (200 if res.get("ok") else 409), {**{k: v for k, v in res.items() if isinstance(v, (int, float, str, bool, type(None)))}, "message": tx.bid_feedback(res)}
 
 
 async def control(viewer, tid: int, action: str) -> tuple[int, dict]:
     res = await auc.control(tid, int(viewer.id), action)
+    invalidate_snapshot(tid)
     return (200 if res.get("ok") else 403), res
 
 
