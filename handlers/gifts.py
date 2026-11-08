@@ -170,11 +170,135 @@ async def _make_ready(campaign: dict) -> None:
         ]))
 
 
+def _command_args(payload: dict) -> list[str]:
+    words = str(payload.get("text") or "").strip().split()
+    return [word.lower() for word in words[1:]] if words else []
+
+
+def _gift_management_view(rows: list[dict], offset: int, *, has_more: bool) -> tuple[str, dict]:
+    if not rows:
+        return _frame("🗂 Active gift drops", "There are no distributed gifts currently visible in users’ My Gifts sections."), _keyboard([])
+
+    lines = ["Review each live gift drop. Open counts include users who opened the reveal, including those who have already claimed it."]
+    keyboard_rows = []
+    for row in rows:
+        gift_id = int(row["gift_id"])
+        title = html.escape(str(row.get("title") or "Gift"))
+        theme = "🪔 Diwali" if row.get("theme") == "diwali" else "🎁 Normal"
+        total = int(row.get("recipients") or row.get("recipient_count") or 0)
+        opened = int(row.get("opened_count") or 0)
+        claimed = int(row.get("claimed_count") or 0)
+        lines.append(
+            f"<b>#{gift_id} · {title}</b>  {theme}\n"
+            f"👥 Distributed: <b>{total:,}</b> users\n"
+            f"👀 Opened: <b>{opened:,}</b> users\n"
+            f"✅ Claimed: <b>{claimed:,}</b> users"
+        )
+        keyboard_rows.append([_button(f"🗑 Remove this gift · #{gift_id}", "remove", gift_id)])
+
+    nav = []
+    if offset > 0:
+        nav.append(_button("‹ Newer", "listpage", 0, str(max(0, offset - 8))))
+    if has_more:
+        nav.append(_button("Older ›", "listpage", 0, str(offset + 8)))
+    if nav:
+        keyboard_rows.append(nav)
+    return _frame("🗂 Active gift drops", "\n\n".join(lines)), _keyboard(keyboard_rows)
+
+
+async def _show_gift_management(chat_id: int, *, message_id: int | None = None, offset: int = 0) -> None:
+    rows = await repo.list_distributed_campaigns(int(ADMIN_USER_ID), limit=9, offset=offset)
+    has_more = len(rows) > 8
+    rows = rows[:8]
+    text, keyboard = _gift_management_view(rows, offset, has_more=has_more)
+    if message_id:
+        await app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def _gift_management_callback(query: dict, action: str, gift_id: int, value: str, chat_id: int, message_id: int) -> bool:
+    """Handle owner-only gift-list callbacks before draft-message validation."""
+    if action == "listpage":
+        try:
+            offset = max(0, int(value or 0))
+        except ValueError:
+            offset = 0
+        await app.answer_callback_query(query.get("id"))
+        await _show_gift_management(chat_id, message_id=message_id, offset=offset)
+        return True
+
+    if action in {"remove", "confirmremove", "cancelremove"}:
+        details = await repo.distributed_campaign_details(gift_id, int(ADMIN_USER_ID))
+        if not details or str(details.get("status") or "distributed") != "distributed":
+            await app.answer_callback_query(query.get("id"), "This gift is already removed or is no longer active.", show_alert=True)
+            return True
+
+        if action == "remove":
+            await app.answer_callback_query(query.get("id"))
+            body = (
+                f"You are about to remove <b>{html.escape(str(details.get('title') or 'this gift'))}</b> (#<b>{gift_id}</b>) from every user’s My Gifts list.\n\n"
+                f"👥 Recipients: <b>{int(details.get('recipients') or 0):,}</b>\n"
+                f"👀 Already opened: <b>{int(details.get('opened_count') or 0):,}</b>\n"
+                f"✅ Already claimed: <b>{int(details.get('claimed_count') or 0):,}</b>\n\n"
+                "This hides the gift for everyone. Rewards already claimed stay in users’ accounts; unclaimed rewards will no longer be claimable."
+            )
+            await app.edit_message_text(chat_id, message_id, _frame("⚠️ Confirm gift removal", body), parse_mode="HTML", reply_markup=_keyboard([
+                [_button("✅ Confirm remove", "confirmremove", gift_id)],
+                [_button("↩ Keep this gift", "cancelremove", gift_id)],
+            ]))
+            return True
+
+        if action == "cancelremove":
+            await app.answer_callback_query(query.get("id"), "Removal cancelled.")
+            await _show_gift_management(chat_id, message_id=message_id, offset=0)
+            return True
+
+        removed = await repo.remove_distributed_campaign(gift_id, int(ADMIN_USER_ID))
+        await app.answer_callback_query(query.get("id"), "Gift removed from My Gifts." if removed else "Gift was already removed.")
+        if removed:
+            final = (
+                f"<b>{html.escape(str(removed['title']))}</b> (#<b>{gift_id}</b>) is now hidden from every user’s My Gifts section.\n\n"
+                f"👥 Recipients: <b>{removed['recipients']:,}</b>\n"
+                f"👀 Opened: <b>{removed['opened_count']:,}</b>\n"
+                f"✅ Claimed: <b>{removed['claimed_count']:,}</b>\n\n"
+                "Already-claimed rewards remain in users’ accounts. Unclaimed copies are no longer available."
+            )
+            await app.edit_message_text(chat_id, message_id, _frame("🗑 Gift removed", final), parse_mode="HTML", reply_markup=_keyboard([
+                [_button("↩ Back to active gifts", "listpage", 0, "0")]
+            ]))
+        else:
+            await _show_gift_management(chat_id, message_id=message_id, offset=0)
+        return True
+    return False
+
+
+@register("gift")
+async def gift_command(payload: dict) -> None:
+    user_id = int((payload.get("from") or {}).get("id") or 0)
+    chat_id = int((payload.get("chat") or {}).get("id") or 0)
+    if not _admin(user_id) or not _private(payload) or chat_id != user_id:
+        return
+    args = _command_args(payload)
+    if args and args[0] in {"remove", "list", "manage"}:
+        await _show_gift_management(chat_id)
+        return
+    await app.send_message(
+        chat_id,
+        _frame("🎁 Gift management", "Use <code>/gift remove</code> to list active gift drops, review open counts, and remove a selected gift from every user’s My Gifts section.\n\nUse <code>/distgift</code> to prepare a new gift distribution."),
+        parse_mode="HTML",
+    )
+
+
 @register("distgift")
 async def distgift(payload: dict) -> None:
     user_id = int((payload.get("from") or {}).get("id") or 0)
     chat_id = int((payload.get("chat") or {}).get("id") or 0)
     if not _admin(user_id) or not _private(payload) or chat_id != user_id:
+        return
+    args = _command_args(payload)
+    if args and args[0] in {"remove", "list", "manage"}:
+        await _show_gift_management(chat_id)
         return
     campaign = await repo.create_draft(user_id, chat_id)
     if not campaign:
@@ -208,6 +332,9 @@ async def gift_callback(query: dict) -> None:
         return
     action = parts[1]
     value = parts[3] if len(parts) > 3 else ""
+    if action in {"listpage", "remove", "confirmremove", "cancelremove"}:
+        if await _gift_management_callback(query, action, gift_id, value, chat_id, message_id):
+            return
     campaign = await repo.get_campaign(gift_id)
     if not campaign or int(campaign.get("created_by") or 0) != user_id or int(campaign.get("admin_chat_id") or 0) != chat_id or int(campaign.get("admin_message_id") or 0) != message_id:
         await app.answer_callback_query(query.get("id"), "This gift setup has expired.", show_alert=True)
