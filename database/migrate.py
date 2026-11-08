@@ -1074,4 +1074,41 @@ async def migrate():
     except Exception as exc:
         print(f"[migrate] Tournament schema skipped: {exc!r}")
 
+    print("[migrate] Ensuring My Gifts tables exist...")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS miniapp_gift_campaigns(
+            gift_id BIGSERIAL PRIMARY KEY,
+            created_by BIGINT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','ready','scheduled','distributing','distributed','cancelled')),
+            step TEXT NOT NULL DEFAULT 'choose_type',
+            title TEXT NOT NULL DEFAULT 'Happy Diwali',
+            theme TEXT NOT NULL DEFAULT 'normal' CHECK (theme IN ('normal','diwali')),
+            reward_type TEXT NOT NULL DEFAULT 'multiple',
+            reward_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+            image_file_id TEXT,
+            scheduled_at TIMESTAMPTZ,
+            admin_chat_id BIGINT,
+            admin_message_id BIGINT,
+            admin_message_is_photo BOOLEAN NOT NULL DEFAULT FALSE,
+            recipient_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            distributed_at TIMESTAMPTZ
+        );
+    """)
+    await execute("""
+        CREATE TABLE IF NOT EXISTS miniapp_gift_user_rewards(
+            gift_id BIGINT NOT NULL REFERENCES miniapp_gift_campaigns(gift_id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            reward JSONB NOT NULL DEFAULT '{}'::jsonb,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','opened','claimed')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            opened_at TIMESTAMPTZ,
+            claimed_at TIMESTAMPTZ,
+            PRIMARY KEY(gift_id,user_id)
+        );
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_gifts_user_status ON miniapp_gift_user_rewards(user_id,status,gift_id DESC);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_gifts_scheduled ON miniapp_gift_campaigns(status,scheduled_at);")
+    print("[migrate] My Gifts tables OK.")
+
     print("Migration Complete.")
