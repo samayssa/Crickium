@@ -185,9 +185,10 @@ async def _distribute_campaign_locked(gift_id: int, progress: Callable[[int, int
         if progress:
             await progress(done, total)
 
-    recipient_count = int(await fetchrow(
+    count_row = await fetchrow(
         "SELECT COUNT(*) AS n FROM miniapp_gift_user_rewards WHERE gift_id=$1;", int(gift_id)
-    )["n"] or 0)
+    )
+    recipient_count = int((count_row["n"] if count_row else 0) or 0)
     await execute(
         "UPDATE miniapp_gift_campaigns SET status='distributed',step='distributed',recipient_count=$2,distributed_at=NOW() WHERE gift_id=$1 AND status='distributing';",
         int(gift_id), recipient_count,
