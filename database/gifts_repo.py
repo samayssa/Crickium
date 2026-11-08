@@ -186,3 +186,26 @@ async def remove_distributed_campaign(gift_id: int, owner_id: int) -> dict | Non
             "claimed_count": int((counts or {}).get("claimed_count") or 0),
         }
     return await transaction(_tx)
+
+async def list_user_available_gifts(user_id: int, *, limit: int = 15) -> list[dict]:
+    """Return this user's distributed, not-yet-claimed gift rewards.
+
+    Reward amounts are returned only internally so the command can display
+    reward categories without spoiling the reveal amounts.
+    """
+    rows = await fetch(
+        """
+        SELECT c.gift_id,c.title,c.theme,c.image_file_id,c.distributed_at,
+               r.reward,r.status,r.opened_at
+        FROM miniapp_gift_user_rewards r
+        JOIN miniapp_gift_campaigns c ON c.gift_id=r.gift_id
+        WHERE r.user_id=$1
+          AND c.status='distributed'
+          AND r.status IN ('pending','opened')
+        ORDER BY c.distributed_at DESC NULLS LAST,c.gift_id DESC
+        LIMIT $2;
+        """,
+        int(user_id), max(1, min(30, int(limit))),
+    )
+    return [dict(row) for row in rows]
+
