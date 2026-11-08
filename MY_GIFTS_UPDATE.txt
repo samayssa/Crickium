@@ -1,0 +1,51 @@
+CRICKIUM · MY GIFTS UPDATE
+Build date: 08 November 2026
+
+WHAT THIS UPDATE ADDS
+- Owner-only /distgift wizard in the bot's private chat.
+- Reward types: selected Player, random Card Gift, Coins, Rubies, or Multiple.
+- OVR bands: 75–80, 81–85, 86–90, 91–95, 96–99.
+- Optional Coins, Rubies, pack, Diwali/Normal theme, and a direct-upload festival banner.
+- Final owner actions: Cancel, Schedule, or Direct Distribute.
+- Silent distribution: no user DMs, announcement messages, or Telegram notifications are sent.
+- My Gifts bottom navigation entry immediately before Rank, red dot for unclaimed gifts, gift banners, staged reveal, Diwali fireworks, optional synthesized sound, and Claim Reward.
+- Random player-card selection per user within the chosen OVR band. Existing squad capacity and duplicate-card rules remain in force.
+
+NEW FILES (ADD)
+  database/gifts_repo.py
+  handlers/gifts.py
+  services/gifts.py
+  miniapp_backend/gifts_api.py
+  miniapp_backend/static/gifts_ui.css
+  miniapp_backend/static/gifts_ui.js
+  .env.example
+  MY_GIFTS_UPDATE.txt
+
+MODIFIED FILES (REPLACE)
+  .gitignore
+  config.py
+  database/migrate.py
+  main.py
+  miniapp_backend/README.md
+  miniapp_backend/api.py
+  miniapp_backend/migrate.py
+  miniapp_backend/server.py
+  miniapp_backend/static/app_v2.js
+  miniapp_backend/static/index.html
+  miniapp_backend/static/miniapp_v2.css
+
+DEPLOYMENT
+1. Back up the current GitHub repository and database before replacing files.
+2. Add every file listed under NEW FILES and replace every file listed under MODIFIED FILES at the exact same paths. Do not delete other project files.
+3. Set these Railway Variables on the existing Crickium service: API_ID, API_HASH, BOT_TOKEN, DATABASE_URL, ADMIN_USER_ID, MINIAPP_URL. The current `railway_start.py` launches both `main.py` and the Mini App ASGI server as child processes, so they inherit the same service variables. Keep the existing private values for API_ID/API_HASH/DATABASE_URL as appropriate, but rotate BOT_TOKEN and the database password before deployment because credentials were hard-coded in the supplied source archive. The returned config.py intentionally contains no secrets.
+4. Keep MINIAPP_DEBUG_AUTH unset or 0 in production. Do not enable it on a public deployment.
+5. Redeploy the existing Railway service using its current start command (the combined `railway_start.py` entry point). The bot and Mini App startup hooks create the new tables automatically; no manual SQL is required.
+6. In the bot's private DM, send /distgift as the configured ADMIN_USER_ID. Complete the wizard, inspect the final preview, then choose Direct Distribute or Schedule.
+7. Users will see the My Gifts item and red dot when a reward is available. The bot does not send a user-facing announcement or DM.
+
+IMPORTANT NOTES
+- In this project, the premium currency is called Rubies in the wallet/database. The wizard therefore labels the requested “gems/rupees” amount as Rubies.
+- Card rewards use the project's existing 25-player squad cap. A user with a full squad must free a slot before claiming a card reward.
+- A card already owned by a user is not added as a duplicate; reward assignment excludes cards the user already owns at distribution time.
+- Scheduling is handled by the bot service's background worker. Keep the bot service running for scheduled campaigns.
+- The environment did not include the project's asyncpg and Pyrogram/Kurigram runtime packages or a live database, so real Telegram and PostgreSQL integration tests could not be executed here. Python and JavaScript static syntax checks are included in the hand-off notes.

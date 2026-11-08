@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import traceback
 from typing import Any
@@ -314,6 +315,15 @@ async def handle_message(_, message):
 
     command = parse_command(text)
     if command is None:
+        # The /distgift wizard accepts owner-uploaded festival banners and
+        # player names as ordinary private-chat messages (no reply command).
+        try:
+            from handlers.gifts import handle_distgift_message
+            if await handle_distgift_message(payload):
+                return
+        except Exception:
+            print("[main.py] My Gifts message dispatch failed:")
+            traceback.print_exc()
         # The tournament reply dispatcher performs its own exact prompt-ID and
         # host checks. Do not require Telegram/Pyrogram to expose reply_from as
         # a bot here, because different update paths can omit that nested user.
@@ -427,6 +437,10 @@ async def _build_client(session_string: str | None = None) -> Client:
     kwargs = {
         "api_id": API_ID,
         "api_hash": API_HASH,
+        # Every handler runs on one of these update workers and a worker is busy until its handler returns. The
+        # Pyrogram default (cpu count + 4) is tiny on a small host, so a few slow commands (card render, DB) made
+        # EVERY other command and /bid wait in the queue. Workers are cheap asyncio tasks: give each update its own.
+        "workers": int(os.getenv("TG_UPDATE_WORKERS", "64")),
     }
     if session_string:
         kwargs.update({"session_string": session_string, "in_memory": True})
@@ -538,6 +552,12 @@ async def main():
         start_giveaway_worker()
     except Exception:
         print("[main.py] Giveaway worker failed to start:")
+        traceback.print_exc()
+    try:
+        from services.gifts import start_worker as start_gift_worker
+        start_gift_worker()
+    except Exception:
+        print("[main.py] My Gifts worker failed to start:")
         traceback.print_exc()
     try:
         from services import tournament_auction, tournament_runtime

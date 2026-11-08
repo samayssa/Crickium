@@ -1,85 +1,61 @@
 import os
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Railway supplies environment variables directly; python-dotenv is only
+    # needed for local .env convenience.
+    pass
+
 # ==========================
 # Telegram Configuration
 # ==========================
-
-API_ID = 20394793
-API_HASH = "20c8b7c13a300c32b9f3cbee183674d1"
-BOT_TOKEN = "8964396486:AAHMaqBD2FfGPrNaLOf4evaimWRDWmVKDNQ"
+# Credentials are supplied by the host environment. Never commit bot tokens,
+# API hashes, or database passwords to the repository.
+API_ID = int(os.getenv("API_ID", "0") or 0)
+API_HASH = os.getenv("API_HASH", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # ==========================
 # Admin Configuration
 # ==========================
-
-# Bot admin (NOT group admin) - only this Telegram user_id can use
-# admin-only commands like /upload_pl
-ADMIN_USER_ID = 1766243373
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "1766243373") or 0)
 
 # ==========================
 # PostgreSQL Configuration
 # ==========================
-
-# Database configuration
-# Intentionally self-contained for Railway redeploys. No Railway database
-# environment variable is required.
-DATABASE_URL = (
-    "postgresql://neondb_owner:npg_2nWk1zLQtjau@ep-bitter-hall-a4ihpydn-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+COCKROACH_CA_CERT_URL = os.getenv(
+    "COCKROACH_CA_CERT_URL",
+    "https://cockroachlabs.cloud/clusters/d1cd6a3a-481f-4de7-b833-b5d630463b21/cert",
 ).strip()
-
-# CockroachDB Cloud cluster CA endpoint. The database connection layer checks
-# the DATABASE_URL first; this certificate is fetched only when that URL is
-# actually a CockroachDB Cloud URL. Switching DATABASE_URL to another
-# PostgreSQL provider therefore bypasses Cockroach certificate handling.
-COCKROACH_CA_CERT_URL = (
-    "https://cockroachlabs.cloud/clusters/"
-    "d1cd6a3a-481f-4de7-b833-b5d630463b21/cert"
-)
-
-# Optional compatibility hooks. Leave these empty when using the built-in
-# Cockroach certificate URL above. They are consulted only for CockroachDB.
-COCKROACH_CA_CERT = ""
-COCKROACH_CA_CERT_B64 = ""
-COCKROACH_CA_CERT_FILE = ""
-
-# Verbose SQL logging is off by default for lower latency and cleaner Railway logs.
-DB_DEBUG = False
+COCKROACH_CA_CERT = os.getenv("COCKROACH_CA_CERT", "")
+COCKROACH_CA_CERT_B64 = os.getenv("COCKROACH_CA_CERT_B64", "")
+COCKROACH_CA_CERT_FILE = os.getenv("COCKROACH_CA_CERT_FILE", "")
+DB_DEBUG = os.getenv("DB_DEBUG", "0").strip().lower() in {"1", "true", "yes"}
 
 # ==========================
 # Bot / Mini App Configuration
 # ==========================
-
-BOT_NAME = "Crickium"
-DEBUG = True
-
-# Public HTTPS URL of the Telegram Mini App.
-# Set this to your deployed frontend URL before going live.
+BOT_NAME = os.getenv("BOT_NAME", "Crickium").strip() or "Crickium"
+# Fail closed by default. Local Mini App auth bypass is separately controlled
+# by MINIAPP_DEBUG_AUTH and should never be enabled on a public deployment.
+DEBUG = os.getenv("DEBUG", "1").strip().lower() in {"1", "true", "yes"}
 MINIAPP_URL = os.getenv("MINIAPP_URL", "https://crickium-production.up.railway.app").strip()
-
-# Optional backend URL if you host the API separately from the static app.
 BACKEND_URL = os.getenv("BACKEND_URL", "").strip()
 
 # ==========================
 # Player Card Images
 # ==========================
-
-# Channel where /upload_img uploads player card photos (and the default
-# card template). The bot must be an admin of this channel.
-PLAYER_IMAGE_CHANNEL_ID = -1003958908828
-
-# Group where bot-level user/group notifications are sent.
-NOTIFICATION_GROUP_ID = -1003588964307
+PLAYER_IMAGE_CHANNEL_ID = int(os.getenv("PLAYER_IMAGE_CHANNEL_ID", "-1003958908828") or 0)
+AUTO_BACKUP_ENABLED = os.getenv("AUTO_BACKUP_ENABLED", "1").strip() != "0"
+AUTO_BACKUP_CHANNEL_ID = int(os.getenv("AUTO_BACKUP_CHANNEL_ID", "") or PLAYER_IMAGE_CHANNEL_ID)
+AUTO_BACKUP_INTERVAL_SECONDS = int(os.getenv("AUTO_BACKUP_INTERVAL_SECONDS", "") or 1800)
+NOTIFICATION_GROUP_ID = int(os.getenv("NOTIFICATION_GROUP_ID", "-1003588964307") or 0)
 
 # ==========================
 # Giveaway Configuration
 # ==========================
-
-# Main community group. Only members of this group can take part in a
-# /giveaway, and the winner announcement is posted here. The bot should be an
-# ADMIN of this group so Telegram lets it check membership of any user.
-MAIN_GROUP_ID = -1002374007744
-
-# Optional invite / public link of the main group (https://t.me/...). Leave it
-# empty and the bot will detect the link by itself (public username, or an
-# invite link it exports when it has the "invite users" admin right).
-MAIN_GROUP_LINK = "https://t.me/CrickiumHub"
+MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID", "-1002374007744") or 0)
+MAIN_GROUP_LINK = os.getenv("MAIN_GROUP_LINK", "").strip()
