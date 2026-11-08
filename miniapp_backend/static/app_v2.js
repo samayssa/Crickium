@@ -2128,12 +2128,15 @@
   state.giftTimer = setInterval(refreshGiftBadge, 60000);
   const launchParams = new URLSearchParams(window.location.search || "");
   const launchParam = String(tg?.initDataUnsafe?.start_param || launchParams.get("tgWebAppStartParam") || launchParams.get("startapp") || "");
+  const myGiftsLink = /^mygifts$/i.test(launchParam);
   const sharedScoreMatch = launchParam.match(/^score_([A-Z0-9]+)_(\d+)$/i);
   const playAiLink = launchParam.match(/^pai_([A-Za-z0-9]+)$/);
   const giveawayLink = launchParam.match(/^gw_(\d+)$/);
   const aucLink = launchParam.match(/^auc_(\d+)$/);
   const tourLink = launchParam.match(/^tour_(\d+)$/);
-  if ((aucLink || tourLink) && window.CrickiumTournament) {
+  if (myGiftsLink) {
+    navigate("my-gifts", { history: false }).catch(() => loadHome());
+  } else if ((aucLink || tourLink) && window.CrickiumTournament) {
     state.page = "tournaments";
     if (aucLink) window.CrickiumTournament.openRoom(Number(aucLink[1])); else window.CrickiumTournament.openHub(Number(tourLink[1]));
   } else if (giveawayLink && window.CrickiumGiveaway) {
