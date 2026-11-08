@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from database.query import execute, fetch, fetchrow, fetchval
+from database.query import execute, fetch, fetchrow, fetchval, transaction
 
 
 def _json(value: Any) -> str:
@@ -114,3 +114,75 @@ async def campaign_counts(gift_ids: list[int]) -> dict[int, int]:
         [int(x) for x in gift_ids],
     )
     return {int(row["gift_id"]): int(row["n"] or 0) for row in rows}
+
+
+async def list_distributed_campaigns(owner_id: int, *, limit: int = 8, offset: int = 0) -> list[dict]:
+    """List live gift drops with recipient/open/claim counts for the owner."""
+    rows = await fetch(
+        """
+        SELECT c.gift_id,c.title,c.theme,c.reward_type,c.reward_config,
+               c.created_at,c.distributed_at,c.recipient_count,
+               COUNT(r.user_id)::int AS recipients,
+               COUNT(r.user_id) FILTER (
+                   WHERE r.opened_at IS NOT NULL OR r.status IN ('opened','claimed')
+               )::int AS opened_count,
+               COUNT(r.user_id) FILTER (WHERE r.status='claimed')::int AS claimed_count
+        FROM miniapp_gift_campaigns c
+        LEFT JOIN miniapp_gift_user_rewards r ON r.gift_id=c.gift_id
+        WHERE c.created_by=$1 AND c.status='distributed'
+        GROUP BY c.gift_id,c.title,c.theme,c.reward_type,c.reward_config,
+                 c.created_at,c.distributed_at,c.recipient_count
+        ORDER BY c.distributed_at DESC NULLS LAST,c.gift_id DESC
+        LIMIT $2 OFFSET $3;
+        """, int(owner_id), max(1, min(20, int(limit))), max(0, int(offset)),
+    )
+    return [dict(row) for row in rows]
+
+
+async def distributed_campaign_details(gift_id: int, owner_id: int) -> dict | None:
+    row = await fetchrow(
+        """
+        SELECT c.gift_id,c.title,c.theme,c.status,c.reward_type,
+               COUNT(r.user_id)::int AS recipients,
+               COUNT(r.user_id) FILTER (
+                   WHERE r.opened_at IS NOT NULL OR r.status IN ('opened','claimed')
+               )::int AS opened_count,
+               COUNT(r.user_id) FILTER (WHERE r.status='claimed')::int AS claimed_count
+        FROM miniapp_gift_campaigns c
+        LEFT JOIN miniapp_gift_user_rewards r ON r.gift_id=c.gift_id
+        WHERE c.gift_id=$1 AND c.created_by=$2
+        GROUP BY c.gift_id,c.title,c.theme,c.status,c.reward_type;
+        """, int(gift_id), int(owner_id),
+    )
+    return dict(row) if row else None
+
+
+async def remove_distributed_campaign(gift_id: int, owner_id: int) -> dict | None:
+    """Hide a live campaign from My Gifts while retaining its audit/reward rows."""
+    async def _tx(conn):
+        campaign = await conn.fetchrow(
+            "SELECT gift_id,status,title FROM miniapp_gift_campaigns WHERE gift_id=$1 AND created_by=$2 FOR UPDATE;",
+            int(gift_id), int(owner_id),
+        )
+        if not campaign or str(campaign["status"]) != "distributed":
+            return None
+        counts = await conn.fetchrow(
+            """
+            SELECT COUNT(*)::int AS recipients,
+                   COUNT(*) FILTER (WHERE opened_at IS NOT NULL OR status IN ('opened','claimed'))::int AS opened_count,
+                   COUNT(*) FILTER (WHERE status='claimed')::int AS claimed_count
+            FROM miniapp_gift_user_rewards WHERE gift_id=$1;
+            """, int(gift_id),
+        )
+        await conn.execute(
+            "UPDATE miniapp_gift_campaigns SET status='cancelled',step='removed',scheduled_at=NULL WHERE gift_id=$1 AND created_by=$2 AND status='distributed';",
+            int(gift_id), int(owner_id),
+        )
+        return {
+            "gift_id": int(gift_id),
+            "title": str(campaign.get("title") or "Gift"),
+            "recipients": int((counts or {}).get("recipients") or 0),
+            "opened_count": int((counts or {}).get("opened_count") or 0),
+            "claimed_count": int((counts or {}).get("claimed_count") or 0),
+        }
+    return await transaction(_tx)
