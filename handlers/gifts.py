@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import html
+import os
+import re
 import traceback
 from datetime import datetime
 
@@ -271,6 +273,85 @@ async def _gift_management_callback(query: dict, action: str, gift_id: int, valu
             await _show_gift_management(chat_id, message_id=message_id, offset=0)
         return True
     return False
+
+
+def _mygift_app_url() -> str:
+    """Build the official Telegram Main Mini App deep link to My Gifts."""
+    username = str(os.getenv("MINIAPP_BOT_USERNAME", "CrickiumBot")).strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        username = "CrickiumBot"
+    return f"https://t.me/{username}?startapp=mygifts&mode=fullscreen"
+
+
+def _public_gift_list_text(first_name: str, rows: list[dict]) -> str:
+    greeting = html.escape(str(first_name or "Player"))
+    lines = [
+        "<b>╭━━━〔 🎁 CRICKIUM · MY GIFTS 〕━━━╮</b>",
+        "",
+        f"Welcome, <b>{greeting}</b>! Here are your available gifts.",
+        "",
+    ]
+    if not rows:
+        lines.extend([
+            "<b>✨ No unclaimed gifts right now.</b>",
+            "",
+            "Keep an eye on Crickium. A new surprise may arrive soon!",
+        ])
+    else:
+        for row in rows[:15]:
+            reward = gifts_service.json_value(row.get("reward"), {})
+            reward_labels = []
+            if int(reward.get("coins") or 0) > 0:
+                reward_labels.append("🪙 Coins")
+            if int(reward.get("rubies") or 0) > 0:
+                reward_labels.append("💎 Rubies")
+            if isinstance(reward.get("player"), dict):
+                reward_labels.append("🏏 Player Card")
+            if reward.get("pack_key"):
+                reward_labels.append("📦 Pack")
+            if not reward_labels:
+                reward_labels.append("🎁 Surprise Reward")
+
+            title = "Happy Diwali" if str(row.get("theme") or "normal") == "diwali" else str(row.get("title") or "A Gift for You")
+            status = "Opened · ready to claim" if str(row.get("status")) == "opened" else "Ready to open"
+            lines.extend([
+                f"<b>🎁 {html.escape(title[:90])}</b>",
+                f"   {' · '.join(reward_labels)}",
+                f"   <i>{status}</i>",
+                "",
+            ])
+        if len(rows) >= 15:
+            lines.append("<i>Showing your 15 newest available gifts.</i>")
+            lines.append("")
+
+    lines.extend([
+        "Tap below to open the My Gifts section in the Crickium Mini App.",
+        "",
+        "<b>╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯</b>",
+    ])
+    return "\n".join(lines)
+
+
+@register("mygift")
+async def mygift_command(payload: dict) -> None:
+    """Show the invoking user's available gifts in any bot chat."""
+    user = payload.get("from") or {}
+    user_id = int(user.get("id") or 0)
+    chat = payload.get("chat") or {}
+    chat_id = int(chat.get("id") or 0)
+    if not user_id or not chat_id:
+        return
+
+    rows = await repo.list_user_available_gifts(user_id, limit=15)
+    text = _public_gift_list_text(str(user.get("first_name") or "Player"), rows)
+    keyboard = _keyboard([[
+        {
+            "text": "🎁 Open MyGift in App",
+            "url": _mygift_app_url(),
+            "style": "primary",
+        }
+    ]])
+    await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @register("gift")
