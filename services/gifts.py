@@ -32,6 +32,7 @@ def json_value(value: Any, fallback: Any):
 def card_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
     """Convert a global or special card row into the canonical squad shape."""
     player = dict(raw)
+    player["overall"] = max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
     kind = str(player.get("player_kind") or ("special" if player.get("special_edition_id") else "global"))
     if kind == "special":
         sid = int(player.get("special_edition_id") or abs(int(player.get("player_id") or 0)))
@@ -56,10 +57,32 @@ def _squad(raw: Any) -> list[dict[str, Any]]:
 
 
 def _candidate_for_user(candidates: list[dict[str, Any]], squad: list[dict[str, Any]]) -> dict[str, Any] | None:
-    available = [candidate for candidate in candidates if not any(owned_same_card(item, candidate) for item in squad)]
+    """Pick a card randomly without allowing a large OVR bucket to dominate.
+
+    First choose one of the OVR values that actually has an eligible card in
+    this user's pool, then choose a card at that OVR. This makes the rating
+    itself random across the selected band (for example 91, 92, 93, 94 or 95),
+    rather than implicitly weighting 95 more heavily just because more 95 OVR
+    cards happen to exist in the database. Already-owned cards remain excluded.
+    """
+    available = [
+        candidate for candidate in candidates
+        if not any(owned_same_card(item, candidate) for item in squad)
+    ]
     if not available:
         return None
-    return dict(secrets.choice(available))
+
+    by_overall: dict[int, list[dict[str, Any]]] = {}
+    for candidate in available:
+        overall = int(candidate.get("overall") or max(
+            int(candidate.get("bat_level") or 0), int(candidate.get("bowl_level") or 0)
+        ))
+        by_overall.setdefault(overall, []).append(candidate)
+
+    # secrets.choice is backed by the OS CSPRNG and is unbiased over the
+    # available OVR buckets and over cards inside the chosen bucket.
+    chosen_overall = secrets.choice(tuple(by_overall))
+    return dict(secrets.choice(by_overall[chosen_overall]))
 
 
 async def _player_pool(player_range: list[int] | tuple[int, int]) -> list[dict[str, Any]]:
@@ -67,6 +90,7 @@ async def _player_pool(player_range: list[int] | tuple[int, int]) -> list[dict[s
     global_rows = await fetch(
         """
         SELECT player_id,name,country,role,bat_level,bowl_level,batting_hand,bowling_hand,
+               GREATEST(COALESCE(bat_level,0),COALESCE(bowl_level,0))::int AS overall,
                'global'::text AS player_kind,FALSE AS is_special
         FROM players
         WHERE GREATEST(COALESCE(bat_level,0),COALESCE(bowl_level,0)) BETWEEN $1 AND $2;
@@ -76,6 +100,7 @@ async def _player_pool(player_range: list[int] | tuple[int, int]) -> list[dict[s
         """
         SELECT (-special_player_id)::bigint AS player_id,special_player_id AS special_edition_id,
                name,country,role,bat_level,bowl_level,batting_hand,bowling_hand,
+               GREATEST(COALESCE(bat_level,0),COALESCE(bowl_level,0))::int AS overall,
                edition,'special'::text AS player_kind,TRUE AS is_special
         FROM special_edition_players
         WHERE GREATEST(COALESCE(bat_level,0),COALESCE(bowl_level,0)) BETWEEN $1 AND $2;
@@ -216,7 +241,7 @@ async def open_gift(user_id: int, gift_id: int) -> dict[str, Any]:
             FROM miniapp_gift_user_rewards r
             JOIN miniapp_gift_campaigns c ON c.gift_id=r.gift_id
             WHERE r.gift_id=$1 AND r.user_id=$2
-            FOR UPDATE OF r;
+            FOR UPDATE;
             """, int(gift_id), int(user_id),
         )
         if not row:
@@ -244,11 +269,11 @@ async def claim_gift(user_id: int, gift_id: int) -> dict[str, Any]:
     async def _tx(conn):
         row = await conn.fetchrow(
             """
-            SELECT r.reward,r.status,c.theme
+            SELECT r.reward,r.status,c.theme,c.status AS campaign_status
             FROM miniapp_gift_user_rewards r
             JOIN miniapp_gift_campaigns c ON c.gift_id=r.gift_id
             WHERE r.gift_id=$1 AND r.user_id=$2
-            FOR UPDATE OF r;
+            FOR UPDATE;
             """, int(gift_id), int(user_id),
         )
         if not row:
@@ -258,6 +283,8 @@ async def claim_gift(user_id: int, gift_id: int) -> dict[str, Any]:
             return {"status": "success", "replayed": True,
                     "coins": int((wallet or {}).get("balance") or 0),
                     "rubies": int((wallet or {}).get("rubies") or 0)}
+        if row.get("campaign_status") != "distributed":
+            return {"status": "not_available"}
         if row["status"] != "opened":
             return {"status": "not_opened"}
 
