@@ -13,7 +13,7 @@ python -m pip install -r miniapp_backend/requirements.txt
 python -m miniapp_backend.main
 ```
 
-The ASGI startup hook connects through the bot's provider-aware database pool and applies the Mini App's additive `miniapp_kitbag_claims` migration. Configure `API_ID`, `API_HASH`, `BOT_TOKEN`, and `DATABASE_URL` from the existing private deployment values before starting the bot. Optional admin/group/channel IDs are also listed in `.env.example`. The delivered `config.py` reads settings from environment/`.env`; private values from the uploaded baseline are intentionally not bundled in the returned archive. Do not place credentials in source control or send them in chat.
+The ASGI startup hook connects through the bot's provider-aware database pool and applies additive Mini App migrations, including `miniapp_kitbag_claims` and the shared My Gifts campaign/reward tables. Configure `API_ID`, `API_HASH`, `BOT_TOKEN`, and `DATABASE_URL` from the existing private deployment values before starting the bot. Optional admin/group/channel IDs are also listed in `.env.example`. The delivered `config.py` reads settings from environment/`.env`; private values from the uploaded baseline are intentionally not bundled in the returned archive. Do not place credentials in source control or send them in chat.
 
 The root `launcher.py` starts the backend and a Cloudflare quick tunnel. On Linux x86-64, the verified `tools/cloudflared-linux-amd64` binary is selected automatically. For another operating system or CPU architecture, install the official Cloudflare `cloudflared` build and put it on `PATH`, set `CLOUDFLARED_BIN`, or replace the bundled executable with a compatible official build. Quick tunnel URLs are temporary; update Telegram's Mini App URL whenever it changes.
 
@@ -31,7 +31,7 @@ This enables the existing debug viewer fallback. Never enable it on a public dep
 
 ## Screens and routes
 
-Primary navigation: Home, Search, Matches, Market, Rank. Home also previews today's Crickium Quest challenges; the dedicated Crickium Quest board shows the user's daily, weekly, and monthly assignments. The drawer opens Profile, Squad, Collection, Crickium Quest, Rewards, Wallet, Settings, Help, and About.
+Primary navigation: Home, Search, Matches, Market, My Gifts, Rank. My Gifts lists owner-distributed reward drops and shows a red availability dot until rewards are claimed. Diwali gifts use a staged coins, Rubies, player-card and optional pack reveal with continuous fireworks. Home also previews today's Crickium Quest challenges; the dedicated Crickium Quest board shows the user's daily, weekly, and monthly assignments. The drawer opens Profile, Squad, Collection, Crickium Quest, Rewards, Wallet, Settings, Help, and About.
 
 | Route | Purpose |
 | --- | --- |
@@ -51,7 +51,7 @@ Primary navigation: Home, Search, Matches, Market, Rank. Home also previews toda
 | `GET /api/image/player`, `/api/image/profile` | Authenticated server-side Telegram file proxy; bot token is never included in browser URLs |
 | `GET /api/health` | Process health |
 
-The browser sends Telegram's signed initialization string in the `X-Telegram-Init-Data` header. It never supplies an authoritative user ID or reward amount.
+The browser sends Telegram's signed initialization string in the `X-Telegram-Init-Data` header. It never supplies an authoritative user ID or reward amount. The bot owner prepares a campaign with `/distgift` in a private bot chat; each recipient gets a server-saved reward row without a Telegram DM or announcement. Player-card rewards are selected randomly from the chosen OVR band for each recipient. The Mini App only reveals and claims that recipient's saved reward.
 
 ## Data and feature boundaries
 
@@ -70,6 +70,7 @@ The browser sends Telegram's signed initialization string in the `X-Telegram-Ini
 3. Set the Telegram Mini App URL to the public HTTPS origin. The app URL must point to the root path, not the API.
 4. Keep `MINIAPP_DEBUG_AUTH` unset/false in production. Use HTTPS and a restrictive host-level firewall.
 5. Monitor application logs and DB limits. The backend applies per-user request throttles, body-size limits, transaction-level purchase/reward checks, and authenticated access to account data.
-6. Use the Cloudflare quick tunnel only for testing. For a stable production domain, configure a named Cloudflare Tunnel using your own Cloudflare account; keep tunnel credentials outside the project ZIP.
+6. Rotate any Telegram bot token or database password that was ever committed in the previous source. Use only the new environment-variable configuration.
+7. Use the Cloudflare quick tunnel only for testing. For a stable production domain, configure a named Cloudflare Tunnel using your own Cloudflare account; keep tunnel credentials outside the project ZIP.
 
 See `docs/CRICKIUM_MINIAPP_BLUEPRINT.pdf` for the design map, architecture, API/data boundary, deployment, and verification plan.

@@ -633,6 +633,12 @@ async def build_home_response(viewer: TelegramViewer) -> dict[str, Any]:
         int(viewer.id),
     )
     active = await _active_matches(viewer.id, limit=4)
+    gifts_unclaimed = int(await fetchval(
+        """SELECT COUNT(*) FROM miniapp_gift_user_rewards r
+           JOIN miniapp_gift_campaigns c ON c.gift_id=r.gift_id
+           WHERE r.user_id=$1 AND r.status IN ('pending','opened') AND c.status='distributed';""",
+        int(viewer.id),
+    ) or 0)
     progress = 100 if next_xp is None else max(0, min(100, round(xp * 100 / max(1, next_xp))))
     photo_url = "/api/image/profile"
     return {
@@ -674,6 +680,7 @@ async def build_home_response(viewer: TelegramViewer) -> dict[str, Any]:
         },
         "recent_matches": [_match_summary(dict(row)) for row in recent],
         "active_matches": active,
+        "gifts_unclaimed": gifts_unclaimed,
     }
 
 

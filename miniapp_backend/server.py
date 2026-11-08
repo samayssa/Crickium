@@ -158,7 +158,7 @@ async def _send_static(send, path: str):
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
     # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
-    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js", "giveaway_ui.css", "giveaway_ui.js", "tournament_ui.css", "tournament_ui.js"}
+    fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js", "giveaway_ui.css", "giveaway_ui.js", "tournament_ui.css", "tournament_ui.js", "gifts_ui.css", "gifts_ui.js"}
     cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
     await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
 
@@ -422,6 +422,10 @@ class CrickiumMiniApp:
                 from . import giveaway_api
                 await _send_json(send, await giveaway_api.build_list(viewer))
                 return
+            if path == "/api/gifts":
+                from . import gifts_api
+                await _send_json(send, await gifts_api.build_list(viewer))
+                return
             if path == "/api/achievements":
                 from services import achievements
                 await _send_json(send, await achievements.build_response(int(viewer.id), viewer))
@@ -445,6 +449,18 @@ class CrickiumMiniApp:
                 image = await api.news_image_bytes(article_id) if article_id > 0 else None
                 if not image:
                     await _send_json(send, {"detail": "News image not available"}, 404)
+                    return
+                await _send_bytes(send, image[0], image[1])
+                return
+            if path == "/api/image/gift":
+                from . import gifts_api
+                try:
+                    gift_id = int(query.get("id") or 0)
+                except ValueError:
+                    gift_id = 0
+                image = await gifts_api.gift_image_bytes(gift_id, int(viewer.id)) if gift_id > 0 else None
+                if not image:
+                    await _send_json(send, {"detail": "Gift image not available"}, 404)
                     return
                 await _send_bytes(send, image[0], image[1])
                 return
@@ -483,6 +499,32 @@ class CrickiumMiniApp:
             await _send_json(send, {"detail": str(exc)}, 400)
             return
 
+        if path == "/api/gifts/open":
+            from . import gifts_api
+            try:
+                gift_id = int(payload.get("gift_id") or 0)
+            except (TypeError, ValueError):
+                gift_id = 0
+            if gift_id <= 0:
+                await _send_json(send, {"status": "invalid", "detail": "Select a valid gift."}, 400)
+                return
+            result = await gifts_api.open_for_viewer(viewer, gift_id)
+            status = 200 if result.get("status") == "success" else 404 if result.get("status") == "not_found" else 409
+            await _send_json(send, result, status)
+            return
+        if path == "/api/gifts/claim":
+            from . import gifts_api
+            try:
+                gift_id = int(payload.get("gift_id") or 0)
+            except (TypeError, ValueError):
+                gift_id = 0
+            if gift_id <= 0:
+                await _send_json(send, {"status": "invalid", "detail": "Select a valid gift."}, 400)
+                return
+            result = await gifts_api.claim_for_viewer(viewer, gift_id)
+            status = 200 if result.get("status") == "success" else 404 if result.get("status") == "not_found" else 409
+            await _send_json(send, result, status)
+            return
         if path == "/api/ads/attempt":
             result = await api.create_adsgram_ad_attempt(viewer)
             status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"daily_limit", "cooldown", "ad_pending", "replacement_pending"} else 404 if result.get("status") == "user_missing" else 400
