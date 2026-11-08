@@ -16,6 +16,7 @@
     marketSort: "overall",
     matchTimer: null,
     rewardTimer: null,
+    giftTimer: null,
     adFlowBusy: false,
     adsgramSdkStatus: "loading",
     searchSeq: 0,
@@ -49,6 +50,7 @@
     ["search", "Search", "⌕"],
     ["matches", "Matches", "▤"],
     ["market", "Market", "♙"],
+    ["my-gifts", "My Gifts", "🎁"],
     ["rank", "Rank", "♛"],
   ];
   const secondary = [
@@ -149,10 +151,34 @@
     </header>`;
   }
 
+  function updateGiftBadge(count) {
+    const safeCount = Math.max(0, Number(count || 0));
+    state.home = state.home || {};
+    state.home.gifts_unclaimed = safeCount;
+    const item = document.querySelector('.nav-item[data-page="my-gifts"]');
+    if (!item) return;
+    let dot = item.querySelector(".nav-gift-dot");
+    if (safeCount > 0 && !dot) {
+      dot = document.createElement("i");
+      dot.className = "nav-gift-dot";
+      dot.setAttribute("aria-label", "Unclaimed gifts");
+      item.insertBefore(dot, item.querySelector("span:last-child"));
+    } else if (safeCount <= 0 && dot) {
+      dot.remove();
+    }
+  }
+
+  async function refreshGiftBadge() {
+    try {
+      const data = await api("/api/gifts");
+      updateGiftBadge(data.unclaimed);
+    } catch (_) {}
+  }
+
   function bottomNav() {
     return `<nav class="bottom-nav" aria-label="Main navigation">${primary.map(([key, label, icon]) => `
       <button class="nav-item ${state.page === key || (key === "matches" && state.page === "match-detail") ? "active" : ""}" data-page="${key}">
-        <span class="nav-icon">${icon}</span><span>${label}</span>
+        <span class="nav-icon">${icon}</span>${key === "my-gifts" && Number(state.home?.gifts_unclaimed || 0) > 0 ? `<i class="nav-gift-dot" aria-label="Unclaimed gifts"></i>` : ""}<span>${label}</span>
       </button>`).join("")}</nav>`;
   }
 
@@ -1958,6 +1984,7 @@
     try { window.CrickiumGame?.stop?.(); } catch (_) {}
     try { window.CrickiumGiveaway?.stop?.(); } catch (_) {}
     try { window.CrickiumTournament?.stop?.(); } catch (_) {}
+    if (page !== "my-gifts") { try { window.CrickiumGifts?.stop?.(); } catch (_) {} }
     state.page = page;
     state.drawer = false;
     clearInterval(state.matchTimer);
@@ -1976,6 +2003,7 @@
         if (state.currentMatch) return loadMatchDetail(state.currentMatch.engine, state.currentMatch.id, { skipRoute: true });
         return navigate("matches", { history: false });
       case "market": return loadMarket();
+      case "my-gifts": return window.CrickiumGifts ? window.CrickiumGifts.load() : navigate("home", { history: false });
       case "rank": return loadRank();
       case "profile": return loadProfile();
       case "squad": return loadSquad();
@@ -1997,7 +2025,7 @@
     }
   }
 
-  window.CrickiumApp = { api, shell, esc, number, toast, navigate, hydrateImages, image, ping, state, tg, openMatch };
+  window.CrickiumApp = { api, shell, esc, number, toast, navigate, hydrateImages, image, ping, state, tg, openMatch, updateGiftBadge };
 
   document.addEventListener("click", (event) => {
     const pageButton = event.target.closest("[data-page]");
@@ -2094,6 +2122,10 @@
   try { if (window.history && !window.history.state?.crickium) window.history.replaceState({ crickium: true, page: "home", currentMatch: null, matchTab: "live", matchInnings: null, index: 0 }, "", window.location.href); } catch (_) {}
   // Warm AdsGram on app start so the Watch Ad button is ready when eligible.
   ensureAdsgramSdk().catch(() => {});
+  // Gifts are distributed silently; refresh only the tiny availability count
+  // periodically so a red dot can appear while the Mini App is already open.
+  clearInterval(state.giftTimer);
+  state.giftTimer = setInterval(refreshGiftBadge, 60000);
   const launchParams = new URLSearchParams(window.location.search || "");
   const launchParam = String(tg?.initDataUnsafe?.start_param || launchParams.get("tgWebAppStartParam") || launchParams.get("startapp") || "");
   const sharedScoreMatch = launchParam.match(/^score_([A-Z0-9]+)_(\d+)$/i);

@@ -1,0 +1,101 @@
+/* My Gifts page and Diwali reveal. Uses the existing Crickium green/gold palette. */
+.gifts-loading { min-height: 46vh; display: grid; place-content: center; justify-items: center; gap: 13px; color: var(--muted); font-size: 12px; }
+.gift-spinner { width: 35px; height: 35px; border-radius: 50%; border: 3px solid #34463a; border-top-color: var(--lime); animation: gift-spin .9s linear infinite; }
+@keyframes gift-spin { to { transform: rotate(360deg); } }
+.gifts-hero { min-height: 190px; position: relative; overflow: hidden; display: flex; align-items: center; padding: 23px 21px; border: 1px solid #3a4a35; border-radius: 24px; background: linear-gradient(118deg,#1d3224 0%,#14241c 56%,#241d18 100%); box-shadow: 0 16px 36px #0004; }
+.gifts-hero-orb { position: absolute; width: 210px; height: 210px; right: -80px; top: -90px; border-radius: 50%; background: radial-gradient(circle,#d8b65a45,transparent 68%); }
+.gifts-hero-copy { position: relative; z-index: 1; width: 72%; }
+.gift-eyebrow { color: var(--lime); font-size: 8px; font-weight: 950; letter-spacing: .19em; }
+.gifts-hero h2 { margin: 10px 0 8px; font-size: 29px; line-height: .99; letter-spacing: -.06em; }
+.gifts-hero h2 em { color: #f1d78e; font-style: normal; }
+.gifts-hero p { max-width: 245px; margin: 0; color: #b4c2b3; font-size: 10px; line-height: 1.6; }
+.gifts-hero-box { position: absolute; right: 20px; bottom: 26px; font-size: 61px; filter: drop-shadow(0 8px 15px #0009); transform: rotate(8deg); }
+.gifts-hero-box i { position: absolute; right: -4px; top: -12px; color: #f6d982; font-size: 21px; font-style: normal; }
+.gift-section-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin: 25px 2px 12px; }
+.gift-section-heading h2 { margin: 4px 0 0; font-size: 19px; letter-spacing: -.03em; }
+.gift-count { color: #e6cb84; font-size: 10px; font-weight: 850; border: 1px solid #9c804a55; background: #4a3a202b; border-radius: 999px; padding: 7px 10px; }
+.gift-list-card { overflow: hidden; margin: 12px 0; border-radius: 21px; border: 1px solid #314438; background: linear-gradient(155deg,#14231c,#0e1915 68%); box-shadow: 0 12px 25px #0003; }
+.gift-list-card.is-diwali { border-color: #79613b; background: linear-gradient(150deg,#31261c,#1a1d17 62%,#101914); }
+.gift-list-card.is-claimed { opacity: .76; }
+.gift-banner { height: 142px; position: relative; overflow: hidden; background: radial-gradient(circle at 50% 50%,#66512b,#211b17); }
+.gift-banner::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg,transparent 46%,#101914 100%); pointer-events: none; }
+.gift-banner-image { width: 100%; height: 100%; display: block; object-fit: cover; opacity: 0; transition: opacity .25s ease; }
+.gift-banner-image.loaded { opacity: 1; }
+.gift-card-top { display: flex; align-items: center; gap: 11px; padding: 16px 15px 10px; }
+.gift-card-emblem { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; background: #c4ec6020; border: 1px solid #c4ec6035; font-size: 21px; flex: 0 0 auto; }
+.is-diwali .gift-card-emblem { background: #e5b95420; border-color: #e5b95455; }
+.gift-card-heading { flex: 1; min-width: 0; }
+.gift-card-heading h2 { margin: 4px 0 0; font-size: 17px; letter-spacing: -.03em; }
+.gift-status { font-size: 7px; font-weight: 950; letter-spacing: .10em; white-space: nowrap; }
+.gift-status.available { color: #ff8d7a; }
+.gift-status.claimed { color: var(--lime); }
+.gift-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 15px 15px; }
+.gift-chip { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid #ffffff12; border-radius: 999px; background: #ffffff08; color: #d7dfd2; font-size: 9px; font-weight: 800; }
+.gift-chip.coin { color: #f3d27b; border-color: #d9b74b35; background: #9b79201b; }
+.gift-chip.ruby { color: #ef9aca; border-color: #df8bc535; background: #a64c8319; }
+.gift-chip.player { color: #b8d9a2; }
+.gift-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 15px 15px; border-top: 1px solid #ffffff0b; color: var(--muted); font-size: 9px; }
+.gift-open-button { min-height: 39px; padding: 9px 13px; white-space: nowrap; font-size: 10px; }
+.gift-open-button span { margin-left: 8px; }
+.gift-open-button:disabled { opacity: .55; }
+.gift-empty { margin: 25px 0; padding: 31px 20px; text-align: center; border: 1px dashed #50624e; border-radius: 21px; background: #101c16; }
+.gift-empty-icon { font-size: 38px; filter: drop-shadow(0 5px 8px #0008); }
+.gift-empty h2 { margin: 12px 0 6px; font-size: 18px; }
+.gift-empty p { margin: 0 auto 15px; max-width: 270px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.nav-gift-dot { position: absolute; width: 8px; height: 8px; top: 5px; right: calc(50% - 17px); border: 1.5px solid #07110f; border-radius: 50%; background: #ff655d; box-shadow: 0 0 10px #ff554d9c; }
+.nav-item { position: relative; }
+
+/* Full-screen Diwali gift opening. */
+.gift-reveal-overlay { position: fixed; z-index: 1500; inset: 0; display: grid; place-items: center; overflow: hidden; padding: max(18px,env(safe-area-inset-top)) 16px max(18px,env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 50% 27%,#32442c 0%,#17231b 41%,#08100d 100%); isolation: isolate; animation: gift-overlay-in .35s ease-out both; -webkit-tap-highlight-color: transparent; }
+.gift-reveal-overlay.diwali-mode { background: radial-gradient(ellipse at 50% 25%,#57371f 0%,#291f19 33%,#100f0e 78%,#090c0b 100%); }
+@keyframes gift-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+.gift-fireworks { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.gift-reveal-glow { position: absolute; width: 340px; height: 340px; left: 50%; top: 41%; transform: translate(-50%,-50%); border-radius: 50%; background: radial-gradient(circle,#d8ae4a28,transparent 70%); filter: blur(4px); pointer-events: none; }
+.gift-reveal-dialog { position: relative; z-index: 1; width: min(100%,440px); max-height: 100%; overflow-y: auto; text-align: center; color: #f7f2e7; scrollbar-width: none; }
+.gift-reveal-dialog::-webkit-scrollbar { display: none; }
+.gift-celebration-brand { display: flex; align-items: center; justify-content: center; gap: 9px; color: #e8c76c; font-size: 8px; font-weight: 950; letter-spacing: .24em; }
+.gift-celebration-brand span { color: #fff0ba; }
+.gift-reveal-title { margin: 12px 0 5px; color: #ffe5a1; font-family: Georgia, "Times New Roman", serif; font-size: clamp(32px,9vw,46px); font-weight: 800; letter-spacing: -.055em; text-shadow: 0 4px 25px #f1b54150; }
+.normal-mode .gift-reveal-title { color: #e6f5c9; font-family: inherit; font-size: clamp(27px,7vw,36px); }
+.gift-reveal-subtitle { margin: 0; color: #d0c2a6; font-size: 10px; line-height: 1.5; }
+.gift-progress { display: flex; justify-content: space-between; align-items: center; max-width: 290px; margin: 25px auto 3px; color: #d4b66a; font-size: 8px; font-weight: 950; letter-spacing: .15em; }
+.gift-progress b { color: #f8e7bf; font-size: 9px; }
+.gift-reveal-stage { position: relative; display: grid; place-items: center; min-height: 285px; margin: 0 auto; width: min(100%,350px); overflow: hidden; }
+.gift-stage-ring { position: absolute; width: 235px; height: 235px; border: 1px solid #e9c36b47; border-radius: 50%; box-shadow: 0 0 60px #d9a74b12,inset 0 0 40px #d9a74b12; animation: gift-ring-pulse 3.6s ease-in-out infinite; }
+@keyframes gift-ring-pulse { 0%,100% { transform: scale(.94); opacity: .45; } 50% { transform: scale(1.04); opacity: .9; } }
+.gift-sealed-reward { position: relative; z-index: 1; display: grid; justify-items: center; gap: 9px; animation: gift-seal-float 2.6s ease-in-out infinite; }
+@keyframes gift-seal-float { 0%,100% { transform: translateY(0) rotate(-1deg); } 50% { transform: translateY(-8px) rotate(1deg); } }
+.gift-seal { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid #f2d48a; border-radius: 50%; color: #ffe7ae; box-shadow: 0 0 22px #e8c66b67; }
+.gift-mystery-box { display: grid; place-items: center; width: 145px; height: 145px; border-radius: 35px; border: 1px solid #e5bd6b99; background: linear-gradient(145deg,#6e4b2b,#34251c 66%,#201813); box-shadow: 0 18px 40px #0009,inset 0 0 26px #ffd8891a; font-size: 66px; }
+.gift-sealed-reward b { margin-top: 7px; font-size: 13px; }
+.gift-sealed-reward span { color: #c5b99f; font-size: 9px; }
+.gift-reward-orb { position: relative; z-index: 1; display: grid; place-items: center; gap: 9px; min-width: 210px; min-height: 190px; padding: 24px; border: 1px solid #e7c8798c; border-radius: 28px; background: linear-gradient(150deg,#62452d,#34261e 75%); box-shadow: 0 14px 42px #0009,0 0 46px #e8c36b30; animation: gift-card-reveal .72s cubic-bezier(.15,.9,.25,1.15) both; }
+.gift-reward-orb span { font-size: 42px; filter: drop-shadow(0 4px 12px #0008); }
+.gift-reward-orb b { color: #ffe3a2; font-size: 20px; letter-spacing: -.03em; }
+.gift-reward-orb small { color: #d8c5a5; font-size: 9px; }
+.gift-reward-orb.gift-rubies { border-color: #e78ecb8f; background: linear-gradient(150deg,#552b4a,#281d2c); }
+.gift-reward-orb.gift-rubies b { color: #ffc1e2; }
+.gift-reward-orb.gift-coins { border-color: #e8c66b99; }
+@keyframes gift-card-reveal { 0% { opacity: 0; transform: perspective(700px) rotateY(76deg) scale(.58) translateY(22px); filter: blur(5px); } 68% { opacity: 1; transform: perspective(700px) rotateY(-8deg) scale(1.04); filter: blur(0); } 100% { transform: perspective(700px) rotateY(0) scale(1); } }
+.gift-player-card { position: relative; z-index: 1; width: 177px; overflow: hidden; border: 1px solid #f3d78b; border-radius: 20px; background: linear-gradient(160deg,#455333,#171d19); box-shadow: 0 15px 44px #000b,0 0 35px #f5c75a50; animation: gift-card-reveal .78s cubic-bezier(.15,.9,.25,1.15) both; text-align: left; }
+.gift-player-art { position: relative; height: 195px; display: grid; place-items: center; overflow: hidden; background: radial-gradient(circle at 50% 30%,#9aae625c,transparent 65%),linear-gradient(145deg,#283c2b,#111b17); }
+.gift-player-image { width: 100%; height: 100%; object-fit: contain; }
+.gift-player-ovr { position: absolute; left: 8px; top: 8px; display: grid; place-items: center; min-width: 36px; height: 35px; padding: 3px; border-radius: 9px; background: #e7c978; color: #2a2418; font-size: 13px; font-weight: 1000; }
+.gift-player-ovr small { font-size: 6px; letter-spacing: .1em; }
+.gift-player-meta { display: grid; gap: 3px; padding: 10px 11px 12px; }
+.gift-player-meta b { font-size: 12px; }
+.gift-player-meta span,.gift-player-meta small { color: #b9c5a7; font-size: 8px; }
+.gift-reveal-action { min-height: 52px; display: grid; place-items: center; }
+.gift-reveal-action .button { width: min(100%,270px); min-height: 47px; color: #2a1d0d; background: linear-gradient(105deg,#f3d98e,#d5a84e); box-shadow: 0 8px 26px #daa84c33; font-size: 12px; }
+.gift-reveal-action .button span { margin-left: 8px; }
+.gift-claim-button { background: linear-gradient(105deg,#f7df9c,#d9ab53) !important; }
+.gift-sound-toggle { margin-top: 7px; padding: 6px 11px; border: 1px solid #e2c57950; border-radius: 999px; background: #ffffff0a; color: #e7d4a6; font-size: 8px; font-weight: 850; }
+.gift-reveal-footnote { margin: 12px 0 0; color: #b8a98f; font-size: 8px; line-height: 1.5; }
+.gift-claim-error { max-width: 300px; margin: 3px auto 8px; color: #ffb0a6; font-size: 9px; line-height: 1.5; }
+@media (max-height: 700px) { .gift-reveal-stage { min-height: 235px; } .gift-stage-ring { width: 195px; height: 195px; } .gift-player-art { height: 150px; } .gift-player-card { width: 150px; } .gift-reveal-title { margin-top: 7px; } .gift-progress { margin-top: 14px; } }
+
+.gift-player-bonus { margin-top: 5px; padding: 6px 8px; border: 1px solid #e8c66b55; border-radius: 8px; background: #d5a84e18; color: #f1d28a; font-size: 7px; font-weight: 950; letter-spacing: .08em; text-align: center; }
+
+.gift-reveal-banner { width: min(100%,320px); height: clamp(64px,16vw,100px); margin: 12px auto 0; overflow: hidden; border: 1px solid #e9c36b66; border-radius: 14px; box-shadow: 0 7px 24px #0007; background: #211b17; }
+.gift-reveal-banner-image { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .25s ease; }
+.gift-reveal-banner-image.loaded { opacity: 1; }

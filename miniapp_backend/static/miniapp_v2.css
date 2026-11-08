@@ -113,7 +113,7 @@ button { cursor: pointer; color: inherit; }
 .empty-ball { width: 34px; height: 34px; margin: 0 auto 8px; display: grid; place-items: center; border-radius: 50%; border: 1px solid #566949; color: var(--lime); font-size: 20px; }
 .empty-state b { display: block; color: var(--text); font-size: 13px; }
 .empty-state p { max-width: 340px; margin: 6px auto 0; font-size: 10px; line-height: 1.55; }
-.bottom-nav { position: fixed; z-index: 20; bottom: 0; left: 50%; transform: translateX(-50%); width: min(760px, 100%); height: calc(73px + env(safe-area-inset-bottom)); padding: 9px 8px calc(9px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: repeat(5,1fr); border-top: 1px solid var(--line); background: rgba(8,17,14,.96); backdrop-filter: blur(20px); }
+.bottom-nav { position: fixed; z-index: 20; bottom: 0; left: 50%; transform: translateX(-50%); width: min(760px, 100%); height: calc(73px + env(safe-area-inset-bottom)); padding: 9px 8px calc(9px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); border-top: 1px solid var(--line); background: rgba(8,17,14,.96); backdrop-filter: blur(20px); }
 .nav-item { border: 0; background: transparent; display: grid; align-content: center; justify-items: center; gap: 3px; color: #829087; font-size: 9px; }
 .nav-icon { height: 22px; line-height: 21px; font-size: 20px; }
 .nav-item.active { color: var(--lime); }
