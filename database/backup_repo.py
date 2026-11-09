@@ -21,6 +21,7 @@ import io
 import json
 import tempfile
 import zlib
+import shutil
 import uuid
 import re
 from pathlib import Path
@@ -217,6 +218,472 @@ def _decode_backup(raw_bytes: bytes | str | Path) -> dict:
         raw.decode("utf-8"),
         object_hook=_json_object_hook,
     )
+
+
+class _LimitedRawReader(io.RawIOBase):
+    """Count uncompressed bytes while a gzip/plain backup is streamed."""
+
+    def __init__(self, source, limit: int):
+        super().__init__()
+        self._source = source
+        self._limit = int(limit)
+        self.total_bytes = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        chunk = self._source.read(len(buffer))
+        if not chunk:
+            return 0
+        self.total_bytes += len(chunk)
+        if self.total_bytes > self._limit:
+            raise ValueError(
+                "Backup expands beyond the allowed 512 MB restore limit."
+            )
+        buffer[:len(chunk)] = chunk
+        return len(chunk)
+
+    def close(self):
+        if not self.closed:
+            try:
+                self._source.close()
+            finally:
+                super().close()
+
+
+class _JSONStreamReader:
+    """Small-buffer JSON reader based on JSONDecoder.raw_decode()."""
+
+    def __init__(self, stream, chunk_size: int = 64 * 1024):
+        self.stream = stream
+        self.chunk_size = int(chunk_size)
+        self.buffer = ""
+        self.position = 0
+        self.eof = False
+        self.decoder = json.JSONDecoder()
+
+    def _fill(self) -> None:
+        if self.position:
+            self.buffer = self.buffer[self.position:]
+            self.position = 0
+        chunk = self.stream.read(self.chunk_size)
+        if chunk:
+            self.buffer += chunk
+        else:
+            self.eof = True
+
+    def _skip_whitespace(self) -> None:
+        while True:
+            while (
+                self.position < len(self.buffer)
+                and self.buffer[self.position].isspace()
+            ):
+                self.position += 1
+            if self.position < len(self.buffer) or self.eof:
+                return
+            self._fill()
+
+    def peek(self) -> str:
+        self._skip_whitespace()
+        if self.position >= len(self.buffer):
+            return ""
+        return self.buffer[self.position]
+
+    def consume(self, expected: str) -> None:
+        actual = self.peek()
+        if actual != expected:
+            raise ValueError(
+                f"Invalid backup JSON: expected {expected!r}, found {actual!r}."
+            )
+        self.position += 1
+
+    def read_value(self):
+        self._skip_whitespace()
+        while True:
+            try:
+                value, end = self.decoder.raw_decode(
+                    self.buffer,
+                    self.position,
+                )
+                self.position = end
+                return value
+            except json.JSONDecodeError as exc:
+                # A token may be incomplete even when the decoder reports an
+                # error at its opening quote/container. Refill until the token
+                # completes or the underlying file reaches EOF.
+                if self.eof:
+                    raise ValueError(
+                        f"Invalid backup JSON near character {self.position}: {exc.msg}."
+                    ) from exc
+                self._fill()
+
+
+def _restore_resource_snapshot(label: str, disk_path: str | Path) -> None:
+    """Log process RSS/peak RSS and free temporary disk space on Railway."""
+    rss = "unknown"
+    peak = "unknown"
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as status_file:
+            for line in status_file:
+                if line.startswith("VmRSS:"):
+                    rss = line.split(":", 1)[1].strip()
+                elif line.startswith("VmHWM:"):
+                    peak = line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+
+    try:
+        usage = shutil.disk_usage(str(disk_path))
+        disk_text = (
+            f"free={usage.free / (1024 * 1024):.1f} MiB, "
+            f"total={usage.total / (1024 * 1024):.1f} MiB"
+        )
+    except OSError:
+        disk_text = "unavailable"
+
+    print(
+        f"[backup_repo] resource {label}: "
+        f"rss={rss}, peak_rss={peak}, temp_disk({disk_path})={disk_text}"
+    )
+
+
+def _update_streamed_table_stats(stats: dict, row: dict) -> None:
+    columns = list(row.keys())
+    if stats["first_columns"] is None:
+        stats["first_columns"] = columns
+        stats["columns"] = columns[:]
+    elif columns != stats["first_columns"]:
+        stats["consistent_columns"] = False
+
+    for column, value in row.items():
+        column = str(column)
+        if value is None:
+            stats["column_types"][column].add("NULL")
+        else:
+            stats["column_types"][column].add(
+                _infer_pg_type_from_backup_value(value)
+            )
+    stats["row_count"] += 1
+
+
+def _stream_backup_to_table_files(
+    source_path: str | Path,
+    spool_dir: str | Path,
+) -> tuple[dict, dict[str, dict], int]:
+    """Parse backup JSON incrementally and spool one JSON row per line/table."""
+    source_path = Path(source_path)
+    spool_dir = Path(spool_dir)
+    compressed_size = source_path.stat().st_size
+    if compressed_size <= 0:
+        raise ValueError("Backup file is empty.")
+    if compressed_size > MAX_BACKUP_COMPRESSED_BYTES:
+        raise ValueError("Backup file is larger than the 64 MB restore limit.")
+
+    with source_path.open("rb") as probe:
+        is_gzip = probe.read(2) == b"\x1f\x8b"
+
+    opener = gzip.open if is_gzip else open
+    metadata: dict = {}
+    table_stats: dict[str, dict] = {}
+    table_index = 0
+
+    try:
+        with opener(source_path, "rb") as binary_source:
+            limited = _LimitedRawReader(
+                binary_source,
+                MAX_BACKUP_DECOMPRESSED_BYTES,
+            )
+            with io.BufferedReader(limited) as buffered:
+                with io.TextIOWrapper(
+                    buffered,
+                    encoding="utf-8",
+                ) as text_stream:
+                    reader = _JSONStreamReader(text_stream)
+                    reader.consume("{")
+
+                    while reader.peek() != "}":
+                        key = reader.read_value()
+                        if not isinstance(key, str):
+                            raise ValueError(
+                                "Invalid backup JSON: root object key is not a string."
+                            )
+                        reader.consume(":")
+
+                        if key != "tables":
+                            metadata[key] = reader.read_value()
+                        else:
+                            reader.consume("{")
+                            while reader.peek() != "}":
+                                table_name = reader.read_value()
+                                if not isinstance(table_name, str):
+                                    raise ValueError(
+                                        "Invalid backup JSON: table name is not a string."
+                                    )
+                                if table_name in table_stats:
+                                    raise ValueError(
+                                        f"Backup contains duplicate table key {table_name!r}."
+                                    )
+                                reader.consume(":")
+                                reader.consume("[")
+
+                                row_file = spool_dir / f"table_{table_index:04d}.jsonl.gz"
+                                table_index += 1
+                                stats = {
+                                    "row_count": 0,
+                                    "columns": [],
+                                    "first_columns": None,
+                                    "consistent_columns": True,
+                                    "column_types": defaultdict(set),
+                                    "row_file": row_file,
+                                }
+                                table_stats[table_name] = stats
+
+                                with gzip.open(
+                                    row_file,
+                                    "wt",
+                                    encoding="utf-8",
+                                    compresslevel=1,
+                                ) as output:
+                                    while reader.peek() != "]":
+                                        row = reader.read_value()
+                                        if not isinstance(row, dict):
+                                            raise ValueError(
+                                                f"Backup row {stats['row_count'] + 1} "
+                                                f"in {table_name!r} is not an object."
+                                            )
+                                        _update_streamed_table_stats(stats, row)
+                                        output.write(
+                                            json.dumps(
+                                                row,
+                                                ensure_ascii=False,
+                                                separators=(",", ":"),
+                                            )
+                                        )
+                                        output.write("\n")
+
+                                        delimiter = reader.peek()
+                                        if delimiter == ",":
+                                            reader.consume(",")
+                                        elif delimiter != "]":
+                                            raise ValueError(
+                                                f"Invalid backup JSON after a row in {table_name!r}."
+                                            )
+
+                                reader.consume("]")
+                                delimiter = reader.peek()
+                                if delimiter == ",":
+                                    reader.consume(",")
+                                elif delimiter != "}":
+                                    raise ValueError(
+                                        "Invalid backup JSON in tables object."
+                                    )
+
+                            reader.consume("}")
+
+                        delimiter = reader.peek()
+                        if delimiter == ",":
+                            reader.consume(",")
+                        elif delimiter != "}":
+                            raise ValueError(
+                                "Invalid backup JSON after root value."
+                            )
+
+                    reader.consume("}")
+                    if reader.peek():
+                        raise ValueError(
+                            "Invalid backup JSON: unexpected content after the root object."
+                        )
+                    decompressed_size = limited.total_bytes
+    except (gzip.BadGzipFile, EOFError, zlib.error) as exc:
+        raise ValueError(
+            f"Backup gzip data is damaged or incomplete: {exc}"
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Backup is not valid UTF-8 JSON: {exc}"
+        ) from exc
+
+    if "tables" not in metadata and not table_stats:
+        raise ValueError("This backup file has no table data.")
+
+    return metadata, table_stats, decompressed_size
+
+
+async def _ensure_streamed_backup_only_tables(
+    conn,
+    table_stats: dict[str, dict],
+    current_tables: set[str],
+) -> list[str]:
+    """Recreate non-empty backup-only tables using streamed column samples."""
+    created: list[str] = []
+    for table, stats in table_stats.items():
+        if table in current_tables:
+            continue
+        if not stats["row_count"]:
+            print(
+                f"[backup_repo] Backup-only empty table {table!r} cannot be "
+                "reconstructed without schema metadata; skipping."
+            )
+            continue
+
+        definitions = []
+        for column in stats["columns"]:
+            pg_type = _merge_inferred_pg_types(
+                stats["column_types"].get(column, set())
+            )
+            definitions.append(
+                f"{_json_identifier(column)} {pg_type}"
+            )
+
+        if not definitions:
+            continue
+
+        await conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {_json_identifier(table)} ("
+            + ", ".join(definitions)
+            + ");"
+        )
+        current_tables.add(table)
+        created.append(table)
+        print(
+            f"[backup_repo] Created backup-only table {table!r} "
+            f"with {len(definitions)} inferred column(s)."
+        )
+    return created
+
+
+async def _ensure_streamed_backup_columns(
+    conn,
+    table_stats: dict[str, dict],
+    current_tables: set[str],
+) -> None:
+    """Add columns found in a backup without loading complete table arrays."""
+    for table, stats in table_stats.items():
+        if table not in current_tables or not stats["row_count"]:
+            continue
+
+        column_rows = await conn.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1;
+            """,
+            table,
+        )
+        existing_columns = {
+            str(row["column_name"])
+            for row in column_rows
+        }
+
+        for column in stats["columns"]:
+            if column in existing_columns:
+                continue
+            pg_type = _merge_inferred_pg_types(
+                stats["column_types"].get(column, set())
+            )
+            await conn.execute(
+                f"ALTER TABLE {_json_identifier(table)} "
+                f"ADD COLUMN IF NOT EXISTS {_json_identifier(column)} {pg_type};"
+            )
+            existing_columns.add(column)
+            print(
+                f"[backup_repo] Added missing backup column "
+                f"{table}.{column} as {pg_type}"
+            )
+
+
+async def _restore_streamed_rows(
+    conn,
+    table: str,
+    row_file: str | Path,
+    metadata: dict[str, dict],
+    *,
+    conflict_column: str | None = None,
+    batch_size: int = 200,
+) -> int:
+    """Restore one table from JSONL using bounded batches of at most 200 rows."""
+    row_file = Path(row_file)
+    if not row_file.exists() or row_file.stat().st_size == 0:
+        return 0
+
+    first_columns = None
+    insert_sql = None
+    batch = []
+    row_count = 0
+
+    with gzip.open(row_file, "rt", encoding="utf-8") as source:
+        for row_index, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid spooled row {row_index} for table {table!r}: {exc}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"Backup row {row_index} in {table!r} is not an object."
+                )
+
+            unsupported_cols = sorted(set(row) - set(metadata))
+            if unsupported_cols:
+                raise ValueError(
+                    f"Backup table {table!r} contains unknown column(s): "
+                    + ", ".join(unsupported_cols)
+                )
+
+            columns = list(row.keys())
+            if first_columns is None:
+                first_columns = columns
+                if conflict_column and conflict_column not in columns:
+                    raise ValueError(
+                        f"Backup table {table!r} is missing its merge key "
+                        f"column {conflict_column!r}."
+                    )
+                col_list = ", ".join(
+                    f'"{column}"' for column in first_columns
+                )
+                placeholders = ", ".join(
+                    _typed_placeholder(
+                        i + 1,
+                        metadata[column]["data_type"],
+                    )
+                    for i, column in enumerate(first_columns)
+                )
+                insert_sql = (
+                    f'INSERT INTO "{table}" ({col_list}) '
+                    f'VALUES ({placeholders})'
+                )
+                if conflict_column:
+                    insert_sql += (
+                        f' ON CONFLICT ("{conflict_column}") DO NOTHING'
+                    )
+                insert_sql += ";"
+            elif columns != first_columns:
+                raise ValueError(
+                    f"Backup table {table!r} has inconsistent row columns."
+                )
+
+            record = tuple(
+                _coerce_value(
+                    row.get(column),
+                    metadata[column]["data_type"],
+                )
+                for column in first_columns
+            )
+            batch.append(record)
+            row_count += 1
+
+            if len(batch) >= batch_size:
+                await conn.executemany(insert_sql, batch)
+                batch.clear()
+
+    if batch:
+        await conn.executemany(insert_sql, batch)
+
+    return row_count
 
 
 async def _public_base_tables(
@@ -1557,9 +2024,164 @@ async def _restore_or_merge_rows(
     )
 
 
-async def import_tables(
-    raw_bytes: bytes | str | Path,
-) -> dict[str, int]:
+
+async def _import_tables_from_streamed_file(file_path: str | Path) -> dict[str, int]:
+    """Restore a disk backup without ever materializing the whole JSON document."""
+    source_path = Path(file_path)
+    with tempfile.TemporaryDirectory(prefix="crickium-restore-rows-") as temp_dir:
+        _restore_resource_snapshot("before_stream_parse", temp_dir)
+        metadata, table_stats, decompressed_size = _stream_backup_to_table_files(
+            source_path,
+            temp_dir,
+        )
+        _restore_resource_snapshot("after_stream_parse", temp_dir)
+
+        backup_type = metadata.get("backup_type")
+        if backup_type not in {"sync", "cleardata"}:
+            raise ValueError(
+                "Invalid backup file: missing or unsupported backup_type "
+                "(expected 'sync' or 'cleardata')."
+            )
+
+        if not table_stats:
+            raise ValueError("This backup file has no table data in it.")
+
+        original_backup_set = set(table_stats)
+        if (
+            backup_type == "sync"
+            and int(metadata.get("backup_format_version") or 1) >= BACKUP_FORMAT_VERSION
+        ):
+            declared = set(metadata.get("schema_tables") or [])
+            if declared != original_backup_set:
+                raise ValueError(
+                    "Full backup manifest does not match its table payload."
+                )
+
+        total_rows = sum(stats["row_count"] for stats in table_stats.values())
+        print(
+            f"[backup_repo] Streaming parse complete: {len(table_stats)} tables, "
+            f"{total_rows} rows, {decompressed_size} uncompressed bytes."
+        )
+
+        pool = get_pool()
+        results: dict[str, int] = {}
+
+        async with pool.acquire() as conn:
+            current_tables = await _public_base_tables(conn)
+            current_set = set(current_tables)
+            missing_backup_tables = sorted(original_backup_set - current_set)
+            protected = set(PROTECTED_MERGE_KEYS)
+
+            async with conn.transaction():
+                created_backup_only = await _ensure_streamed_backup_only_tables(
+                    conn,
+                    {
+                        table: table_stats[table]
+                        for table in missing_backup_tables
+                    },
+                    current_set,
+                )
+
+                await _ensure_streamed_backup_columns(
+                    conn,
+                    table_stats,
+                    current_set,
+                )
+
+                still_missing = sorted(original_backup_set - current_set)
+                for table in still_missing:
+                    results[table] = 0
+
+                if still_missing:
+                    print(
+                        "[backup_repo] Skipping schema-less backup-only table(s): "
+                        + ", ".join(still_missing)
+                    )
+
+                restorable_backup_set = original_backup_set - set(still_missing)
+                if backup_type == "sync":
+                    clear_set = current_set - protected
+                else:
+                    clear_set = restorable_backup_set - protected
+
+                ordered_clear = await _foreign_key_order(conn, list(clear_set))
+                ordered_restore = await _foreign_key_order(
+                    conn,
+                    list(restorable_backup_set - protected),
+                )
+
+                metadata_by_table: dict[str, dict[str, dict]] = {}
+                for table in sorted(set(clear_set) | restorable_backup_set):
+                    metadata_by_table[table] = await _table_column_metadata(conn, table)
+
+                # Keep the original restore semantics: delete in reverse FK order,
+                # then restore parents before children, all inside one transaction.
+                for table in reversed(ordered_clear):
+                    await conn.execute(f'DELETE FROM "{table}";')
+
+                for table, key_column in PROTECTED_MERGE_KEYS.items():
+                    if table in restorable_backup_set:
+                        stats = table_stats[table]
+                        print(
+                            f"[backup_repo] Restoring protected table {table}: "
+                            f"{stats['row_count']} rows (merge mode)."
+                        )
+                        results[table] = await _restore_streamed_rows(
+                            conn,
+                            table,
+                            stats["row_file"],
+                            metadata_by_table[table],
+                            conflict_column=key_column,
+                        )
+
+                for table in ordered_restore:
+                    stats = table_stats[table]
+                    print(
+                        f"[backup_repo] Restoring table {table}: "
+                        f"{stats['row_count']} rows in batches of 200."
+                    )
+                    results[table] = await _restore_streamed_rows(
+                        conn,
+                        table,
+                        stats["row_file"],
+                        metadata_by_table[table],
+                    )
+                    _restore_resource_snapshot(f"after_table_{table}", temp_dir)
+
+                sequence_tables = list(dict.fromkeys(ordered_clear + ordered_restore))
+                sequence_metadata = {
+                    table: metadata_by_table[table]
+                    for table in sequence_tables
+                }
+                if sequence_tables:
+                    await _reset_sequences(
+                        conn,
+                        sequence_tables,
+                        sequence_metadata,
+                    )
+
+                if created_backup_only:
+                    print(
+                        "[backup_repo] Reconstructed backup-only table(s): "
+                        + ", ".join(created_backup_only)
+                    )
+
+        # Restore-related caches must be invalidated only after the DB transaction commits.
+        try:
+            from services.quest_engine import invalidate_period_cache
+            invalidate_period_cache()
+            from utils.debut_gate import invalidate_debut_cache
+            invalidate_debut_cache()
+            from database.broadcast_repo import _RECENT_UPSERTS
+            _RECENT_UPSERTS.clear()
+        except Exception:
+            pass
+
+        print(f"[backup_repo] import_tables() -> restored/merged {results}")
+        return results
+
+
+async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
     """
     Restore a backup, with live users/known chats merged instead of replaced.
 
@@ -1575,10 +2197,6 @@ async def import_tables(
     Empty backup-only tables are skipped because this JSON backup format does
     not contain CREATE TABLE metadata for a table with zero rows.
     """
-    payload = _decode_backup(
-        raw_bytes
-    )
-
     if not isinstance(payload, dict):
         raise ValueError(
             "Invalid backup file: "
@@ -1820,6 +2438,7 @@ async def import_tables(
                     )
                 )
 
+
     # Restored quest tables may carry different period rows than the cached ones.
     try:
         from services.quest_engine import invalidate_period_cache
@@ -1835,5 +2454,19 @@ async def import_tables(
         f"[backup_repo] import_tables() -> "
         f"restored/merged {results}"
     )
-
     return results
+
+
+async def import_tables(
+    raw_bytes: bytes | str | Path,
+) -> dict[str, int]:
+    """Restore a backup. Path inputs use bounded streaming; bytes retain compatibility."""
+    if isinstance(raw_bytes, (str, Path)):
+        return await _import_tables_from_streamed_file(raw_bytes)
+
+    payload = _decode_backup(raw_bytes)
+    return await _import_tables_from_payload(payload)
+
+
+
+
