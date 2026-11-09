@@ -2,6 +2,9 @@ from __future__ import annotations
 
 print("recover.py loaded")
 
+import tempfile
+from pathlib import Path
+
 from handlers.registry import register
 from app import app
 from config import ADMIN_USER_ID
@@ -35,15 +38,34 @@ async def recover_command(message):
         await app.send_message(chat_id, "⚠️ That backup file is larger than the 64 MB restore limit.")
         return
 
-    print(f"[recover] /recover invoked by user_id={user_id}, file_id={document['file_id'][:20]}...")
+    print(
+        f"[recover] /recover invoked by user_id={user_id}, "
+        f"declared_file_size={declared_size} bytes, "
+        f"file_name={document.get('file_name')!r}"
+    )
     await app.send_message(
         chat_id,
-        "⏳ Restoring database from backup... Please do not use game/economy commands until this finishes.",
+        "⏳ Downloading backup to temporary storage, then restoring the database. "
+        "Please do not use game/economy commands until this finishes.",
     )
 
     try:
-        raw_bytes = await app.download_media(document["file_id"])
-        results = await import_tables(raw_bytes)
+        # Avoid Kurigram's in_memory=True download path. Large backup files can
+        # otherwise be buffered in RAM and trigger Railway's SIGKILL/OOM limit.
+        with tempfile.TemporaryDirectory(prefix="crickium-recover-") as temp_dir:
+            destination = Path(temp_dir) / "crickium-backup.json.gz"
+            downloaded_path = await app.download_media_to_file(
+                document["file_id"],
+                destination,
+            )
+            backup_path = Path(downloaded_path)
+            actual_size = backup_path.stat().st_size
+            if actual_size <= 0:
+                raise ValueError("Telegram downloaded an empty backup file.")
+            if actual_size > 64 * 1024 * 1024:
+                raise ValueError("Backup file is larger than the 64 MB restore limit.")
+            print(f"[recover] Backup downloaded to disk: {actual_size} bytes")
+            results = await import_tables(backup_path)
     except Exception as exc:
         print(f"[recover] Restore failed: {exc!r}")
         await app.send_message(
