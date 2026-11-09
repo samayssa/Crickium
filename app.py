@@ -1013,6 +1013,24 @@ class App:
             print(f"[app.py] Non-fatal pin_chat_message error ignored: {exc!r}")
             return {}
 
+    async def download_media_to_file(self, file_id: str, file_path: str | Path) -> str:
+        """Download Telegram media to disk instead of buffering the whole file in RAM."""
+        destination = Path(file_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[app.py] download_media_to_file -> file_id={file_id[:20]}...")
+        downloaded = await self._client.download_media(
+            file_id,
+            file_name=str(destination),
+            in_memory=False,
+        )
+        if not downloaded:
+            raise RuntimeError("Telegram did not return a downloaded backup file.")
+
+        downloaded_path = Path(downloaded)
+        if not downloaded_path.is_file():
+            raise RuntimeError("Telegram reported a download path, but the backup file is missing.")
+        return str(downloaded_path)
+
     async def download_media(self, file_id: str) -> bytes:
         """Downloads any file (e.g. a photo) fully into memory and returns its raw bytes."""
         print(f"[app.py] download_media -> file_id={file_id[:20]}...")
