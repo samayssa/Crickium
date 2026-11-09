@@ -6,6 +6,7 @@ from typing import Any
 from services.card_identity import player_kind
 
 from engines.approaches import BallContext, BallOutcome
+from engines.approaches.base import recent_wicket_snapshot
 from engines.innings_engine import BatterSlot, InningsState, create_innings, register_ball
 from engines.lineup_engine import bowling_candidates
 from engines.play_engine import playing_xi
@@ -457,6 +458,7 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
     except StopIteration:
         batting_position = 1
     legal_balls = int(session.innings.score.legal_balls or 0)
+    recent_wickets, balls_since_wicket = recent_wicket_snapshot(session.innings.score)
     return BallContext(
         strategy=strategy,
         pitch=session.pitch,
@@ -484,6 +486,8 @@ def _ball_context(session: PlaySession, strategy: str) -> BallContext:
         high_run_overs=session.high_run_overs,
         very_high_run_overs=session.very_high_run_overs,
         free_hit_next_ball=bool(session.free_hit_next_ball),
+        recent_wickets=recent_wickets,
+        balls_since_wicket=balls_since_wicket,
         batting_upgrade_context=upgrade_context_for(
             session, session.batting_team_id or 0, int(striker.player_id or 0), "batting"
         ),

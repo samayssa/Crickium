@@ -67,6 +67,8 @@ def resolve(strategy: str, context: BallContext) -> BallOutcome:
         free_hit_next_ball=bool(getattr(context, "free_hit_next_ball", False)),
         batting_upgrade_context=getattr(context, "batting_upgrade_context", None),
         bowling_upgrade_context=getattr(context, "bowling_upgrade_context", None),
+        recent_wickets=getattr(context, "recent_wickets", None),
+        balls_since_wicket=getattr(context, "balls_since_wicket", None),
     )
     outcome = _CODE_TO_OUTCOME.get(code, "dot")
 
@@ -80,7 +82,11 @@ def resolve(strategy: str, context: BallContext) -> BallOutcome:
     wicket_kind = None
     if wicket:
         from engines.tactics_engine import pick_wicket_kind
-        wicket_kind = pick_wicket_kind(context.bowler_hand, context.bowler_role)
+        wicket_kind = pick_wicket_kind(
+            context.bowler_hand, context.bowler_role,
+            pitch=context.pitch, over_number=context.over_number,
+            tactic=tactic, mindset=mindset,
+        )
 
     return BallOutcome(
         outcome=outcome,

@@ -32,6 +32,28 @@ the layer before it:
      overridden back to standard - Variation is specifically the
      tactic that should still trouble a batter who's committing hard
      regardless of how set they are.
+  7. REALISM LAYER (runs last - see _apply_realism_layer) - the match
+     situation: pitch identity and surface wear, the powerplay /
+     middle / death over profile (new-ball bite, the over-7 dip, the
+     squeeze, the death surge), settling-in batters, momentum inside
+     the over and back-to-back wickets (collapse impact, strongest at
+     the death) - while several wickets inside ONE over stay rare (a
+     second is rare, a third extremely rare, a hat-trick the rarest sight
+     in the game).  It keeps the dot and single probabilities exactly
+     as layers 1-6 produced them and reshapes only 2s/3s/4s/6s/W/extras.
+     Nothing in it depends on batting first vs chasing, or on which
+     side is defending - both innings and both teams run on the same
+     rules, so only the teams' own quality decides a match.  It also
+     carries the batting resources (a side with wickets in hand launches,
+     a side that has lost them rebuilds, and a long stand without a wicket
+     slowly invites one - so innings rarely end only 3-4 down and chases
+     stay alive into the last over) and the tail-ender intent risk (a slog
+     gets a number 10 out quickly, rotating keeps him in).
+  8. OVER-RUN GOVERNOR (_apply_over_run_rarity) - replaces the old hard
+     per-over run caps (which turned the rest of an over into forced
+     dots).  A hot over just gets smoothly harder to push further, the
+     ceiling rises with the required run rate in a chase, and the freed
+     mass goes to 2s, never to dots.  The last two overs are never capped.
 
 engines/play_runtime.py owns the batter's confidence VALUE and the
 consecutive-boundary streak (that's per-batter state, tracked on
@@ -40,6 +62,7 @@ BatterSlot) - this module is pure lookup/math, no state of its own.
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Any
 
@@ -221,71 +244,101 @@ def _apply_pitch_hitting_dampening(weights: dict, pitch: str) -> None:
     weights[0] = max(0.0, float(weights.get(0, 0.0))) + moved * 0.28
 
 
-def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int, over_number: int = 0, batsman_balls_faced: int = 0) -> None:
-    """Preserve the normal over-run rarity rules, with a set-batter relief.
+# ---------------------------------------------------------------------------
+# OVER-RUN GOVERNOR  (replaces the old hard 8 / 12 / 15 / 18 run over caps)
+# ---------------------------------------------------------------------------
+# The previous rarity guard multiplied EVERY scoring outcome by 0.55 / 0.30 /
+# 0.15 / 0.03 once an over reached 8 / 12 / 15 / 18 runs and then dumped ~80%
+# of the removed mass into DOT balls.  Result: an over such as  4 6 4 . . .
+# - the moment the cap was touched the rest of the over turned into forced
+# dots, whatever the pitch, the batter or the required run rate.
+#
+# The governor never manufactures dots.  It only damps the BIG shots (3/4/6)
+# with a smooth logistic ceiling on the *over total*:
+#   - a shot that would still land the over comfortably under the ceiling is
+#     untouched, one that would blow far past it is cut to at most 30%
+#     (never to zero - a 28 run over stays rare but possible);
+#   - the damped mass becomes 2s (the fielder saves the boundary), so the dot
+#     and single probabilities - and the wicket chance - are left exactly as
+#     they were;
+#   - the ceiling opens up when the game asks for a big over: a high required
+#     run rate in a chase, the closing overs, a set batter at the death, an
+#     attacking intent, and a shot that wins the match is never touched.
+#   - the last two overs (19 and 20) are NEVER capped, in either innings: a
+#     finish can be as big as the bat and the bowling allow.
+OVER_RUN_SOFT_CEILING = 21.0
+OVER_RUN_SOFTNESS = 2.6
+OVER_RUN_MIN_SHOT_SCALE = 0.30
+OVER_RUN_UNCAPPED_FROM_OVER = 19
 
-    Only the 18+ over-score rarity guard is changed here:
-      - overs 16-19: 16+ balls faced -> 50% rarity-relief; >30 -> 70%.
-      - the last (20th) over: 16+ -> 70% rarity-relief; >30 -> cap disabled.
 
-    Lower score caps (8/12/15) and every non-score probability shape remain
-    untouched.  The relief is implemented by loosening the existing scoring
-    mass cap, not by directly rewriting individual outcome percentages.
+def _over_run_ceiling(over_number: int, balls_faced: int, mindset: str,
+                      required_rpo: float | None) -> float:
+    ceiling = OVER_RUN_SOFT_CEILING
+    if over_number >= 16:
+        ceiling += 2.0
+        if balls_faced >= 16:
+            ceiling += 2.0
+        if balls_faced > 30:
+            ceiling += 2.0
+    if mindset in ("aggressive", "ultra_aggressive"):
+        ceiling += 1.5
+    if required_rpo is not None and required_rpo > 10.0:
+        # chasing: the more the equation asks, the more the over may give
+        ceiling += (required_rpo - 10.0) * 1.7
+    return ceiling
+
+
+def _apply_over_run_rarity(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int,
+                           over_number: int = 0, batsman_balls_faced: int = 0, *,
+                           mindset: str = "neutral", required_rpo: float | None = None,
+                           runs_needed: int | None = None) -> None:
+    """Smoothly damp 3/4/6 when the current over is already running hot.
+
+    Only the big-shot weights are touched and the mass they lose goes to the
+    2s, so P(dot) / P(single) / P(wicket) never move because of this guard
+    (the old hard caps turned the rest of the over into forced dots).
     """
+    if int(over_number or 0) >= OVER_RUN_UNCAPPED_FROM_OVER:
+        return
+    before = sum(max(0.0, float(weights.get(k, 0.0))) for k in (3, 4, 6))
+    _damp_big_shots(weights, over_runs, high_run_overs, very_high_run_overs,
+                    over_number, batsman_balls_faced, mindset, required_rpo, runs_needed)
+    after = sum(max(0.0, float(weights.get(k, 0.0))) for k in (3, 4, 6))
+    if before > after:
+        weights[2] = max(0.0, float(weights.get(2, 0.0))) + (before - after)
+
+
+def _damp_big_shots(weights: dict, over_runs: int, high_run_overs: int, very_high_run_overs: int,
+                    over_number: int, batsman_balls_faced: int, mindset: str,
+                    required_rpo: float | None, runs_needed: int | None) -> None:
     current = max(0, int(over_runs or 0))
     high = max(0, int(high_run_overs or 0))
     extreme = max(0, int(very_high_run_overs or 0))
     balls = max(0, int(batsman_balls_faced or 0))
+    over = int(over_number or 0)
 
     repeat_scale = (0.75 ** high) * (0.45 ** extreme)
     if repeat_scale < 1.0:
         for key in (4, 6):
-            old = max(0.0, float(weights.get(key, 0.0)))
-            weights[key] = old * repeat_scale
-            freed = old - weights[key]
-            weights[1] = max(0.0, float(weights.get(1, 0.0))) + freed * 0.70
-            weights[0] = max(0.0, float(weights.get(0, 0.0))) + freed * 0.30
+            if key in weights:
+                weights[key] = max(0.0, float(weights[key])) * repeat_scale
 
-    # Keep every existing lower run cap exactly as-is. The 18+ branch is the
-    # only branch whose rarity is relaxed late in an innings for a set batter.
-    if current >= 18:
-        score_scale = 0.03
-        over = int(over_number or 0)
-        if 16 <= over <= 19 and balls >= 16:
-            relief = 0.70 if balls > 30 else 0.50
-            score_scale = score_scale + (1.0 - score_scale) * relief
-        elif over >= 20 and balls >= 16:
-            if balls > 30:
-                # Disable the 18+/20+ rarity restriction completely in the
-                # last over for a batter who has faced >30 balls.
-                score_scale = 1.0
-            else:
-                score_scale = score_scale + (1.0 - score_scale) * 0.70
-    elif current >= 15:
-        score_scale = 0.15
-    elif current >= 12:
-        score_scale = 0.30
-    elif current >= 8:
-        score_scale = 0.55
-    else:
-        score_scale = 1.0
-
-    if score_scale >= 1.0:
+    if current < 6:
+        return
+    # A shot that wins the match is never held back.
+    if runs_needed is not None and 0 < runs_needed <= 6:
+        return
+    if required_rpo is not None and required_rpo >= 22.0:
         return
 
-    total = sum(max(0.0, float(v)) for v in weights.values())
-    if total <= 0:
-        return
-    score_keys = (1, 2, 3, 4, 6, "WD", "NB", "LB", "BY")
-    source = sum(max(0.0, float(weights.get(k, 0.0))) for k in score_keys)
-    if source <= 0:
-        return
-    reduction = source * (1.0 - score_scale)
-    for key in score_keys:
-        old = max(0.0, float(weights.get(key, 0.0)))
-        weights[key] = old * score_scale
-    weights[0] = max(0.0, float(weights.get(0, 0.0))) + reduction * 0.80
-    weights[1] = max(0.0, float(weights.get(1, 0.0))) + reduction * 0.20
+    ceiling = _over_run_ceiling(over, balls, mindset, required_rpo)
+    for shot in (3, 4, 6):
+        if shot not in weights:
+            continue
+        z = (current + shot - ceiling) / OVER_RUN_SOFTNESS
+        factor = 1.0 / (1.0 + math.exp(min(z, 30.0)))
+        weights[shot] = max(0.0, float(weights[shot])) * max(OVER_RUN_MIN_SHOT_SCALE, factor)
 
 
 def pitch_target_rpo(pitch: str) -> float:
@@ -1323,6 +1376,569 @@ def _increase_single_probability_relative(weights: dict, increase: float = 0.12)
             weights[key] = max(0.0, float(weights[key])) * other_scale
 
 
+# ---------------------------------------------------------------------------
+# MATCH-SITUATION + PITCH REALISM LAYER
+# (powerplay / middle overs / death overs, pitch identity, new ball & wear,
+#  settling, momentum, wicket collapses)
+# ---------------------------------------------------------------------------
+# Runs as the very last probability step, on top of the finished stack.
+#
+# GOLDEN RULES
+#   1. The probability of a DOT (0) and of a SINGLE (1) is pinned exactly to
+#      what the stack above produced - the rhythm of the game does not change.
+#      Only 2s, 3s, boundaries, wickets and extras are re-shaped; the 2s act
+#      as the shock absorber (a boundary that is not hit becomes a two, a
+#      wicket that falls used to be a two or a boundary).
+#   2. Nothing in here knows whether a side is batting first or chasing,
+#      defending or attacking.  Every effect is a function of the OVER, the
+#      PITCH, the BATTER and the SHAPE OF THE INNINGS (wickets, the over so
+#      far), so both innings - and both teams - are simulated identically.
+#      A chase is not penalised and a total is not protected.
+#
+# WHAT IT ADDS
+#   * match phases      - a ball-by-ball over profile: powerplay (cagey first
+#                         over, then field restrictions let the bat loose,
+#                         over 6 is a launch pad), middle overs (field spread,
+#                         the squeeze at 8-12, a build-up from 13), death
+#                         overs (the surge, the all-or-nothing last over).
+#                         Wicket threat follows the same curve: lowest in the
+#                         middle, highest at the death.
+#   * pitch identity    - every pitch has its own wicket / boundary character
+#                         (hard and even no longer lose 2-3 wickets an
+#                         innings, flat is the run factory, green / bouncy /
+#                         dusty / dry / slow bite).
+#   * new ball + wear   - pace is dangerous with the new ball on green /
+#                         bouncy, dry / dusty / slow tracks grip and turn more
+#                         as the innings goes on.  Each innings starts from
+#                         the same surface, so the chase and the defence are
+#                         treated alike.
+#   * settling          - a new batter is the most vulnerable, a set batter
+#                         the least.
+#   * momentum          - tied down for half an over = forced to take a risk;
+#                         a hot over = exposed to a mistake.
+#   * collapses         - back-to-back wickets (the last 12 balls) shake the
+#                         batting side: a little more wicket danger, a little
+#                         less freedom - strongest at the death.
+#   * one-over clusters - several wickets in ONE over are rare: after a wicket
+#                         the new batter plays the over out, so a second is
+#                         rare (~1.3% of overs), a third extremely rare
+#                         (~1 in 8,000 overs), a fourth never happens and a
+#                         hat-trick is the rarest sight (~1 in 2,000 innings).
+#                         Wickets in consecutive OVERS are the collapse above.
+#   * resources         - wickets in hand vs the usual schedule: a side that
+#                         is ahead launches, a side that has lost wickets
+#                         quickly rebuilds; a long stand slowly invites a
+#                         wicket (so innings rarely end only 3-4 down).
+#   * tail-enders       - the batting intent decides how fast a number 9-11
+#                         falls: a slog is an extremely high wicket chance,
+#                         rotating / neutral keeps him in a little longer.
+#   * realistic floors  - no batting intent is ever 100% safe.
+REALISM_LAYER_ENABLED = True
+
+_REALISM_GROUP = (2, 3, 4, 6, "W", "WD", "NB", "LB", "BY")
+
+# How strongly each batting intent feels the pitch / phase: soft rotation is
+# much safer on a spiteful track (or at the death) than a batter who is
+# trying to hit through it.
+MINDSET_PITCH_SENSITIVITY = {
+    "defensive": 0.55, "rotate": 0.70, "neutral": 1.00,
+    "aggressive": 1.20, "ultra_aggressive": 1.35,
+}
+
+# Static identity per pitch: multipliers for (W, 4, 6) before intent
+# sensitivity.  These are TUNED constants (fitted by simulating many
+# thousands of innings, not hand-picked): a balanced innings - build, then
+# attack at the death - between two equal 76-rated sides lands near
+#   flat ~205   hard ~185   even ~167   bouncy ~160   dry ~155
+#   green ~151  dusty ~149  slow ~148      with ~6.5 wickets a side (mostly
+# 5-7; 3-4 down is rare, an all-out happens in roughly one innings in ten).
+# The stack's own boundary appetite is high and P(dot) / P(single) are kept
+# untouched, which is why the 4 / 6 multipliers look small - re-fit these
+# together with OVER_PROFILE in a simulation rather than editing by hand.
+PITCH_REALISM: dict = {
+    "green": {"W": 0.985, 4: 0.250, 6: 0.238},
+    "dusty": {"W": 0.994, 4: 0.200, 6: 0.180},
+    "dry": {"W": 1.033, 4: 0.325, 6: 0.296},
+    "hard": {"W": 1.924, 4: 3.382, 6: 3.382},
+    "flat": {"W": 0.733, 4: 6.005, 6: 6.755},
+    "bouncy": {"W": 0.986, 4: 0.449, 6: 0.477},
+    "slow": {"W": 1.050, 4: 0.108, 6: 0.089},
+    "even": {"W": 1.364, 4: 0.726, 6: 0.726},
+}
+
+# Wicket threat by bowler family on each surface: (pace, spin).
+FAMILY_PITCH_W: dict = {
+    "green": (1.10, 0.92), "bouncy": (1.10, 0.95), "hard": (1.05, 0.97),
+    "flat": (1.00, 1.00), "even": (1.00, 1.02),
+    "dry": (0.94, 1.12), "dusty": (0.92, 1.16), "slow": (0.95, 1.10),
+}
+
+# New ball + surface wear WITHIN an innings (identical for both innings).
+# (new-ball bite for pace, pace wicket change with wear, spin wicket change
+# with wear, boundary change with wear).  Wear is centred on the middle of
+# the innings so the average stays near 1.0.
+PITCH_DYNAMICS: dict = {
+    "green": (0.20, -0.14, 0.05, 0.06),
+    "bouncy": (0.14, -0.10, 0.05, 0.02),
+    "hard": (0.08, -0.05, 0.06, -0.02),
+    "flat": (0.04, -0.03, 0.05, -0.03),
+    "even": (0.06, -0.04, 0.08, -0.02),
+    "dry": (0.05, -0.07, 0.20, -0.06),
+    "dusty": (0.04, -0.09, 0.28, -0.08),
+    "slow": (0.04, -0.06, 0.20, -0.08),
+}
+
+# Over-by-over match-situation profile, index 0 = over 1 ... index 19 = over 20.
+#   overs 1-6   powerplay : cagey over 1, field restrictions open the bat up,
+#                           over 6 is the launch pad
+#   overs 7-15  middle    : field spreads at 7 (the dip), the squeeze at 8-12,
+#                           build-up from 13
+#   overs 16-20 death     : the surge; the last over is all-or-nothing
+OVER_PROFILE: dict = {
+    "W": [0.954, 1.030, 1.032, 0.979, 0.922, 0.898,
+          1.098, 1.069, 1.010, 0.960, 0.947, 0.959, 0.980, 1.045, 1.124,
+          0.859, 0.937, 1.020, 1.071, 1.106],
+    4: [0.209, 0.248, 0.298, 0.364, 0.446, 0.500,
+        0.092, 0.081, 0.080, 0.110, 0.192, 0.370, 0.711, 1.199, 1.597,
+        0.748, 1.320, 2.525, 3.983, 4.926],
+    6: [0.195, 0.232, 0.278, 0.341, 0.418, 0.469,
+        0.084, 0.074, 0.074, 0.103, 0.181, 0.351, 0.674, 1.137, 1.514,
+        0.769, 1.357, 2.595, 4.094, 5.063],
+}
+
+# Realistic minimum wicket chance per ball for every batting intent (nobody
+# is ever 100% safe), scaled by pitch / phase / level gap / clusters.
+WICKET_FLOOR_BY_MINDSET = {
+    "defensive": 0.012, "rotate": 0.015, "neutral": 0.022,
+    "aggressive": 0.032, "ultra_aggressive": 0.048,
+}
+# The risk that comes with an intent is a MULTIPLIER on the stack's own wicket
+# chance (so the bowler's tactic, the level gap, the batter's confidence ...
+# all keep mattering) - the floors above only stop it ever reaching ~zero.
+MINDSET_W_RISK = {
+    "defensive": 1.00, "rotate": 1.00, "neutral": 1.00,
+    "aggressive": 1.10, "ultra_aggressive": 1.10,
+}
+# How far the 2s may grow when boundaries are trimmed (the fielder saves the
+# boundary, the batters run two) - the rest of the trimmed mass stays in 4/6/3.
+TWOS_ABSORB_MAX = 1.6
+# How far the twos may be squeezed to make room for a wicket chance / boundaries
+# (share of the stack's own twos kept).  A slog hardly runs twos - it hits or
+# misses - so the ultra intent can give them up almost completely.
+TWOS_FLOOR_BY_MINDSET = {
+    "defensive": 0.45, "rotate": 0.45, "neutral": 0.45,
+    "aggressive": 0.38, "ultra_aggressive": 0.22,
+}
+# Reward side of the same trade-off: how much of the stack's boundary appetite an
+# intent keeps once the pitch / over profile has been applied (1.0 = as is).
+MINDSET_BND_SCALE = {
+    "defensive": 1.00, "rotate": 1.00, "neutral": 1.00,
+    "aggressive": 0.85, "ultra_aggressive": 1.25,
+}
+PITCH_WICKET_FLOOR_SCALE = {
+    "green": 1.15, "bouncy": 1.12, "dusty": 1.08, "dry": 1.05,
+    "slow": 1.05, "even": 1.00, "hard": 0.95, "flat": 0.92,
+}
+PHASE_WICKET_FLOOR_SCALE = {"overs_1_6": 1.00, "overs_7_15": 0.90, "overs_16_20": 1.20}
+
+# Realistic minimum boundary chance for a settled batter (4, 6) per intent -
+# a guard against degenerate lows, not a scoring lever.
+BOUNDARY_FLOOR_BY_MINDSET = {
+    "defensive": (0.008, 0.0005), "rotate": (0.016, 0.002), "neutral": (0.034, 0.007),
+    "aggressive": (0.075, 0.022), "ultra_aggressive": (0.120, 0.055),
+}
+PITCH_BOUNDARY_FLOOR_SCALE = {
+    "flat": 1.30, "hard": 1.15, "even": 1.00, "bouncy": 0.95,
+    "dry": 0.90, "green": 0.88, "dusty": 0.85, "slow": 0.80,
+}
+PHASE_BOUNDARY_FLOOR_SCALE = {"overs_1_6": 1.05, "overs_7_15": 0.92, "overs_16_20": 1.30}
+
+# Wicket-collapse impact (back-to-back wickets inside the last 12 balls).
+# Per recent wicket (max 3): W danger up, boundaries down - slight, and scaled
+# by phase (strongest at the death).
+COLLAPSE_PHASE_SCALE = {"overs_1_6": 0.60, "overs_7_15": 0.85, "overs_16_20": 1.00}
+COLLAPSE_W_PER_WICKET = 0.065
+COLLAPSE_FOUR_PER_WICKET = 0.040
+COLLAPSE_SIX_PER_WICKET = 0.050
+COLLAPSE_WINDOW_BALLS = 12
+
+# --- several wickets in ONE over stay rare ------------------------------------
+# After a wicket the new batter plays the rest of the over to survive it (and the
+# fielding side's moment is spent), so the NEXT wicket of the same over is well
+# below a fresh ball's chance: a second wicket is rare, a third extremely rare, a
+# fourth never happens, and a hat-trick (three wickets on three consecutive
+# balls) is the rarest sight in the game.  Wickets in CONSECUTIVE OVERS are not
+# touched by this - that is the collapse effect above and it stays strongest at
+# the death.  The factor multiplies the whole wicket chance (floors included).
+OVER_CLUSTER_W = {1: 0.26, 2: 0.18}      # wickets already in this over -> factor
+HAT_TRICK_GUARD = 0.60                   # extra, when the previous ball was a wicket too
+CLUSTER_TAIL_EASE = 0.50                 # a deep tail can still fall in a heap (share of tail_s)
+CLUSTER_PHASE_SCALE = {"overs_1_6": 1.00, "overs_7_15": 1.00, "overs_16_20": 1.00}
+
+
+def _over_cluster_factor(wickets_this_over: int, balls_since_wicket: int | None,
+                         phase: str, tail_s: float) -> float:
+    """Multiplier on the wicket chance once the over already has wicket(s)."""
+    try:
+        k = int(wickets_this_over or 0)
+    except (TypeError, ValueError):
+        return 1.0
+    if k <= 0:
+        return 1.0
+    if k >= 3:
+        return 0.0
+    f = OVER_CLUSTER_W[k] * CLUSTER_PHASE_SCALE.get(phase, 1.0)
+    if tail_s > 0.0:
+        f = min(1.0, f) ** (1.0 - CLUSTER_TAIL_EASE * min(1.0, tail_s))
+    if k >= 2 and balls_since_wicket is not None and balls_since_wicket <= 0:
+        f *= HAT_TRICK_GUARD
+    return max(0.0, min(1.0, f))
+
+
+def _ball_in_over(over_number: int, balls_remaining: int) -> int | None:
+    """Legal balls already bowled in the current over (0-5), or None when the
+    caller's over / balls_remaining do not describe a 20-over innings."""
+    try:
+        done = 120 - int(balls_remaining) - (int(over_number) - 1) * 6
+    except (TypeError, ValueError):
+        return None
+    return done if 0 <= done <= 5 else None
+
+
+def _required_rpo(target: int | None, total_runs: int, balls_remaining: int) -> float | None:
+    if target is None:
+        return None
+    balls = int(balls_remaining or 0)
+    if balls <= 0:
+        return None
+    need = max(0, int(target) - int(total_runs or 0))
+    return need * 6.0 / balls
+
+
+def _infer_recent_wickets(wickets_this_over: int, batting_position: int,
+                          wickets_in_hand: int, balls_faced: int) -> int:
+    """Fallback when the caller does not pass `recent_wickets`: wickets in
+    this over, plus one if the striker is the newest batter and still fresh."""
+    recent = max(0, int(wickets_this_over or 0))
+    fallen = 10 - int(wickets_in_hand if wickets_in_hand is not None else 10)
+    if fallen >= 1 and int(batting_position or 0) == fallen + 2 and int(balls_faced or 0) <= 8:
+        recent = max(recent, 1)
+    return recent
+
+
+def _pitch_dynamics(pitch: str, family: str, over: int) -> dict:
+    """New-ball bite + surface wear.  Returns multipliers for W / 4 / 6."""
+    cfg = PITCH_DYNAMICS.get(pitch)
+    if not cfg:
+        return {}
+    fresh_pace_w, pace_wear_w, spin_wear_w, bnd_wear = cfg
+    o = max(1, min(20, int(over)))
+    centred_wear = o / 20.0 - 0.5
+    fresh = max(0.0, 8 - o) / 7.0
+    if family == "pace":
+        w = 1.0 + fresh_pace_w * fresh + pace_wear_w * centred_wear * 2.0
+    else:
+        w = 1.0 + spin_wear_w * centred_wear * 2.0
+    b = 1.0 + bnd_wear * centred_wear * 2.0
+    return {"W": max(0.5, w), 4: max(0.6, b), 6: max(0.6, b)}
+
+
+def _settle_wicket_factor(balls_faced: int) -> float:
+    balls = max(0, int(balls_faced or 0))
+    if balls <= 2:
+        return 1.18
+    if balls <= 5:
+        return 1.10
+    if balls <= 10:
+        return 1.04
+    if balls <= 20:
+        return 1.00
+    if balls <= 35:
+        return 0.95
+    return 0.91
+
+
+def _momentum_factors(ball_in_over: int | None, over_runs: int) -> tuple[float, float, float]:
+    """(W, 4, 6) multipliers from the shape of the over so far."""
+    if ball_in_over is None:
+        return 1.0, 1.0, 1.0
+    runs = max(0, int(over_runs or 0))
+    if ball_in_over >= 3 and runs <= 2:
+        # tied down for half an over: has to take a risk - boundary or mistake
+        return 1.10, 1.12, 1.16
+    if ball_in_over >= 2 and runs >= 10:
+        # on a roll: bold, but exposed
+        return 1.08, 1.0, 1.0
+    return 1.0, 1.0, 1.0
+
+
+def _collapse_factors(recent_wickets: int, balls_since_wicket: int | None,
+                      phase: str) -> tuple[float, float, float]:
+    """(W, 4, 6) multipliers for back-to-back wickets (slight, phase scaled)."""
+    k = min(3, max(0, int(recent_wickets or 0)))
+    if k <= 0:
+        return 1.0, 1.0, 1.0
+    scale = COLLAPSE_PHASE_SCALE.get(phase, 0.85)
+    w = 1.0 + COLLAPSE_W_PER_WICKET * k * scale
+    b4 = 1.0 - COLLAPSE_FOUR_PER_WICKET * k * scale
+    b6 = 1.0 - COLLAPSE_SIX_PER_WICKET * k * scale
+    if balls_since_wicket is not None and balls_since_wicket <= 1:
+        w *= 1.05   # the incoming batter is at his most exposed
+    return w, b4, b6
+
+
+# --- tail-enders: the batting intent decides how fast they fall -------------
+# A tail-ender's dots stay exactly as the tail rules (TAILENDER_BAND_RULES)
+# make them; what follows the batting intent is the DISMISSAL risk and, a
+# little, the singles: a slog (aggressive / ultra) is an extremely high
+# wicket chance for a number 9-11 - he plays for the big shot, so fewer
+# singles, more outs; rotating / neutral keeps him in with a few more
+# singles and a lower wicket chance (still well above a recognised batter's).
+# Scaled by how deep the tail is (TAIL_BAND_STRENGTH).
+TAIL_INTENT_W = {
+    "defensive": 0.78, "rotate": 0.80, "neutral": 0.92,
+    "aggressive": 1.70, "ultra_aggressive": 1.95,
+}
+TAIL_INTENT_BND = {      # a slog still clears the rope now and then
+    "defensive": 0.60, "rotate": 0.80, "neutral": 1.00,
+    "aggressive": 1.35, "ultra_aggressive": 1.60,
+}
+TAIL_W_CAP = {           # even a slog has a ceiling for a deep tail-ender
+    "aggressive": 0.19, "ultra_aggressive": 0.22,
+}
+TAIL_BND_KEEP = {        # a slog keeps this share of the tail's usual boundaries
+    "aggressive": 0.50, "ultra_aggressive": 0.55,
+}
+TAIL_SINGLE_TAKE = {     # share of the tail-ender's singles a slog gives up
+    "aggressive": 0.22, "ultra_aggressive": 0.28,
+}
+TAIL_SINGLE_GIVE = {     # a few more singles when he just rotates / is neutral
+    "rotate": 0.04, "neutral": 0.04,
+}
+TAIL_BAND_STRENGTH = {
+    "soft_tail": 0.25, "lower_order": 0.55, "tailender": 0.85,
+    "deep_tail": 1.00, "extreme_tail": 1.10,
+}
+
+
+def _tail_strength(batter_level: int) -> float:
+    band = _tailender_band(batter_level)
+    return TAIL_BAND_STRENGTH.get(band, 0.0) if band else 0.0
+
+
+# --- wickets in hand: batting resources (identical for both innings) ---------
+# A side that is wickets AHEAD of the usual schedule launches (more boundaries,
+# more risk, so an innings rarely ends only 3-4 down); a side that has lost
+# wickets quicker than usual rebuilds a little more carefully (never a
+# tail-ender: his intent decides his risk, see TAIL_INTENT_W).
+RESOURCE_EXPECTED_LOST = 6.2     # wickets a typical side has lost by ball 120
+RESOURCE_CURVE = 1.3
+RESOURCE_SCALE = 1.6
+RESOURCE_RAMP_START, RESOURCE_RAMP_LEN = 2, 6   # fully felt from over 8
+LAUNCH_W_UP, LAUNCH_W_DOWN = 1.30, 0.40
+LAUNCH_B_UP, LAUNCH_B_DOWN = 0.20, 0.14
+
+
+def _resource_surplus(balls_remaining, wickets_in_hand) -> float | None:
+    try:
+        left = int(balls_remaining)
+        hand = int(wickets_in_hand)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= left <= 120) or not (1 <= hand <= 10):
+        return None
+    expected_lost = RESOURCE_EXPECTED_LOST * ((120 - left) / 120.0) ** RESOURCE_CURVE
+    return hand - (10.0 - expected_lost)
+
+
+# A long stand without a wicket slowly raises the chance of one (bowling changes,
+# the bowling side's pressure building, the batters' patience running out):
+# it keeps an innings from drifting to 20 overs with only 2-3 wickets down.
+DROUGHT_W = 0.80
+DROUGHT_START, DROUGHT_LEN = 12, 30
+
+
+def _drought_factor(balls_since_wicket, balls_remaining, tail_s: float,
+                    wickets_in_hand=None) -> float:
+    if DROUGHT_W <= 0.0 or tail_s > 0.0:
+        return 1.0
+    try:
+        if balls_since_wicket is None:
+            # no wicket yet: the whole innings so far is one stand.  If wickets
+            # HAVE fallen but the caller could not say when, assume nothing.
+            if wickets_in_hand is not None and int(wickets_in_hand) < 10:
+                return 1.0
+            since = 120 - int(balls_remaining)
+        else:
+            since = int(balls_since_wicket)
+    except (TypeError, ValueError):
+        return 1.0
+    x = max(0.0, min(1.0, (since - DROUGHT_START) / float(DROUGHT_LEN)))
+    return 1.0 + DROUGHT_W * x * x * (3.0 - 2.0 * x)
+
+
+def _launch_factors(over: int, surplus: float | None, tail_s: float = 0.0) -> tuple[float, float]:
+    """(W, boundary) multipliers from the wickets-in-hand surplus."""
+    if surplus is None:
+        return 1.0, 1.0
+    phase_weight = max(0.0, min(1.0, (int(over) - RESOURCE_RAMP_START) / float(RESOURCE_RAMP_LEN)))
+    if phase_weight <= 0.0:
+        return 1.0, 1.0
+    x = math.tanh(surplus / RESOURCE_SCALE)
+    if x >= 0.0:
+        return 1.0 + phase_weight * LAUNCH_W_UP * x, 1.0 + phase_weight * LAUNCH_B_UP * x
+    keep = 1.0 - min(1.0, tail_s)
+    return (max(0.40, 1.0 + phase_weight * LAUNCH_W_DOWN * x * keep),
+            max(0.35, 1.0 + phase_weight * LAUNCH_B_DOWN * x * keep))
+
+
+def _apply_realism_layer(
+    weights: dict,
+    *,
+    pitch: str,
+    mindset: str,
+    over_number: int,
+    batter_level: int,
+    bowler_level: int,
+    batsman_balls_faced: int,
+    bowler_style: str | None,
+    bowler_role: str | None,
+    ball_in_over: int | None,
+    over_runs: int,
+    wickets_this_over: int,
+    recent_wickets: int,
+    balls_since_wicket: int | None,
+    free_hit_next_ball: bool,
+    balls_remaining: int | None = None,
+    wickets_in_hand: int | None = None,
+) -> None:
+    if not REALISM_LAYER_ENABLED:
+        return
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0:
+        return
+    p = {k: max(0.0, float(weights.get(k, 0.0))) / total for k in OUTCOMES}
+    mass = 1.0 - p[0] - p[1]
+    if mass <= 1e-9:
+        return
+
+    pitch_name = str(pitch or "even").strip().lower()
+    balls = max(0, int(batsman_balls_faced or 0))
+    over = max(1, int(over_number or 1))
+    oi = min(19, over - 1)
+    family = bowler_family(bowler_style, bowler_role)
+    phase = phase_key(over)
+    sens = MINDSET_PITCH_SENSITIVITY.get(mindset, 1.0)
+
+    static = PITCH_REALISM.get(pitch_name, {})
+    dyn = _pitch_dynamics(pitch_name, family, over)
+    fam_w = FAMILY_PITCH_W.get(pitch_name, (1.0, 1.0))[0 if family == "pace" else 1]
+    # pitch character + the over profile both bite harder on attacking intent
+    m_w = (static.get("W", 1.0) * dyn.get("W", 1.0) * fam_w * OVER_PROFILE["W"][oi]) ** sens
+    m_4 = (static.get(4, 1.0) * dyn.get(4, 1.0) * OVER_PROFILE[4][oi]) ** sens
+    m_6 = (static.get(6, 1.0) * dyn.get(6, 1.0) * OVER_PROFILE[6][oi]) ** sens
+
+    mom_w, mom_4, mom_6 = _momentum_factors(ball_in_over, over_runs)
+    col_w, col_4, col_6 = _collapse_factors(recent_wickets, balls_since_wicket, phase)
+    bnd_scale = MINDSET_BND_SCALE.get(mindset, 1.0)
+    surplus = _resource_surplus(balls_remaining, wickets_in_hand)
+    tail_s = _tail_strength(batter_level)
+    lau_w, lau_b = _launch_factors(over, surplus, tail_s)
+    m_w *= (_settle_wicket_factor(balls) * mom_w * col_w * lau_w
+            * _drought_factor(balls_since_wicket, balls_remaining, tail_s, wickets_in_hand))
+    m_4 *= mom_4 * col_4 * bnd_scale * lau_b
+    m_6 *= mom_6 * col_6 * bnd_scale * lau_b
+
+    t_w = 1.0
+    single_shift = 0.0
+    if tail_s > 0.0:
+        t_w = 1.0 + (TAIL_INTENT_W.get(mindset, 1.0) - 1.0) * tail_s
+        t_b = 1.0 + (TAIL_INTENT_BND.get(mindset, 1.0) - 1.0) * tail_s
+        single_shift = (TAIL_SINGLE_GIVE.get(mindset, 0.0) - TAIL_SINGLE_TAKE.get(mindset, 0.0)) * tail_s
+        # the tail rules already cap a tail-ender's boundaries, so the pitch /
+        # over profile is felt only partly here
+        m_4 = (m_4 ** (1.0 - 0.6 * tail_s)) * t_b
+        m_6 = (m_6 ** (1.0 - 0.6 * tail_s)) * t_b
+
+    new = {k: p[k] for k in _REALISM_GROUP}
+    tail_floor4 = tail_floor6 = 0.0
+    tail_w_cap = 0.30
+    if tail_s > 0.0 and mindset in TAIL_BND_KEEP:
+        keep = TAIL_BND_KEEP[mindset] * min(1.0, tail_s)
+        tail_floor4, tail_floor6 = keep * p[4], keep * p[6]
+        tail_w_cap = 0.30 - (0.30 - TAIL_W_CAP[mindset]) * min(1.0, tail_s / 0.85)
+    if single_shift:
+        # (tail-enders only) singles <-> the pool the wicket / boundaries share
+        p1 = p[1] * (1.0 + single_shift)
+        mass = 1.0 - p[0] - p1
+        weights[1] = p1 * total
+
+    # --- wickets -----------------------------------------------------------
+    # several wickets in one over stay rare (see OVER_CLUSTER_W)
+    cluster = _over_cluster_factor(wickets_this_over, balls_since_wicket, phase, tail_s)
+    if p["W"] > 0.0 and not free_hit_next_ball:
+        wk = p["W"] * m_w * MINDSET_W_RISK.get(mindset, 1.0) * t_w * cluster
+        gap = int(batter_level or 0) - int(bowler_level or 0)
+        level_scale = 0.72 if gap >= 30 else (0.85 if gap >= 15 else (1.12 if gap <= -15 else 1.0))
+        floor = (WICKET_FLOOR_BY_MINDSET.get(mindset, 0.034)
+                 * PITCH_WICKET_FLOOR_SCALE.get(pitch_name, 1.0)
+                 * PHASE_WICKET_FLOOR_SCALE.get(phase, 1.0) * level_scale * cluster)
+        new["W"] = min(max(wk, floor), tail_w_cap)
+        if tail_floor4 or tail_floor6:
+            # the slog keeps its boundaries: the wicket chance gives way, not them
+            room_w = (mass - (new["WD"] + new["NB"] + new["LB"] + new["BY"])
+                      - TWOS_FLOOR_BY_MINDSET.get(mindset, 0.45) * p[2] - tail_floor4 - tail_floor6)
+            new["W"] = min(new["W"], max(0.0, room_w))
+    if pitch_name == "flat" and not free_hit_next_ball:
+        # the flat pitch's 5% floor holds on every ball of an over that has no
+        # wicket yet; once one has fallen the over-cluster damping applies to it
+        new["W"] = max(new["W"], 0.05 * cluster)
+
+    # --- boundaries --------------------------------------------------------
+    set_batter = balls >= 6 and int(batter_level or 0) >= 52
+    floor4 = floor6 = 0.0
+    if set_batter:
+        f4, f6 = BOUNDARY_FLOOR_BY_MINDSET.get(mindset, (0.034, 0.007))
+        scale = (PITCH_BOUNDARY_FLOOR_SCALE.get(pitch_name, 1.0)
+                 * PHASE_BOUNDARY_FLOOR_SCALE.get(phase, 1.0)
+                 * (0.8 + 0.4 * max(0.0, min(1.0, (int(batter_level or 0) - 40) / 50.0))))
+        floor4, floor6 = f4 * scale, f6 * scale
+    new[4] = max(p[4] * m_4, floor4, tail_floor4)
+    new[6] = max(p[6] * m_6, floor6, tail_floor6)
+
+    # --- twos absorb the difference; dot / single / extras stay as they were -
+    # The wicket chance is decided above and is never traded against the
+    # boundaries: only the 3s / 4s / 6s flex, so a heavy boundary cut can never
+    # leak into extra wickets (or the other way round).
+    fixed = new["WD"] + new["NB"] + new["LB"] + new["BY"]
+    flex_keys = (3, 4, 6)
+    flex = sum(new[k] for k in flex_keys)
+    target2 = mass - fixed - new["W"] - flex
+    lo2, hi2 = TWOS_FLOOR_BY_MINDSET.get(mindset, 0.45) * p[2], TWOS_ABSORB_MAX * p[2]
+    if target2 < lo2:
+        room = mass - fixed - new["W"] - lo2
+        if room >= 0.0:
+            scale = (room / flex) if flex > 0 else 0.0
+            for k in flex_keys:
+                new[k] *= scale
+        else:
+            # even the wicket chance alone leaves no room (extreme edge): trim it
+            for k in flex_keys:
+                new[k] = 0.0
+            new["W"] = max(0.0, mass - fixed - lo2)
+        new[2] = max(0.0, mass - fixed - new["W"] - sum(new[k] for k in flex_keys))
+    elif target2 > hi2 and flex > 0:
+        spare = target2 - hi2
+        for k in flex_keys:
+            new[k] *= 1.0 + spare / flex
+        new[2] = hi2
+    else:
+        new[2] = max(0.0, target2)
+
+    for k in _REALISM_GROUP:
+        weights[k] = new[k] * total
+
+
 def resolve_weights(
     bowler_tactic: str,
     batter_mindset: str,
@@ -1347,12 +1963,23 @@ def resolve_weights(
     free_hit_next_ball: bool = False,
     batting_upgrade_context: dict | None = None,
     bowling_upgrade_context: dict | None = None,
+    recent_wickets: int | None = None,
+    balls_since_wicket: int | None = None,
 ) -> dict:
     """Runs the full 6-layer algorithm and returns final weights, ready
     for a weighted-random pick."""
     mindset = batter_mindset if batter_mindset in BASE_WEIGHTS_BY_MINDSET else "neutral"
     tactic = bowler_tactic if bowler_tactic in BOWLER_TACTICS else "swinging"
     tactic_profile = _tactic_archetype(tactic)
+
+    # Situation derived from what the runtime already passes in.
+    ball_in_over = _ball_in_over(over_number, balls_remaining)
+    required_rpo = _required_rpo(target, total_runs, balls_remaining)
+    runs_needed = None if target is None else max(0, int(target) - int(total_runs or 0))
+    if recent_wickets is None:
+        recent_wickets = _infer_recent_wickets(
+            wickets_this_over, batting_position, wickets_in_hand, batsman_balls_faced,
+        )
 
     weights = dict(BASE_WEIGHTS_BY_MINDSET[mindset])
 
@@ -1406,9 +2033,6 @@ def resolve_weights(
             weights, batter_level, bowler_level, batsman_balls_faced, confidence,
         )
     _apply_tailender_micro(weights, batter_level)
-    _apply_over_run_rarity(
-        weights, over_runs, high_run_overs, very_high_run_overs, over_number, batsman_balls_faced
-    )
     _apply_final_wicket_cap(
         weights, pitch, batter_level, bowler_level, batsman_balls_faced,
         int(wickets_this_over or 0),
@@ -1483,6 +2107,31 @@ def resolve_weights(
     if str(pitch or "even").strip().lower() == "flat" and not free_hit_next_ball:
         _set_probability_floor(weights, "W", 0.05)
 
+    weights = {key: max(0.0, value) for key, value in weights.items()}
+
+    # Realism layer: pitch identity / wear / phase / settling / momentum.
+    # Dot and single probabilities stay exactly as the stack above made them.
+    _apply_realism_layer(
+        weights,
+        pitch=pitch, mindset=mindset, over_number=over_number,
+        batter_level=batter_level, bowler_level=bowler_level,
+        batsman_balls_faced=batsman_balls_faced,
+        bowler_style=bowler_style, bowler_role=bowler_role,
+        ball_in_over=ball_in_over, over_runs=over_runs,
+        wickets_this_over=int(wickets_this_over or 0),
+        recent_wickets=recent_wickets, balls_since_wicket=balls_since_wicket,
+        free_hit_next_ball=free_hit_next_ball,
+        balls_remaining=balls_remaining, wickets_in_hand=wickets_in_hand,
+    )
+
+    # Over-run governor: smooth, required-rate-aware ceiling on a hot over
+    # (replaces the old hard caps that turned the rest of the over into dots).
+    _apply_over_run_rarity(
+        weights, over_runs, high_run_overs, very_high_run_overs, over_number,
+        batsman_balls_faced, mindset=mindset, required_rpo=required_rpo,
+        runs_needed=runs_needed,
+    )
+
     return {key: max(0.0, value) for key, value in weights.items()}
 
 
@@ -1526,7 +2175,9 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
              high_run_overs: int = 0, very_high_run_overs: int = 0,
              free_hit_next_ball: bool = False,
              batting_upgrade_context: dict | None = None,
-             bowling_upgrade_context: dict | None = None):
+             bowling_upgrade_context: dict | None = None,
+             recent_wickets: int | None = None,
+             balls_since_wicket: int | None = None):
     """Returns one sampled outcome code from OUTCOMES."""
     weights = resolve_weights(
         bowler_tactic, batter_mindset, pitch, over_number, batter_level, bowler_level, confidence,
@@ -1539,6 +2190,7 @@ def simulate(bowler_tactic: str, batter_mindset: str, pitch: str, over_number: i
         free_hit_next_ball=free_hit_next_ball,
         batting_upgrade_context=batting_upgrade_context,
         bowling_upgrade_context=bowling_upgrade_context,
+        recent_wickets=recent_wickets, balls_since_wicket=balls_since_wicket,
     )
     values = [weights.get(key, 0.0) for key in OUTCOMES]
     return random.choices(OUTCOMES, weights=values, k=1)[0]
@@ -1565,6 +2217,48 @@ RUN_OUT_CHANCE = 0.015           # share of wickets that turn out to be run-outs
 MAX_RUN_OUTS_PER_INNINGS = 1
 CAUGHT_AND_BOWLED_CHANCE = 0.08  # of caught dismissals, the bowler takes it himself
 
+# How a wicket falls follows the conditions: the surface, the phase, the
+# batting intent and the delivery that was bowled.  These are small relative
+# tilts on top of the base spin / pace weights above - the mix still looks
+# like cricket, it just stops being the same on every pitch.
+_KIND_PITCH_TILT = {
+    "green": {"bowled": 1.10, "lbw": 1.10, "caught": 1.02},        # seam movement hits the stumps
+    "bouncy": {"caught": 1.15, "bowled": 0.85, "lbw": 0.80},       # top edges, bounce over the stumps
+    "hard": {"caught": 1.08, "bowled": 0.96},
+    "flat": {"caught": 1.12, "bowled": 0.88, "lbw": 0.90, "stumped": 0.85},   # lofted shots, few ways past the bat
+    "dusty": {"bowled": 1.15, "lbw": 1.15, "stumped": 1.20, "caught": 0.90},  # turn beats the bat
+    "dry": {"bowled": 1.10, "lbw": 1.12, "stumped": 1.12, "caught": 0.93},
+    "slow": {"bowled": 1.08, "lbw": 1.08, "stumped": 1.10, "caught": 0.95},
+}
+_KIND_PHASE_TILT = {
+    "overs_1_6": {"caught": 1.04, "bowled": 1.06, "lbw": 1.05},    # new ball: edges, swing, pads
+    "overs_7_15": {"lbw": 1.06, "stumped": 1.10, "caught": 0.96},  # spin in the middle
+    "overs_16_20": {"caught": 1.16, "bowled": 1.10, "lbw": 0.82, "stumped": 0.80},  # boundary catches + yorkers
+}
+_KIND_MINDSET_TILT = {
+    "defensive": {"bowled": 1.06, "lbw": 1.18, "caught": 0.82},
+    "rotate": {"lbw": 1.10, "caught": 0.92},
+    "aggressive": {"caught": 1.10, "stumped": 1.08, "lbw": 0.92},
+    "ultra_aggressive": {"caught": 1.18, "bowled": 1.06, "lbw": 0.85, "stumped": 1.12},
+}
+_KIND_TACTIC_TILT = {
+    "swinging": {"bowled": 1.12, "lbw": 1.10},
+    "pace_up": {"caught": 1.05, "bowled": 1.05},
+    "back_of_length": {"caught": 1.12, "lbw": 0.80, "bowled": 0.85},
+    "variation": {"bowled": 1.15, "caught": 1.05},                 # yorkers / slower balls
+    "defensive": {"lbw": 1.10},
+    "off_break": {"bowled": 1.05},
+    "doosra": {"caught": 1.12, "stumped": 1.10},
+    "arm_ball": {"lbw": 1.25, "bowled": 1.10},
+    "carrom_ball": {"stumped": 1.08, "caught": 1.05},
+    "top_spin": {"caught": 1.12},
+    "leg_breaker": {"stumped": 1.10, "bowled": 1.05},
+    "top_spinner": {"caught": 1.12},
+    "slider": {"lbw": 1.25, "bowled": 1.12},
+    "flipper": {"lbw": 1.25, "bowled": 1.15},
+    "googly_ball": {"bowled": 1.15, "stumped": 1.12},
+}
+
 
 def wicket_kind_credits_bowler(kind: str | None) -> bool:
     """Run-outs are not a bowler's wicket; every other mode is."""
@@ -1572,14 +2266,35 @@ def wicket_kind_credits_bowler(kind: str | None) -> bool:
 
 
 def pick_wicket_kind(bowler_style: str | None = None, bowler_role: str | None = None,
-                     run_outs_so_far: int = 0, keeper_available: bool = True) -> str:
-    """Pick how a wicket fell: caught / bowled / lbw / stumped / run_out."""
-    if run_outs_so_far < MAX_RUN_OUTS_PER_INNINGS and random.random() < RUN_OUT_CHANCE:
+                     run_outs_so_far: int = 0, keeper_available: bool = True, *,
+                     pitch: str | None = None, over_number: int | None = None,
+                     tactic: str | None = None, mindset: str | None = None) -> str:
+    """Pick how a wicket fell: caught / bowled / lbw / stumped / run_out.
+
+    The optional pitch / over / tactic / mindset keywords tilt the mix toward
+    what really happens in those conditions (stumpings on turners, bowled on
+    green seamers, caught on flat decks and at the death ...).  Callers that
+    do not pass them get the plain spin / pace mix exactly as before.
+    """
+    phase = phase_key(over_number) if over_number else None
+    run_out_chance = RUN_OUT_CHANCE * (1.5 if phase == "overs_16_20" else 1.0)
+    if run_outs_so_far < MAX_RUN_OUTS_PER_INNINGS and random.random() < run_out_chance:
         return "run_out"
     spin = bowler_family(bowler_style, bowler_role) == "spin"
     weights = dict(WICKET_KIND_WEIGHTS_SPIN if spin else WICKET_KIND_WEIGHTS_PACE)
     if not keeper_available:
         weights.pop("stumped", None)
+    tilts = (
+        _KIND_PITCH_TILT.get(str(pitch or "").strip().lower()),
+        _KIND_PHASE_TILT.get(phase) if phase else None,
+        _KIND_MINDSET_TILT.get(str(mindset or "").strip().lower()),
+        _KIND_TACTIC_TILT.get(str(tactic or "").strip().lower()),
+    )
+    for tilt in tilts:
+        if not tilt:
+            continue
+        for kind in weights:
+            weights[kind] *= tilt.get(kind, 1.0)
     kinds = list(weights)
     return random.choices(kinds, weights=[weights[k] for k in kinds], k=1)[0]
 
@@ -1641,8 +2356,15 @@ def assign_dismissal(session: Any, outcome: Any) -> dict | None:
     run_outs = sum(1 for w in fallen if isinstance(w, dict) and w.get("type") == "run_out")
     kind = getattr(outcome, "wicket_kind", None)
     if not kind or (kind == "run_out" and run_outs >= MAX_RUN_OUTS_PER_INNINGS):
+        score = getattr(getattr(session, "innings", None), "score", None)
+        try:
+            over_now = int(getattr(score, "overs", 0) or 0) + 1
+        except (TypeError, ValueError):
+            over_now = None
         kind = pick_wicket_kind(bowler.get("bowling_hand"), bowler.get("role"), run_outs,
-                                keeper_available=any(_is_keeper(p) for p in xi if isinstance(p, dict)))
+                                keeper_available=any(_is_keeper(p) for p in xi if isinstance(p, dict)),
+                                pitch=getattr(session, "pitch", None), over_number=over_now,
+                                tactic=getattr(session, "current_tactic", None))
     info = build_dismissal(kind, bowler, xi)
     try:
         outcome.wicket_kind = info["kind"]
