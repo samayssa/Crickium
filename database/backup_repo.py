@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import base64
 import gzip
+import io
 import json
+import tempfile
 import zlib
 import uuid
 import re
+from pathlib import Path
 from collections import defaultdict, deque
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -156,7 +159,49 @@ MAX_BACKUP_COMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_BACKUP_DECOMPRESSED_BYTES = 512 * 1024 * 1024
 
 
-def _decode_backup(raw_bytes: bytes) -> dict:
+def _decode_backup_file(file_path: str | Path) -> dict:
+    """Decode a backup from disk with bounded decompression and no RAM download copy."""
+    source_path = Path(file_path)
+    compressed_size = source_path.stat().st_size
+    if compressed_size > MAX_BACKUP_COMPRESSED_BYTES:
+        raise ValueError("Backup file is larger than the 64 MB restore limit.")
+    if compressed_size <= 0:
+        raise ValueError("Backup file is empty.")
+
+    with source_path.open("rb") as probe:
+        is_gzip = probe.read(2) == b"\x1f\x8b"
+
+    # Stage decompressed JSON on the container's temporary filesystem. This
+    # avoids keeping compressed bytes, decompressed bytes, and a decoded string
+    # in RAM at the same time during a restore on a small Railway instance.
+    with tempfile.TemporaryFile(mode="w+b") as decoded_file:
+        opener = gzip.open if is_gzip else open
+        try:
+            with opener(source_path, "rb") as source:
+                decoded_size = 0
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    decoded_size += len(chunk)
+                    if decoded_size > MAX_BACKUP_DECOMPRESSED_BYTES:
+                        raise ValueError("Backup file expands beyond the allowed 512 MB restore limit.")
+                    decoded_file.write(chunk)
+        except (gzip.BadGzipFile, EOFError, zlib.error) as exc:
+            raise ValueError(f"Backup gzip data is damaged or incomplete: {exc}") from exc
+
+        decoded_file.seek(0)
+        with io.TextIOWrapper(decoded_file, encoding="utf-8") as text_file:
+            try:
+                return json.load(text_file, object_hook=_json_object_hook)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Backup is not valid UTF-8 JSON: {exc}") from exc
+
+
+def _decode_backup(raw_bytes: bytes | str | Path) -> dict:
+    if isinstance(raw_bytes, (str, Path)):
+        return _decode_backup_file(raw_bytes)
+
     if len(raw_bytes) > MAX_BACKUP_COMPRESSED_BYTES:
         raise ValueError("Backup file is too large to restore safely.")
     try:
@@ -1513,7 +1558,7 @@ async def _restore_or_merge_rows(
 
 
 async def import_tables(
-    raw_bytes: bytes,
+    raw_bytes: bytes | str | Path,
 ) -> dict[str, int]:
     """
     Restore a backup, with live users/known chats merged instead of replaced.
