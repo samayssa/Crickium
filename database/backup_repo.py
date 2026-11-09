@@ -57,6 +57,16 @@ PROTECTED_MERGE_KEYS = {
     "broadcast_targets": "chat_id",
 }
 
+# During a full restore, user identity labels should remain current when they
+# already exist in the destination database. Every other backed-up users
+# column is authoritative, especially wallet/economy and game progression
+# fields (balance, rubies, sigils, totals, XP, level, team data, etc.).
+# Empty destination identity fields fall back to the backup values.
+_MY_GIFT_BACKUP_TABLES = {
+    "miniapp_gift_campaigns",
+    "miniapp_gift_user_rewards",
+}
+
 FULL_BACKUP_TABLES = [
     "bot_runtime_state",
     "users",
@@ -112,6 +122,8 @@ FULL_BACKUP_TABLES = [
     "giveaways",
     "giveaway_entries",
     "giveaway_deliveries",
+    "miniapp_gift_campaigns",
+    "miniapp_gift_user_rewards",
 ]
 
 assert set(CLEARDATA_BACKUP_TABLES).isdisjoint(NEVER_CLEARED_TABLES), (
@@ -593,6 +605,51 @@ async def _ensure_streamed_backup_columns(
             )
 
 
+def _protected_conflict_clause(
+    table: str,
+    conflict_column: str,
+    columns: list[str],
+) -> str:
+    """Build a safe merge clause for protected registries.
+
+    Existing users keep their latest Telegram identity labels, but every
+    other field present in the backup is restored. Other protected registries
+    (currently broadcast_targets) retain their legacy insert-if-missing rule.
+    """
+    q_table = _json_identifier(table)
+    q_key = _json_identifier(conflict_column)
+
+    if table != "users":
+        return f" ON CONFLICT ({q_key}) DO NOTHING"
+
+    assignments: list[str] = []
+    for column in columns:
+        if column == conflict_column:
+            continue
+        q_column = _json_identifier(column)
+        if column in {"username", "first_name"}:
+            expression = (
+                f"COALESCE(NULLIF({q_table}.{q_column}, ''), "
+                f"EXCLUDED.{q_column})"
+            )
+        elif column == "last_seen_at":
+            expression = (
+                f"COALESCE(GREATEST({q_table}.{q_column}, "
+                f"EXCLUDED.{q_column}), {q_table}.{q_column}, "
+                f"EXCLUDED.{q_column})"
+            )
+        else:
+            expression = f"EXCLUDED.{q_column}"
+        assignments.append(f"{q_column} = {expression}")
+
+    if not assignments:
+        return f" ON CONFLICT ({q_key}) DO NOTHING"
+    return (
+        f" ON CONFLICT ({q_key}) DO UPDATE SET "
+        + ", ".join(assignments)
+    )
+
+
 async def _restore_streamed_rows(
     conn,
     table: str,
@@ -657,8 +714,10 @@ async def _restore_streamed_rows(
                     f'VALUES ({placeholders})'
                 )
                 if conflict_column:
-                    insert_sql += (
-                        f' ON CONFLICT ("{conflict_column}") DO NOTHING'
+                    insert_sql += _protected_conflict_clause(
+                        table,
+                        conflict_column,
+                        first_columns,
                     )
                 insert_sql += ";"
             elif columns != first_columns:
@@ -712,6 +771,50 @@ async def _public_base_tables(
         for row in rows
         if str(row["table_name"]) not in excluded
     ]
+
+
+async def _validate_sync_backup_completeness(
+    conn,
+    backup_type: str,
+    backup_tables: set[str],
+    backup_user_columns: set[str],
+    current_tables: set[str],
+) -> None:
+    """Reject incomplete full backups before any destination rows are deleted."""
+    if backup_type != "sync":
+        return
+
+    if "users" not in backup_tables:
+        raise ValueError(
+            "This full backup is missing the users table, so wallet and user progression data cannot be recovered. "
+            "Restore was stopped before changing the database."
+        )
+
+    expected_gift_tables = _MY_GIFT_BACKUP_TABLES & current_tables
+    missing_gift_tables = sorted(expected_gift_tables - backup_tables)
+    if missing_gift_tables:
+        raise ValueError(
+            "This full backup is missing My Gifts table(s): "
+            + ", ".join(missing_gift_tables)
+            + ". Restore was stopped before changing the database to protect existing gift campaigns and opened/claimed states. "
+            "Use a full /sync backup created after My Gifts was enabled."
+        )
+
+    if "users" in current_tables:
+        rows = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='users';"
+        )
+        current_user_columns = {str(row["column_name"]) for row in rows}
+        required_wallet_columns = {"balance", "rubies", "sigils"} & current_user_columns
+        missing_wallet_columns = sorted(required_wallet_columns - backup_user_columns)
+        if missing_wallet_columns:
+            raise ValueError(
+                "This backup's users table is missing wallet column(s): "
+                + ", ".join(missing_wallet_columns)
+                + ". Restore was stopped before changing the database because these balances cannot be recovered from this file. "
+                "Create/use a full /sync backup containing the complete users table."
+            )
 
 
 async def get_full_backup_tables() -> list[str]:
@@ -1997,11 +2100,11 @@ async def _restore_or_merge_rows(
 
     if conflict_column:
         insert_sql = (
-            f'INSERT INTO "{table}" '
+            f'INSERT INTO {_json_identifier(table)} '
             f'({col_list}) '
-            f'VALUES ({placeholders}) '
-            f'ON CONFLICT ("{conflict_column}") '
-            f'DO NOTHING;'
+            f'VALUES ({placeholders})'
+            + _protected_conflict_clause(table, conflict_column, first_columns)
+            + ";"
         )
 
     else:
@@ -2069,6 +2172,15 @@ async def _import_tables_from_streamed_file(file_path: str | Path) -> dict[str, 
         async with pool.acquire() as conn:
             current_tables = await _public_base_tables(conn)
             current_set = set(current_tables)
+
+            await _validate_sync_backup_completeness(
+                conn,
+                backup_type,
+                original_backup_set,
+                set(table_stats.get("users", {}).get("columns") or []),
+                current_set,
+            )
+
             missing_backup_tables = sorted(original_backup_set - current_set)
             protected = set(PROTECTED_MERGE_KEYS)
 
@@ -2166,6 +2278,68 @@ async def _import_tables_from_streamed_file(file_path: str | Path) -> dict[str, 
                         + ", ".join(created_backup_only)
                     )
 
+                # Fail the transaction if a protected user merge or a gift
+                # table restore did not leave the expected records in place.
+                if "users" in original_backup_set:
+                    restored_users = int(await conn.fetchval('SELECT COUNT(*) FROM "users";') or 0)
+                    expected_users = int(table_stats["users"]["row_count"])
+                    if restored_users < expected_users:
+                        raise RuntimeError(
+                            f"User restore verification failed: expected at least {expected_users} rows, found {restored_users}."
+                        )
+                    print(
+                        f"[backup_repo] verified users: destination={restored_users}, backup_rows={expected_users}"
+                    )
+                    wallet_metrics = ["COUNT(*)::bigint AS users"]
+                    user_columns = metadata_by_table.get("users", {})
+                    if "balance" in user_columns:
+                        wallet_metrics.extend([
+                            "COUNT(*) FILTER (WHERE COALESCE(balance,0)<>0)::bigint AS users_with_coins",
+                            "COALESCE(SUM(balance),0)::numeric AS total_coins",
+                        ])
+                    if "rubies" in user_columns:
+                        wallet_metrics.extend([
+                            "COUNT(*) FILTER (WHERE COALESCE(rubies,0)<>0)::bigint AS users_with_rubies",
+                            "COALESCE(SUM(rubies),0)::numeric AS total_rubies",
+                        ])
+                    if "sigils" in user_columns:
+                        wallet_metrics.append(
+                            "COALESCE(SUM(sigils),0)::numeric AS total_sigils"
+                        )
+                    wallet_totals = await conn.fetchrow(
+                        "SELECT " + ", ".join(wallet_metrics) + " FROM users;"
+                    )
+                    if wallet_totals:
+                        economy_summary = ", ".join(
+                            f"{key}={value}"
+                            for key, value in dict(wallet_totals).items()
+                        )
+                        print(f"[backup_repo] verified economy: {economy_summary}")
+
+                for gift_table in sorted(_MY_GIFT_BACKUP_TABLES & restorable_backup_set):
+                    actual_rows = int(await conn.fetchval(
+                        f"SELECT COUNT(*) FROM {_json_identifier(gift_table)};"
+                    ) or 0)
+                    expected_rows = int(table_stats[gift_table]["row_count"])
+                    if actual_rows != expected_rows:
+                        raise RuntimeError(
+                            f"My Gifts restore verification failed for {gift_table}: "
+                            f"expected {expected_rows} rows, found {actual_rows}."
+                        )
+                    print(
+                        f"[backup_repo] verified {gift_table}: {actual_rows} row(s)"
+                    )
+
+                if "miniapp_gift_user_rewards" in restorable_backup_set:
+                    gift_status_rows = await conn.fetch(
+                        "SELECT status, COUNT(*)::bigint AS n "
+                        "FROM miniapp_gift_user_rewards GROUP BY status ORDER BY status;"
+                    )
+                    print(
+                        "[backup_repo] My Gifts reward states: "
+                        + (", ".join(f"{row['status']}={row['n']}" for row in gift_status_rows) or "no reward rows")
+                    )
+
         # Restore-related caches must be invalidated only after the DB transaction commits.
         try:
             from services.quest_engine import invalidate_period_cache
@@ -2183,12 +2357,13 @@ async def _import_tables_from_streamed_file(file_path: str | Path) -> dict[str, 
 
 async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
     """
-    Restore a backup, with live users/known chats merged instead of replaced.
+    Restore a backup, keeping only live Telegram identity labels current.
 
-    Full /sync backups are authoritative for all non-identity application data:
-    current rows are removed and backup rows are restored. The `users` and
-    `broadcast_targets` registries are exceptions: existing live rows are
-    preserved, while backup-only identity rows are added without duplication.
+    Full /sync backups are authoritative for application state. Existing user
+    rows receive every backed-up field except that an existing non-empty
+    username/first_name and the latest last_seen_at are retained. This is
+    essential because wallet balances and progression live directly on users.
+    Existing broadcast-target identities remain insert-if-missing.
 
     If a backup contains a table absent from the live database, a non-empty
     backup table is reconstructed from its row data so the recovery does not
@@ -2265,6 +2440,16 @@ async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
 
         current_set = set(
             current_tables
+        )
+
+        backup_user_rows = tables.get("users") or []
+        backup_user_columns = set(backup_user_rows[0]) if backup_user_rows else set()
+        await _validate_sync_backup_completeness(
+            conn,
+            backup_type,
+            original_backup_set,
+            backup_user_columns,
+            current_set,
         )
 
         missing_backup_tables = sorted(
@@ -2381,8 +2566,10 @@ async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
                     f'DELETE FROM "{table}";'
                 )
 
-            # Existing live identity records win. Backup-only users/groups
-            # are inserted without overwriting live values.
+            # Restore user economy/progression columns even when the user id
+            # already exists in the destination. Preserve current Telegram
+            # username/first_name when non-empty and latest last_seen_at.
+            # broadcast_targets keep their insert-if-missing behavior.
             for (
                 table,
                 key_column,
