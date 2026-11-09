@@ -79,6 +79,33 @@ class BallContext:
     free_hit_next_ball: bool = False
     batting_upgrade_context: dict[str, Any] | None = None
     bowling_upgrade_context: dict[str, Any] | None = None
+    # Back-to-back wicket context for the tactics engine: wickets that fell
+    # inside the last 12 legal balls, and legal balls bowled since the last
+    # wicket.  None = not supplied (the engine then infers a safe fallback).
+    recent_wickets: int | None = None
+    balls_since_wicket: int | None = None
+
+
+def recent_wicket_snapshot(score: Any, window: int = 12) -> tuple[int, int | None]:
+    """(wickets inside the last `window` legal balls, legal balls since the
+    last wicket) read from a ScoreCard-like object.  (0, None) when nothing
+    has fallen or the card cannot be read - this never raises."""
+    try:
+        legal = int(getattr(score, "legal_balls", 0) or 0)
+        recent = 0
+        since: int | None = None
+        for entry in (getattr(score, "wickets_fallen", None) or []):
+            overs, _, balls = str((entry or {}).get("over") or "").partition(".")
+            fell_on = int(overs) * 6 + int(balls or 0) + 1   # legal ball number of the wicket
+            gap = legal - fell_on
+            if gap < 0:
+                continue
+            if gap < window:
+                recent += 1
+            since = gap if since is None else min(since, gap)
+        return recent, since
+    except Exception:
+        return 0, None
 
 
 @dataclass(slots=True)
