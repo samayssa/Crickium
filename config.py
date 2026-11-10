@@ -26,6 +26,12 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "1766243373") or 0)
 # PostgreSQL Configuration
 # ==========================
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+# Provider-neutral PostgreSQL TLS settings. These let the database provider and
+# its CA certificate be changed through Railway variables without code edits.
+DB_SSL_MODE = os.getenv("DB_SSL_MODE", "").strip().lower()
+DB_CA_CERT_FILE = os.getenv("DB_CA_CERT_FILE", "").strip()
+DB_CA_CERT = os.getenv("DB_CA_CERT", "")
+DB_CA_CERT_B64 = os.getenv("DB_CA_CERT_B64", "").strip()
 COCKROACH_CA_CERT_URL = os.getenv(
     "COCKROACH_CA_CERT_URL",
     "https://cockroachlabs.cloud/clusters/d1cd6a3a-481f-4de7-b833-b5d630463b21/cert",
