@@ -13,12 +13,19 @@ from config import (
     COCKROACH_CA_CERT_FILE,
     COCKROACH_CA_CERT_URL,
     DATABASE_URL,
+    DB_CA_CERT,
+    DB_CA_CERT_B64,
+    DB_CA_CERT_FILE,
+    DB_SSL_MODE,
 )
 
 _pool = None
 _DB_BLOCKED_UNTIL = 0.0
 _DB_BLOCK_REASON = None
 _DB_COOLDOWN_SECONDS = 30.0
+
+_VALID_SSL_MODES = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+_DEFAULT_SSLROOTCERT_VALUES = {"~/.postgresql/root.crt", "/root/.postgresql/root.crt"}
 
 
 def _quota_error(exc: BaseException) -> bool:
@@ -73,6 +80,62 @@ def _remove_query_keys(dsn: str, keys: set[str]) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
+def _resolve_cert_file(raw_path: str, setting_name: str) -> Path:
+    """Resolve absolute or repository-relative CA certificate paths."""
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        project_root = Path(__file__).resolve().parents[1]
+        path = project_root / path
+    path = path.resolve()
+    if not path.is_file():
+        raise RuntimeError(
+            f"{setting_name} points to '{path}', but that certificate file does not exist. "
+            "Check the Railway variable and make sure the file is included in the deployment."
+        )
+    return path
+
+
+def _configured_provider_ca() -> tuple[Path | None, str | None]:
+    """Return the provider-neutral CA as (file path, PEM data), if configured."""
+    if DB_CA_CERT_FILE:
+        return _resolve_cert_file(DB_CA_CERT_FILE, "DB_CA_CERT_FILE"), None
+
+    if DB_CA_CERT_B64:
+        try:
+            pem = base64.b64decode(DB_CA_CERT_B64, validate=True).decode("utf-8")
+        except Exception as exc:
+            raise RuntimeError("DB_CA_CERT_B64 is not valid base64-encoded PEM data.") from exc
+        if "-----BEGIN CERTIFICATE-----" not in pem or "-----END CERTIFICATE-----" not in pem:
+            raise RuntimeError("DB_CA_CERT_B64 does not contain a PEM certificate.")
+        return None, pem
+
+    if DB_CA_CERT:
+        pem = DB_CA_CERT.replace("\\n", "\n")
+        if "-----BEGIN CERTIFICATE-----" not in pem or "-----END CERTIFICATE-----" not in pem:
+            raise RuntimeError("DB_CA_CERT does not contain a PEM certificate.")
+        return None, pem
+
+    return None, None
+
+
+def _ca_pem_for_cockroach() -> str | None:
+    """Legacy CockroachDB-specific fallback, retained for existing deployments."""
+    if COCKROACH_CA_CERT_FILE:
+        path = _resolve_cert_file(COCKROACH_CA_CERT_FILE, "COCKROACH_CA_CERT_FILE")
+        return path.read_text(encoding="utf-8")
+
+    if COCKROACH_CA_CERT_B64:
+        try:
+            return base64.b64decode(COCKROACH_CA_CERT_B64, validate=True).decode("utf-8")
+        except Exception as exc:
+            raise RuntimeError("COCKROACH_CA_CERT_B64 is not valid base64-encoded PEM data.") from exc
+
+    if COCKROACH_CA_CERT:
+        return COCKROACH_CA_CERT.replace("\\n", "\n")
+
+    return None
+
+
 async def _download_cockroach_ca_cert() -> str:
     import urllib.request
 
@@ -90,34 +153,64 @@ async def _download_cockroach_ca_cert() -> str:
     return pem
 
 
-def _ca_pem_for_cockroach() -> str | None:
-    """Return a CA only for CockroachDB connections, never for other providers."""
-    if COCKROACH_CA_CERT_FILE:
-        path = Path(COCKROACH_CA_CERT_FILE).expanduser()
-        if not path.is_file():
-            raise RuntimeError(
-                f"COCKROACH_CA_CERT_FILE points to '{path}', but that file does not exist."
-            )
-        return path.read_text(encoding="utf-8")
+def _make_verified_ssl_context(
+    sslmode: str,
+    ca_file: Path | None = None,
+    ca_pem: str | None = None,
+) -> ssl.SSLContext:
+    """Build a TLS context while retaining system roots plus any custom provider CA."""
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    if ca_file is not None:
+        context.load_verify_locations(cafile=str(ca_file))
+    if ca_pem is not None:
+        context.load_verify_locations(cadata=ca_pem)
 
-    if COCKROACH_CA_CERT_B64:
-        try:
-            return base64.b64decode(COCKROACH_CA_CERT_B64).decode("utf-8")
-        except Exception as exc:
-            raise RuntimeError("COCKROACH_CA_CERT_B64 is not valid base64-encoded PEM data.") from exc
+    context.check_hostname = sslmode == "verify-full"
+    context.verify_mode = ssl.CERT_REQUIRED
 
-    if COCKROACH_CA_CERT:
-        return COCKROACH_CA_CERT.replace("\\n", "\n")
+    # Harmless for standard PostgreSQL SSL negotiation and needed by asyncpg's
+    # direct-TLS support for PostgreSQL 17+ when an explicit SSLContext is used.
+    if hasattr(context, "set_alpn_protocols"):
+        context.set_alpn_protocols(["postgresql"])
+    return context
 
-    return None
+
+def _ssl_connect_kwargs(
+    dsn: str,
+    sslmode: str,
+    ca_file: Path | None = None,
+    ca_pem: str | None = None,
+) -> dict:
+    """Return asyncpg TLS arguments for a libpq-compatible sslmode."""
+    clean_dsn = _remove_query_keys(dsn, {"sslmode", "sslrootcert"})
+
+    if sslmode == "disable":
+        print("[db/connection] WARNING: DB SSL is disabled by configuration.")
+        return {"dsn": clean_dsn, "ssl": False}
+
+    if sslmode in {"allow", "prefer"}:
+        return {"dsn": clean_dsn, "ssl": sslmode}
+
+    if sslmode == "require":
+        # Encrypted transport, but no CA/hostname verification. Prefer verify-full.
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        if hasattr(context, "set_alpn_protocols"):
+            context.set_alpn_protocols(["postgresql"])
+        return {"dsn": clean_dsn, "ssl": context}
+
+    context = _make_verified_ssl_context(sslmode, ca_file=ca_file, ca_pem=ca_pem)
+    return {"dsn": clean_dsn, "ssl": context}
 
 
 async def get_asyncpg_connect_kwargs() -> dict:
-    """Build provider-neutral asyncpg connection arguments.
+    """Build provider-neutral asyncpg arguments using DATABASE_URL + optional CA.
 
-    CockroachDB Cloud gets its custom cluster CA only when the current URL is
-    actually a CockroachDB Cloud URL. Other PostgreSQL providers use their own
-    explicit sslrootcert, or the normal system CA trust store.
+    Provider-specific Cockroach support remains an automatic fallback. All other
+    PostgreSQL providers can supply a CA through DB_CA_CERT_FILE, DB_CA_CERT_B64,
+    DB_CA_CERT, or sslrootcert in DATABASE_URL. No provider-specific code change
+    is needed when switching DATABASE_URL in Railway.
     """
     dsn = DATABASE_URL
     if not dsn:
@@ -125,40 +218,44 @@ async def get_asyncpg_connect_kwargs() -> dict:
 
     parts = urlsplit(dsn)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    sslmode = (query.get("sslmode") or "verify-full").lower()
+    # An explicit Railway setting takes precedence over the URL's sslmode.
+    sslmode = (DB_SSL_MODE or query.get("sslmode") or "verify-full").lower()
+    if sslmode not in _VALID_SSL_MODES:
+        allowed = ", ".join(sorted(_VALID_SSL_MODES))
+        raise RuntimeError(f"Unsupported DB_SSL_MODE/sslmode '{sslmode}'. Use one of: {allowed}.")
+
     embedded_root = query.get("sslrootcert")
-    is_cockroach = _is_cockroach_url(dsn)
+    ca_file: Path | None = None
+    ca_pem: str | None = None
 
-    # Only honor Cockroach-specific CA settings after the URL has been classified
-    # as CockroachDB. This makes swapping DATABASE_URL to another PostgreSQL
-    # provider safe and avoids an unnecessary certificate download.
-    if is_cockroach:
-        ca_pem = _ca_pem_for_cockroach()
+    # Ignore TLS CA material only for modes that explicitly disable verification.
+    needs_verification = sslmode in {"verify-ca", "verify-full"}
+    if needs_verification:
+        # Generic settings work with Supabase, Neon, CockroachDB, and other
+        # PostgreSQL-compatible providers without changing this module.
+        ca_file, ca_pem = _configured_provider_ca()
 
-        if ca_pem is None:
-            ca_pem = await _download_cockroach_ca_cert()
+        if (
+            ca_file is None
+            and ca_pem is None
+            and embedded_root
+            and embedded_root not in _DEFAULT_SSLROOTCERT_VALUES
+        ):
+            ca_file = _resolve_cert_file(embedded_root, "DATABASE_URL sslrootcert")
 
-        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cadata=ca_pem)
-        ctx.check_hostname = sslmode == "verify-full"
-        dsn_without_cert = _remove_query_keys(dsn, {"sslrootcert"})
-        return {"dsn": dsn_without_cert, "ssl": ctx}
+        # Preserve older Cockroach deployments when no generic certificate was set.
+        default_root_values = _DEFAULT_SSLROOTCERT_VALUES | {None, ""}
+        if (
+            ca_file is None
+            and ca_pem is None
+            and embedded_root in default_root_values
+            and _is_cockroach_url(dsn)
+        ):
+            ca_pem = _ca_pem_for_cockroach()
+            if ca_pem is None:
+                ca_pem = await _download_cockroach_ca_cert()
 
-    if embedded_root and embedded_root not in {"~/.postgresql/root.crt", "/root/.postgresql/root.crt"}:
-        path = Path(embedded_root).expanduser()
-        if path.is_file():
-            ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(path))
-            ctx.check_hostname = sslmode == "verify-full"
-            return {"dsn": _remove_query_keys(dsn, {"sslrootcert"}), "ssl": ctx}
-
-    if sslmode in {"verify-full", "verify-ca"}:
-        # Standard managed PostgreSQL providers generally use public CA chains.
-        # Use the runtime trust store rather than any Cockroach-specific CA.
-        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        ctx.check_hostname = sslmode == "verify-full"
-        return {"dsn": _remove_query_keys(dsn, {"sslrootcert"}), "ssl": ctx}
-
-    # Explicit ssl=require remains encrypted but skips server-certificate verification.
-    return {"dsn": dsn}
+    return _ssl_connect_kwargs(dsn, sslmode, ca_file=ca_file, ca_pem=ca_pem)
 
 
 def is_retryable_transaction_error(exc: BaseException) -> bool:
