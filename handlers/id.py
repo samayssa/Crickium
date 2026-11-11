@@ -22,13 +22,47 @@ def _chat_kind(chat: dict) -> str:
     return str(chat.get("type") or "").lower()
 
 
-def _entity_custom_emoji_ids(msg: dict) -> list[str]:
-    ids = []
-    for entity in msg.get("entities") or []:
+# Agar tumhare send_message wrapper me custom emoji alag tag se render hota hai
+# (jaise Pyrogram style <emoji id="...">), to sirf yeh ek line change karna:
+#   "tg-emoji"  -> <tg-emoji emoji-id="ID">X</tg-emoji>   (Bot API style)
+#   "emoji"     -> <emoji id="ID">X</emoji>                (Pyrogram style)
+EMOJI_TAG_STYLE = "tg-emoji"
+
+
+def _utf16_slice(text: str, offset: int, length: int) -> str:
+    # Telegram entity offset/length UTF-16 units me hote hain, Python str index me nahi.
+    data = text.encode("utf-16-le")
+    return data[offset * 2:(offset + length) * 2].decode("utf-16-le", errors="ignore")
+
+
+def _entity_custom_emojis(msg: dict) -> list[tuple[str, str]]:
+    """Return [(custom_emoji_id, fallback_emoji_char), ...] in message order."""
+    text = str(msg.get("text") or msg.get("caption") or "")
+    entities = (msg.get("entities") or []) + (msg.get("caption_entities") or [])
+    found = []
+    for entity in entities:
         value = entity.get("custom_emoji_id")
-        if value:
-            ids.append(str(value))
-    return ids
+        if not value:
+            continue
+        fallback = ""
+        try:
+            fallback = _utf16_slice(text, int(entity.get("offset") or 0), int(entity.get("length") or 0))
+        except Exception:
+            fallback = ""
+        found.append((str(value), fallback.strip() or "⭐"))
+    return found
+
+
+def _entity_custom_emoji_ids(msg: dict) -> list[str]:
+    return [eid for eid, _ in _entity_custom_emojis(msg)]
+
+
+def _render_custom_emoji(eid: str, fallback: str) -> str:
+    safe_id = html.escape(eid, quote=True)
+    safe_fb = html.escape(fallback)
+    if EMOJI_TAG_STYLE == "emoji":
+        return f'<emoji id="{safe_id}">{safe_fb}</emoji>'
+    return f'<tg-emoji emoji-id="{safe_id}">{safe_fb}</tg-emoji>'
 
 
 def _content_type(msg: dict) -> str:
@@ -108,12 +142,15 @@ async def id_command(message):
         content_type = _content_type(reply)
         lines.append(f"📦 Content ➤ {content_type}")
 
-        emoji_ids = _entity_custom_emoji_ids(reply)
+        custom_emojis = _entity_custom_emojis(reply)
+        emoji_ids = [eid for eid, _ in custom_emojis]
         sticker = reply.get("sticker") or {}
         voice = reply.get("voice") or {}
-        if emoji_ids:
-            for eid in emoji_ids:
-                lines.append(f"✨ Custom Emoji ID ➤ <code>{html.escape(eid)}</code>")
+        if custom_emojis:
+            lines.append(f"✨ Custom Emojis ➤ {len(custom_emojis)}")
+            for index, (eid, fallback) in enumerate(custom_emojis, start=1):
+                rendered = _render_custom_emoji(eid, fallback)
+                lines.append(f"{index}. {rendered} ➤ <code>{html.escape(eid)}</code>")
         if sticker:
             if sticker.get("file_unique_id"):
                 lines.append(f"🎟 Sticker File Unique ID ➤ <code>{html.escape(str(sticker['file_unique_id']))}</code>")
