@@ -1,4 +1,4 @@
-"""Automatic full backup every 30 minutes, posted to the player-card channel.
+"""Automatic full backup at a daily minimum cadence, posted to the player-card channel.
 
 The countdown survives restarts: the due time (epoch seconds) is stored in
 bot_runtime_state. After a restart only the *remaining* time is waited (or the
@@ -19,6 +19,7 @@ from app import app
 from config import AUTO_BACKUP_CHANNEL_ID, AUTO_BACKUP_ENABLED, AUTO_BACKUP_INTERVAL_SECONDS
 from database.query import execute, fetchval
 from database.backup_repo import export_tables, BACKUP_FORMAT_VERSION
+from services.backup_policy import effective_auto_backup_interval
 
 STATE_KEY = "auto_backup_next_at"
 _task: asyncio.Task | None = None
@@ -63,7 +64,8 @@ async def send_backup(chat_id: int | None = None, reason: str = "auto") -> int:
 
 
 async def _loop() -> None:
-    interval = max(60, int(AUTO_BACKUP_INTERVAL_SECONDS))
+    interval = effective_auto_backup_interval(AUTO_BACKUP_INTERVAL_SECONDS)
+    print(f"[auto_backup] full database backup cadence: every {interval // 3600} hour(s) (daily minimum)")
     nxt = await _load_next()
     if nxt is None:
         nxt = time.time() + interval
