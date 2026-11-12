@@ -107,6 +107,16 @@ MATCH_SOURCE_TABLES = {
     "PLAYWPL": ("wpl_matches", "match_id"),
     "MATCH": ("match_challenges", "challenge_id"),
 }
+# Columns needed only to label a historical card. Avoid SELECT * here: the source
+# rows also carry XI/state JSONB fields that are not used by the Matches screen.
+MATCH_HISTORY_COLUMNS = {
+    "PLAY": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "created_at"),
+    "PLAYSO": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "created_at"),
+    "PLAYINT": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
+    "PLAYIPL": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
+    "PLAYWPL": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
+    "MATCH": ("challenge_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "format", "created_at"),
+}
 _TERMINAL_MATCH_STATUSES = {"completed", "ended", "finished", "complete", "declined", "abandoned", "expired", "timed_out", "cancelled"}
 
 _CARD_IMAGES = {
@@ -523,8 +533,13 @@ async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
                 rows = await fetch(
                     """
                     SELECT match_id,challenger_id,challenger_name,challenger_username,
-                           opponent_id,opponent_name,opponent_username,status,pitch,format AS match_type,
-                           stadium,innings_no,state,created_at
+                           opponent_id,opponent_name,opponent_username,status,pitch,NULL::text AS match_type,
+                           stadium,innings_no,
+                           state->>'runs' AS _state_runs,
+                           state->>'wickets' AS _state_wickets,
+                           state->>'legal_balls' AS _state_legal_balls,
+                           state->>'target' AS _state_target,
+                           created_at
                     FROM playso_matches
                     WHERE (challenger_id=$1 OR opponent_id=$1)
                       AND LOWER(COALESCE(status,'')) NOT IN
@@ -577,14 +592,26 @@ async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
             item["current_score"] = None
 
             if engine == "PLAYSO":
-                state = _json_value(item.get("state"), {})
-                if isinstance(state, dict) and ("runs" in state or "legal_balls" in state):
-                    balls = max(0, int(state.get("legal_balls") or 0))
-                    item["runs"] = max(0, int(state.get("runs") or 0))
-                    item["wickets"] = max(0, int(state.get("wickets") or 0))
+                # The full JSONB state contains ball-by-ball history and can grow
+                # throughout a match. The active-match card needs only these four
+                # scalar values, selected directly by PostgreSQL above.
+                try:
+                    balls = max(0, int(item.get("_state_legal_balls") or 0))
+                    runs = max(0, int(item.get("_state_runs") or 0))
+                    wickets = max(0, int(item.get("_state_wickets") or 0))
+                    target = item.get("_state_target")
+                    item["target"] = int(target) if target not in (None, "") else None
+                    item["runs"] = runs
+                    item["wickets"] = wickets
                     item["over_text"] = f"{balls // 6}.{balls % 6}"
-                    item["target"] = state.get("target")
-                    item["current_score"] = f"{item['runs']}/{item['wickets']} ({item['over_text']})"
+                    item["current_score"] = f"{runs}/{wickets} ({item['over_text']})"
+                except (TypeError, ValueError):
+                    # Malformed optional score metadata must not hide the match card.
+                    pass
+                item.pop("_state_runs", None)
+                item.pop("_state_wickets", None)
+                item.pop("_state_legal_balls", None)
+                item.pop("_state_target", None)
             else:
                 session = await _runtime_session(engine, item["match_id"])
                 innings = getattr(session, "innings", None) if session else None
@@ -1443,8 +1470,10 @@ async def build_matches_response(viewer: TelegramViewer) -> dict[str, Any]:
     for engine, match_ids in ids_by_engine.items():
         table, id_column = MATCH_SOURCE_TABLES[engine]
         try:
+            columns = MATCH_HISTORY_COLUMNS[engine]
             rows = await fetch(
-                f"SELECT * FROM {table} WHERE {id_column}=ANY($1::bigint[]) AND (challenger_id=$2 OR opponent_id=$2);",
+                f"SELECT {', '.join(columns)} FROM {table} "
+                f"WHERE {id_column}=ANY($1::bigint[]) AND (challenger_id=$2 OR opponent_id=$2);",
                 sorted(match_ids), int(viewer.id),
             )
             for source_row in rows:
