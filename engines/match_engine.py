@@ -35,7 +35,7 @@ from engines.probability_engine import (
 from engines.shot_engine import infer_bowler_type, shot_category, validate_shot_choice
 from engines.score_engine import ScoreCard, create_score_state, update_score_from_ball, ball_summary, innings_finished, format_over
 from engines.innings_engine import BatterSlot, InningsState, create_innings, register_ball as _register_innings_ball, next_innings as _advance_innings, set_target as _set_target
-from engines.commentary_engine import describe_ball_result, describe_outcome, stage_banner, over_summary, innings_summary, match_result_message
+from engines.commentary_studio import match_ball_commentary, simple_ball_line, stage_banner, over_summary, innings_summary, match_result_message
 from engines.state_engine import GameState, create_game, get_game, update_game, clear_game
 
 DELIVERY_TYPES = [
@@ -6048,16 +6048,7 @@ class MatchEngine:
             "wicket_kind": dismissal["kind"] if dismissal else None,
             "dismissal": dismissal["text"] if dismissal else None,
             "score": ball_summary(session.score),
-            "commentary": describe_ball_result({
-                "outcome": outcome,
-                "runs": runs_map.get(outcome, 0),
-                "batter_name": self.current_batsman_name(session),
-                "bowler_name": self.current_bowler_name(session),
-                "shot_name": session.selected_shot,
-                "delivery_name": session.selected_delivery,
-                "line": session.selected_line,
-                "length": session.selected_length,
-            }),
+            "commentary": self._studio_line(session, outcome, runs_map.get(outcome, 0), batter_before, bowler_before, dismissal),
             "next_bowler": result_bowler,
             "batter_name": batter_before.get("name") or self.current_batsman_name(session),
             "batter_id": batter_before.get("player_id"),
@@ -6098,6 +6089,16 @@ class MatchEngine:
             session.history.append(result)
         session.commentary.append(result["commentary"])
         return result
+
+    def _studio_line(self, session: MatchSession, outcome: str, runs: int, batter_before: dict, bowler_before: dict, dismissal: dict | None) -> str:
+        """Real-commentator line for the ball (never lets commentary break a delivery)."""
+        name = batter_before.get("name") or self.current_batsman_name(session)
+        try:
+            return match_ball_commentary(session, outcome, runs, name, bowler_before, dismissal, session.selected_shot or "",
+                                         session.selected_delivery or "", list(session.meta.get("bowling_squad") or session.bowling_order or [])[:11])
+        except Exception as exc:
+            print(f"[commentary] studio failed, simple line used: {exc!r}")
+            return simple_ball_line(str(outcome), str(name), str(bowler_before.get("name") or ""), runs)
 
     def is_match_complete(self, session: MatchSession) -> bool:
         target = session.innings.target if session.innings else None

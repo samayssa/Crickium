@@ -10,7 +10,7 @@ from engines.innings_engine import BatterSlot, InningsState, create_innings, reg
 from engines.lineup_engine import bowling_candidates
 from engines.play_engine import playing_xi
 from engines.strategy_engine import resolve as resolve_strategy
-from engines.commentary_play_engine import get_commentary
+from engines.commentary_studio import play_ball_commentary, simple_ball_line
 from utils.PremiumEmoji import ipl_team_emoji_html, wicket_out_emoji_html
 from services.milestones import schedule_milestone_notifications
 from services.live_runtime_controls import consume_planned_batsman_after_wicket, apply_entry_role_after_wicket, scheduled_bowler_targets, ordinal, current_over_number, scheduled_bowler_player, impact_player_name_html
@@ -537,17 +537,11 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     # never interrupt scoring or the active game simulation.
     schedule_milestone_notifications(session, outcome, striker_before, partnership_id=partnership_id_before_ball, partnership_players=partnership_players_before_ball)
 
-    commentary = get_commentary(
-        outcome.outcome,
-        over_number=int(context.over_number),
-        balls_faced=int(context.batsman_balls_faced),
-        result={
-            "outcome": outcome.outcome,
-            "runs": int(outcome.runs or 0),
-            "batter_name": striker_before.name if striker_before else None,
-            "bowler_name": (session.current_bowler or {}).get("name"),
-        },
-    )
+    try:
+        commentary = play_ball_commentary(session, context, outcome, striker_before, partnership_players_before_ball, mode="ipl")
+    except Exception as exc:
+        print(f"[commentary] studio failed, simple line used: {exc!r}")
+        commentary = simple_ball_line("wicket" if outcome.wicket else str(outcome.outcome), str(getattr(striker_before, "name", "")), str((session.current_bowler or {}).get("name", "")), int(outcome.runs or 0))
     try:
         from services.match_analysis.collector import add_runtime_commentary
         add_runtime_commentary(session, commentary)
