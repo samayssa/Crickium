@@ -45,8 +45,8 @@ async def send_team_selection(chat_id, match):
         if old_message_id <= 0:
             raise
         try:
-            # The adapter routes styled keyboards through the Bot API, avoiding
-            # the MTProto-vs-Bot-API edit mismatch that can stall acceptance.
+                                                                               
+                                                                             
             await app.edit_message_text(
                 chat_id, old_message_id, team_text,
                 parse_mode='HTML', reply_markup=markup,
@@ -67,8 +67,8 @@ async def send_team_selection(chat_id, match):
         await set_message_id(m['match_id'], message_id)
     except Exception as db_exc:
         print(f"[playipl] failed to persist team-selection message_id for match_id={m['match_id']}: {db_exc!r}")
-        # Avoid leaving a detached duplicate message if the pointer cannot be
-        # persisted. Fall back to editing the old message in place.
+                                                                             
+                                                                   
         try:
             await app.delete_message(chat_id, message_id)
         except Exception as delete_exc:
@@ -92,7 +92,7 @@ async def playipl_team(callback_query):
     _,mid_s,code=callback_query['data'].split(':'); mid=int(mid_s); uid=int(callback_query['from']['id']); match=await get_match(mid)
     if not match or match['status'] not in {'accepted','team_selection'}:
         await app.answer_callback_query(callback_query['id'],'Team selection is no longer active.',show_alert=True); return
-    # challenger always selects first
+                                     
     if not match.get('challenger_team_code') and uid!=int(match['challenger_id']):
         await app.answer_callback_query(callback_query['id'],'The challenger must choose the first team.',show_alert=True); return
     if uid not in {int(match['challenger_id']),int(match['opponent_id'])}:
@@ -101,7 +101,7 @@ async def playipl_team(callback_query):
         await app.answer_callback_query(callback_query['id'],'Your team is already selected.',show_alert=True); return
     if uid==int(match['opponent_id']) and match.get('opponent_team_code'):
         await app.answer_callback_query(callback_query['id'],'Your team is already selected.',show_alert=True); return
-    # Teams cannot be duplicated.
+                                 
     other=match.get('opponent_team_code') if uid==int(match['challenger_id']) else match.get('challenger_team_code')
     if other==code:
         await app.answer_callback_query(callback_query['id'],'That IPL franchise is already selected.',show_alert=True); return

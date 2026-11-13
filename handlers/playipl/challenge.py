@@ -9,6 +9,7 @@ from database.playipl_repo import create_match,get_match,set_message_id,update_s
 from database.playwpl_repo import get_active_match_in_chat as get_playwpl_match_in_chat, get_active_match_for_user as get_playwpl_match_for_user
 from buttons.playipl_buttons import challenge_keyboard
 from utils.mentions import mention, mention_html
+from utils.challenge_start_gate import require_started_user
 from utils.timers import start_timer, cancel_timer
 from engines.match_engine import challenge_expired_message
 from .teams import send_team_selection
@@ -70,11 +71,14 @@ async def playipl_command(message):
         if kind=='username': row=await fetchrow('SELECT user_id, username, first_name FROM users WHERE LOWER(username)=LOWER($1) LIMIT 1;',val)
         else: row=await fetchrow('SELECT user_id, username, first_name FROM users WHERE user_id=$1;',val)
         if not row:
-            await app.send_message(chat_id,'<b>⚠️ I could not find that user. Ask them to use the bot first.</b>',parse_mode='HTML'); return
+            await require_started_user(chat_id, int(val) if kind == 'id' else None, str(val) if kind == 'username' else None, str(val))
+            return
         target=(int(row['user_id']),row['username'],row['first_name'])
     opponent_id, opponent_username, opponent_name = target
     if opponent_id==challenger_id:
         await app.send_message(chat_id,"<b>⚠️ You can't challenge yourself!</b>",parse_mode='HTML'); return
+    if not await require_started_user(chat_id, opponent_id, opponent_username, opponent_name):
+        return
     if await get_active_match_for_user(opponent_id):
         om=mention_html(opponent_id,opponent_username,opponent_name)
         await app.send_message(chat_id,f'<b>⚠️ {om} is already in another game.</b>',parse_mode='HTML'); return
@@ -130,11 +134,11 @@ async def playipl_accept(callback_query):
           "<blockquote><b>🏏 Indian Premier League\n🌍 Franchise Squads</b></blockquote>\n\n"
           "✅ <b>Challenge Accepted!</b>\n\nGet ready to choose your IPL franchise. 🏏🔥\n\n"
           "<b>╰━━━━━━━━━━━━━━━━━━╯</b>")
-    # Publish the next stage first.  The challenge message was originally
-    # sent through the Bot API because it contains styled buttons; editing it
-    # through the MTProto client can fail on some Kurigram/Telegram paths.
-    # A cleanup failure must never prevent the newly published team-selection
-    # stage from appearing.
+                                                                         
+                                                                             
+                                                                          
+                                                                             
+                           
     await send_team_selection(msg['chat']['id'], match)
     try:
         await app.edit_message_text(

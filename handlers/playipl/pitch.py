@@ -20,7 +20,7 @@ async def playipl_pitch(callback_query):
     await asyncio.sleep(1); await send_toss_call(msg['chat']['id'],match)
 
 async def send_pitch_selection(chat_id,match):
-    # same pitch options as /play, but isolated callbacks
+                                                         
     a=f"{team_label(match['challenger_team_code'])}"
     text=(f"<b>╭━━〔 🏟️ PITCH SELECT 〕━━╮\n\n👤 {a}\n\n"
           "The match is set. Now choose your battlefield. 🏏\n\nSelect the pitch you want to play on.\nYour choice could shape the entire match. ⚡\n\n╰━━━━━━━━━━━━━━━━━━━━━━╯</b>")

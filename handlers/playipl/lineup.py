@@ -68,7 +68,7 @@ async def send_build_messages(chat_id,match):
             await app.send_message(chat_id, f'<b>⚠️ {team_label(code)} ({team_short(code)}) does not have at least 11 uploaded players.</b>', parse_mode='HTML')
             return
         sent=await app.send_message(chat_id,_build_text(code,players,[]),parse_mode='HTML',reply_markup=_xi_keyboard(match['match_id'],code,players,[],is_ch));
-        # Separate build messages are retained; store latest one for cleanup only.
+                                                                                  
         if is_ch:
             await app.send_message(chat_id,'<b>🏏 Select your 11 players.</b>',parse_mode='HTML')
 
@@ -133,8 +133,8 @@ async def playipl_xi(callback_query):
         await app.answer_callback_query(callback_query['id'],'You can select maximum 11 players.',show_alert=True); return
     else:
         selected.append(pid); msg='Player selected.'
-    # Answer immediately so Telegram clears the button spinner at once; the
-    # short DB write and message edit then happen without blocking the UI.
+                                                                           
+                                                                          
     await app.answer_callback_query(callback_query['id'],msg)
     await set_xi(mid,uid,selected,is_challenger=is_ch)
     await app.edit_message_text(callback_query['message']['chat']['id'],callback_query['message']['message_id'],_build_text(code,players,selected),parse_mode='HTML',reply_markup=_xi_keyboard(mid,code,players,selected,is_ch))
