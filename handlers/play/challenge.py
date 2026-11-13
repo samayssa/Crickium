@@ -16,6 +16,7 @@ from database.playwpl_repo import get_active_match_in_chat as get_playwpl_match_
 from utils.mentions import mention_html
 from buttons.play_buttons import challenge_keyboard
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
+from utils.challenge_start_gate import require_started_user
 from utils.timers import start_timer, cancel_timer
 from engines.match_engine import challenge_expired_message
 
@@ -82,7 +83,7 @@ async def play_command(message):
         )
         return
 
-    # --- Rule 1: only one match can be live in a group at a time. ---
+                                                                      
     active_in_chat = await get_active_match_in_chat(chat_id)
     if active_in_chat:
         await app.send_message(
@@ -104,7 +105,7 @@ async def play_command(message):
         await app.send_message(chat_id, f"<b>⚠️ A PlayInt game is already going on in {html.escape(str(chat_title))}. Finish it before starting a new game.</b>", parse_mode="HTML")
         return
 
-    # --- Rule 2: the person sending /play can't already be mid-game. ---
+                                                                         
     active_for_challenger = await get_active_match_for_user(challenger_id)
     if active_for_challenger:
         await app.send_message(
@@ -123,7 +124,7 @@ async def play_command(message):
         await app.send_message(chat_id, "<b>⚠️ You're already in a PlayInt game. Please complete it before starting a new game.</b>", parse_mode="HTML")
         return
 
-    # --- Resolve the opponent: reply-to-message OR /play @username. ---
+                                                                        
     reply_to = message.get("reply_to_message")
     opponent = (reply_to or {}).get("from")
 
@@ -153,18 +154,11 @@ async def play_command(message):
             return
 
         row = await fetchrow(
-            "SELECT user_id, username, first_name FROM users WHERE username = $1;",
+            "SELECT user_id, username, first_name FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;",
             username_arg,
         )
         if not row:
-            await app.send_message(
-                chat_id,
-                (
-                    f"<b>⚠️ I don't have @{html.escape(username_arg)} on record yet.\n"
-                    "Ask them to send a message in this group first, or reply to their message with /play instead.</b>"
-                ),
-                parse_mode="HTML",
-            )
+            await require_started_user(chat_id, None, username_arg, username_arg)
             return
 
         opponent_id = row["user_id"]
@@ -173,6 +167,9 @@ async def play_command(message):
 
     if int(opponent_id) == int(challenger_id):
         await app.send_message(chat_id, "<b>⚠️ You can't challenge yourself!</b>", parse_mode="HTML")
+        return
+
+    if not await require_started_user(chat_id, int(opponent_id), opponent_username, opponent_name):
         return
 
     if not await has_minimum_team(int(opponent_id)):
@@ -204,7 +201,7 @@ async def play_command(message):
         await app.send_message(chat_id, f"<b>⚠️ {opponent_mention} is already in another game. Try again once that game finishes.</b>", parse_mode="HTML")
         return
 
-    # The opponent can't be mid-game elsewhere either.
+                                                      
     active_for_opponent = await get_active_match_for_user(opponent_id)
     if active_for_opponent:
         opponent_mention = mention_html(opponent_id, opponent_username, opponent_name)
@@ -303,8 +300,8 @@ async def on_play_accept(callback_query):
     cancel_timer("challenge", match_id)
     await app.answer_callback_query(callback_query["id"], "Challenge accepted!")
 
-    # The original challenge message is deleted; a fresh confirmation
-    # message takes its place instead of just editing it in place.
+                                                                     
+                                                                  
     try:
         await app.delete_message(chat_id, message_id)
     except Exception as exc:

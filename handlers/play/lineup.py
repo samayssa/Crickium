@@ -16,11 +16,11 @@ from utils.background import spawn
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
-# Guards against both players tapping "Start Match" at (almost) the
-# same moment - without this, the second tap re-ran the whole start
-# sequence (including a duplicate identical edit that Telegram
-# rejects as MESSAGE_NOT_MODIFIED, crashing that callback) before
-# engines.play_runtime even had a session registered to check against.
+                                                                   
+                                                                   
+                                                              
+                                                                 
+                                                                      
 _STARTING: set[int] = set()
 
 

@@ -52,11 +52,11 @@ from services.super_over_bridge import build_draw_result_text, start_decider
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
-# Minimum gap between edits to the SAME live-scorecard message during
-# ball-by-ball simulation. Telegram throttles rapid edits to one
-# message (~1/sec in practice, stricter under load); app.py already
-# retries on FloodWait, but keeping a safe pace here means we hit that
-# limit far less often in the first place.
+                                                                     
+                                                                
+                                                                   
+                                                                      
+                                          
 BALL_EDIT_DELAY = 1.6
 
 
@@ -159,7 +159,7 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
         bowling_team_id = toss_winner_id
         batting_team_id = opponent_id if bowling_team_id == challenger_id else challenger_id
 
-    # Auction tournament on the Custom engine: the auctioned squads (and stored best XIs) replace the players' own cards.
+                                                                                                                         
     tour_squads = None
     try:
         from services.tournament_engines import custom_squads
@@ -195,7 +195,7 @@ async def begin_match_flow(chat_id: int, match: dict[str, Any]) -> None:
     if tour_squads:
         session.full_squads = {int(batting_team_id): [dict(p) for p in tour_squads[batting_team_id]["squad"]],
                                int(bowling_team_id): [dict(p) for p in tour_squads[bowling_team_id]["squad"]]}
-        session.upgrade_snapshot = {}      # auctioned cards carry no personal upgrades
+        session.upgrade_snapshot = {}                                                  
     else:
         try:
             session.full_squads = {
@@ -572,9 +572,9 @@ async def on_play_impact_confirm_in(callback_query):
     st["used"]=True; context=st.get("context") or "runtime"
     await app.answer_callback_query(callback_query["id"], "Impact Player confirmed!")
 
-    # The batting side needs a position in the current innings. During innings 1
-    # the bowling side also needs a future batting position because it bats next.
-    # During innings 2 the bowling side has no later innings, so it returns directly.
+                                                                                
+                                                                                 
+                                                                                     
     if impact_batting_position_allowed(session, owner):
         st["stage"]="batpos"
         st["context"]=context
@@ -778,7 +778,7 @@ async def _record_player_squad_stats(session, innings_1: dict, innings_2: dict) 
     IDs, so one special player can no longer roll back the whole match ledger.
     """
     if (session.match or {}).get("_tour_auction"):
-        return      # auctioned cards are not the players' own cards
+        return                                                      
     try:
         await record_session_player_stats(session)
     except Exception as exc:
@@ -795,7 +795,7 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
 
     try:
         if winner_id is None:
-            # Tied match: both players get the tie XP, no win/loss recorded.
+                                                                            
             await add_match_xp(challenger_id, TIE_XP)
             await add_match_xp(opponent_id, TIE_XP)
             await record_match_result(challenger_id, won=None)
@@ -806,8 +806,8 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
     except Exception as exc:
         print(f"[play] Failed to award match XP/stats for match_id={session.match_id}: {exc!r}")
 
-    # H2H persistence is independent from rewards/stats. A reward failure must
-    # never prevent a finished match from appearing in head-to-head history.
+                                                                              
+                                                                            
     try:
         await record_h2h_result(
             int(session.match_id),
@@ -820,9 +820,9 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
 
 
 async def _finish_over_and_prompt_next(session) -> None:
-    # The live scorecard message itself becomes the short over summary.
-    # Keep it visible for exactly a brief moment, then remove it and create
-    # the fresh live scorecard with the next bowler choices.
+                                                                       
+                                                                           
+                                                            
     summary = over_complete_text(session)
     try:
         await app.edit_message_text(
@@ -866,7 +866,7 @@ async def _finish_over_and_prompt_next(session) -> None:
                 session.live_message_id = live["message_id"]
             return
 
-        # Second (or later) innings just finished - the match is over.
+                                                                      
         innings_2_snapshot = snapshot_innings(session)
         innings_1_snapshot = session.innings_history[0] if session.innings_history else innings_2_snapshot
         winner_id, margin = match_winner(innings_1_snapshot, innings_2_snapshot)
@@ -949,9 +949,9 @@ async def _finish_over_and_prompt_next(session) -> None:
         clear_session(session.match_id)
         return
 
-    # Carry the completed over forward into the next live card so the
-    # newly displayed bowler-selection message keeps the previous over
-    # timeline and its six-ball commentary instead of resetting to "-".
+                                                                     
+                                                                      
+                                                                       
     session.last_over = list(session.this_over)
     session.last_over_commentary = list(session.over_commentary)
 
@@ -1019,8 +1019,8 @@ async def on_play_strategy(callback_query):
     session.stage = "over_in_progress"
     await app.answer_callback_query(callback_query["id"], f"{strategy.upper()} selected!")
 
-    # Remove the approach buttons immediately, then simulate the whole over
-    # internally. No ball-by-ball scorecard edits are shown to the users.
+                                                                           
+                                                                         
     await _safe_edit_scorecard(session)
 
     legal_balls_before = session.innings.score.legal_balls
