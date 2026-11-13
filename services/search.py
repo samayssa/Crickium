@@ -73,8 +73,8 @@ def _search_image_url(query: str) -> str | None:
         if _looks_like_image_url(url):
             return url
 
-    # No result obviously ends in an image extension - fall back to the
-    # first result's URL anyway and let Telegram's own fetcher try it.
+                                                                       
+                                                                      
     fallback_url = results[0].get("url")
     if fallback_url:
         print(f"[services/search] No obvious image URL for {query!r}, trying first result as a fallback: {fallback_url}")

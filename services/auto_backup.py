@@ -77,7 +77,7 @@ async def _loop() -> None:
         wait = nxt - time.time()
         if wait > 0:
             await asyncio.sleep(wait)
-        # Persist the next due time BEFORE the (slow) export so a crash loop can never spam the channel.
+                                                                                                        
         nxt = time.time() + interval
         try:
             await _save_next(nxt)

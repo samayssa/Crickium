@@ -37,7 +37,7 @@ import services.miniapp_game_ai as ai
 from services.miniapp_game_squads import can_bowl
 
 N_SIMS = 420
-_MAX_DELIVERIES = 330            # per innings, incl. extras
+_MAX_DELIVERIES = 330                                       
 _CELLS: dict[tuple, tuple] = {}
 _MIND_CUM: dict[tuple, list[float]] = {}
 _INTENT: dict[tuple, float] = {}
@@ -57,12 +57,12 @@ def _uniforms() -> list[list[float]]:
     return _UNI
 
 
-# ---------------------------------------------------------------------------
-# cells
-# ---------------------------------------------------------------------------
+                                                                             
+       
+                                                                             
 _EQ_REP = {1: 1, 2: 2, 3: 2, 4: 5, 5: 5, 6: 5, 7: 8, 8: 8, 9: 8, 10: 8,
            11: 13, 12: 13, 13: 13, 14: 13, 15: 13, 16: 16, 17: 16, 18: 18, 19: 18, 20: 20}
-_BF_REP = ((5, 0, 0.0), (15, 8, 12.0), (30, 22, 32.0), (10 ** 6, 40, 52.0))   # (upper, balls, confidence)
+_BF_REP = ((5, 0, 0.0), (15, 8, 12.0), (30, 22, 32.0), (10 ** 6, 40, 52.0))                               
 _POS_REP = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11}
 
 
@@ -187,7 +187,7 @@ def _cell(cfg: tuple, side: str, eq: int, bat_lvl: int, bowl_lvl: int, bf_b: int
             probs[(mi, ti)] = vec
             runs = sum(v * (o if isinstance(o, int) else 1.0) for v, o in zip(vec, _OUT) if o != "W")
             ev[(mi, ti)] = (runs, vec[_OUT.index("W")])
-    # bowling side: tactic weights against a uniform guess of the batter's approach
+                                                                                   
     kb = _knobs(bowl_skill)
     u_t = []
     for ti in range(len(tactics)):
@@ -213,8 +213,8 @@ def _cell(cfg: tuple, side: str, eq: int, bat_lvl: int, bowl_lvl: int, bf_b: int
             pw += w * ev[(mi, ti)][1]
         vecs.append(acc)
         utils.append(runs - pw * cost)
-    # cums[scale_idx][mindset]: the engine's "over-run rarity" shrinks the
-    # scoring mass once the current over is already expensive
+                                                                          
+                                                             
     cums_by_scale = [None] * len(_OVER_SCALES)
     cums_by_scale[0] = _to_cums(vecs, 1.0)
     result = (key, cums_by_scale, tuple(utils), bat_skill, vecs)
@@ -292,9 +292,9 @@ def _mind_cum(cell: tuple, intent: float, ratio: float | None) -> list[float]:
     return cum
 
 
-# ---------------------------------------------------------------------------
-# rollouts
-# ---------------------------------------------------------------------------
+                                                                             
+          
+                                                                             
 def _attack_levels(xi: list[dict], overs: int, quota: int, start_over: int = 1) -> tuple[list[int], str]:
     """Bowling level for each over from `start_over` on, cycling the best
     bowlers the way a captain would, plus the dominant family."""
@@ -384,9 +384,9 @@ def _rollout(cfg: tuple, side: str, overs: int, order_lvls: list[int], attack: l
     return runs, wkts, d
 
 
-# ---------------------------------------------------------------------------
-# game helpers
-# ---------------------------------------------------------------------------
+                                                                             
+              
+                                                                             
 def _team_arrays(g: dict, side: str) -> tuple[list[int], list[dict]]:
     xi = g["teams"][side]["xi"]
     return [int(p["bat"]) for p in xi], xi
@@ -433,7 +433,7 @@ def _chase_curve(g: dict, chaser: str) -> list[tuple[int, float]]:
             if r >= t:
                 wins += 1
         pts.append((t, (wins + 0.5) / (sims + 1.0)))
-    # monotone (higher target -> lower chance) and smooth
+                                                         
     out = []
     best = 1.0
     for t, p in pts:
@@ -504,7 +504,7 @@ def _chase_wins(g: dict, inn: dict, n: int) -> int:
             wins += 1
         elif r == inn["target"] - 1:
             ties += 1
-    return wins * 2 + ties        # ties count half a win each (x2 scale)
+    return wins * 2 + ties                                               
 
 
 def estimate(g: dict, n: int = N_SIMS) -> dict:
@@ -531,7 +531,7 @@ def estimate(g: dict, n: int = N_SIMS) -> dict:
     proj = None
     rng_ = None
     if inn is not None and inn["idx"] == 1:
-        # second innings: direct rollouts from the live state
+                                                             
         wins2 = _chase_wins(g, inn, n)
         p_chaser = wins2 / (2.0 * n)
         user = p_chaser if inn["bat"] == "user" else 1.0 - p_chaser
@@ -549,7 +549,7 @@ def estimate(g: dict, n: int = N_SIMS) -> dict:
         proj = int(round(sum(totals) / len(totals)))
         rng_ = [totals[int(len(totals) * 0.12)], totals[int(len(totals) * 0.88) - 1]]
     else:
-        # before the toss / before the first ball: average both batting orders
+                                                                              
         probs = []
         for first, chaser in (("user", "ai"), ("ai", "user")):
             totals = _innings_samples(g, first, None, max(60, n // 2))
@@ -581,6 +581,6 @@ def record_point(g: dict, est: dict) -> None:
     else:
         series.append([x, est["user"]])
     if len(series) > 300:
-        # thin the older half, keep the recent detail
+                                                     
         head = series[: len(series) - 150]
         wp["series"] = head[::2] + series[len(series) - 150:]

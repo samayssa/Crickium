@@ -123,7 +123,7 @@ def shares(prize: dict, holders: dict[str, int | None]) -> dict[int, dict[str, A
         e["coins"] += c
         e["rubies"] += r
         e["roles"].append(role)
-    if champ:    # rounding leftovers
+    if champ:                        
         e = out.setdefault(int(champ), {"coins": 0, "rubies": 0, "roles": ["champion"]})
         e["coins"] += coins - given_c
         e["rubies"] += rubies - given_r
@@ -276,7 +276,7 @@ async def payout(tid: int) -> dict[str, Any] | None:
 
     holders: dict[str, int | None] = {"champion": t.get("champion_user_id") or owner(t.get("champion_team_no")),
                                       "runner_up": t.get("runner_up_user_id") or owner(t.get("runner_up_team_no"))}
-    # 3rd / 4th: the loser of Qualifier 2 / the Eliminator; otherwise the next teams of the league table
+                                                                                                        
     from services import tournament_core as tc
     fixtures = await tr.fixtures(tid)
 

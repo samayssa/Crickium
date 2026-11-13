@@ -94,7 +94,7 @@ async def _start_decider(
     innings_1: dict,
     innings_2: dict,
 ) -> int:
-    try:   # the tied original match must not time out while its Super Over is being played
+    try:                                                                                   
         from utils.game_inactivity import cancel_match
         cancel_match(str(origin_engine).upper(), int(origin_match_id))
     except Exception as exc:
@@ -143,7 +143,7 @@ async def _start_decider(
     try:
         await start_setup(chat_id, dict(fresh), 1)
     except Exception:
-        # do not leave an orphan live decider behind
+                                                    
         await set_state(int(decider["match_id"]), source_state, status="ended")
         raise
     return int(decider["match_id"])
@@ -309,9 +309,9 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
         return
     session = await _load_origin_session(origin_engine, origin_match_id)
 
-    # The DB row is authoritative for "already finished?" (double finalisation guard); the session (when it
-    # still exists in memory) supplies the richer live data. After a bot restart there is no session: the
-    # snapshots stored in the decider state are enough to report and close the match.
+                                                                                                           
+                                                                                                         
+                                                                                     
     row = await _origin_row(origin_engine, origin_match_id)
     if row and str(row.get("status") or "") in _TERMINAL:
         _clear_origin_session(origin_engine, origin_match_id)
@@ -334,8 +334,8 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
     loser_username, loser_name = _user_fields(origin_match, loser_id)
     final_text = ""
 
-    # Keep the original match's result text structure (20-over highlights/POTM) with the headline rewritten to
-    # the Super Over decision, then append a compact Super Over block.
+                                                                                                              
+                                                                      
     winner_team = (
         innings_1["batting_team_display"]
         if winner_id == int(innings_1["batting_team_id"])
@@ -373,7 +373,7 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
             await record_match_summary_for_session(session, innings_1, innings_2, engine=origin_engine, match_type=origin_engine)
         except Exception as exc:
             print(f"[super_over_bridge] quest summary failed: {exc!r}")
-    # rewards, win/loss and H2H follow the SUPER OVER winner (the T20 innings alone were a tie)
+                                                                                               
     await _award_super_over_result(origin_match, origin_match_id, winner_id, loser_id)
 
     try:
@@ -403,8 +403,8 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
     except Exception as exc:
         print(f"[super_over_bridge] summary image failed: {exc!r}")
 
-    # Mark the origin match completed BEFORE the report: the report is what feeds tournaments, and nothing
-    # below may leave the match "live" if it fails.
+                                                                                                          
+                                                   
     upd = _repo_update_status(origin_engine)
     try:
         if upd is not None:

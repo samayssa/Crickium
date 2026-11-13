@@ -37,11 +37,11 @@ _EVENT_TYPES_FOR_QUEST_RUNNER = {
     "TOURNAMENT_MATCH_COMPLETED", "QUEST_EVENT",
 }
 
-# Event types (and, where the evaluator filters on it, metadata ``source``) that
-# at least one catalog task reads in _task_satisfied(). Anything else cannot change
-# quest progress, so persisting it and re-evaluating every quest would only burn
-# database compute. MATCH_COMPLETED is a trigger: its data lives in
-# quest_match_summaries, not quest_events.
+                                                                                
+                                                                                   
+                                                                                
+                                                                   
+                                          
 _CONSUMED_EVENT_SOURCES: dict[str, frozenset[str] | None] = {
     "MATCH_COMPLETED": None,
     "PLAYER_PURCHASE": None,
@@ -55,7 +55,7 @@ _CONSUMED_EVENT_SOURCES: dict[str, frozenset[str] | None] = {
     "PLAYING_XI_CONFIRMED": None,
     "OVERSEAS_XI_CONFIRMED": None,
 }
-# Event rows actually read back by the evaluator (MATCH_COMPLETED is not stored-read).
+                                                                                      
 _EVALUATED_EVENT_TYPES = sorted(t for t in _CONSUMED_EVENT_SOURCES if t != "MATCH_COMPLETED")
 
 
@@ -149,7 +149,7 @@ async def _ensure_current_period_db(period_type: str, now: datetime | None = Non
         return latest
 
     if latest:
-        # Advance from the persisted boundary, never from process uptime.
+                                                                         
         start = latest["end_at"].astimezone(now.tzinfo) if getattr(latest["end_at"], "tzinfo", None) else latest["end_at"].replace(tzinfo=now.tzinfo)
         while start <= now:
             end = _period_boundary_from_start(period_type, start)
@@ -171,10 +171,10 @@ async def _ensure_current_period_db(period_type: str, now: datetime | None = Non
             start = end
         return dict(latest)
 
-    # First launch of this period type. Daily is aligned to today's midnight;
-    # weekly/monthly begin at the actual launch time and then lock to the
-    # persisted boundary forever after. This honors a Saturday launch -> next
-    # Sunday 00:00 example while remaining restart-safe.
+                                                                             
+                                                                         
+                                                                             
+                                                        
     if period_type == "daily":
         start = _local_midnight(now)
     elif period_type == "weekly":
@@ -240,7 +240,7 @@ async def get_or_create_assignment(user_id: int, period_type: str) -> tuple[dict
         task_ids: list[str] = []
         for difficulty, count in counts.items():
             task_ids.extend(t["id"] for t in sampler.sample(pools[difficulty], count))
-        # Keep the visual order stable and intentional: Easy -> Medium -> Hard.
+                                                                               
         order = {"Easy": 0, "Medium": 1, "Hard": 2}
         task_ids.sort(key=lambda tid: (order[TASKS_BY_ID[tid]["difficulty"]], tid))
         fingerprint = _assignment_fingerprint(task_ids)
@@ -256,8 +256,8 @@ async def get_or_create_assignment(user_id: int, period_type: str) -> tuple[dict
                 period_type, pkey, int(user_id), json.dumps(task_ids), fingerprint,
             )
         except Exception as exc:
-            # The unique fingerprint constraint is deliberately allowed to reject
-            # a duplicate set. Resample in that rare case.
+                                                                                 
+                                                          
             if "fingerprint" not in str(exc).lower() and "unique" not in str(exc).lower():
                 raise
             continue
@@ -316,8 +316,8 @@ async def record_quest_event(user_id: int, event_type: str, *, value: int = 1, m
             )
         await evaluate_and_complete_user(user_id)
     except Exception as exc:
-        # Quest verification/rewarding is intentionally non-fatal to the core
-        # bot command that generated the event.
+                                                                             
+                                               
         print(f"[quest] record/evaluate failed for user_id={user_id} event={event_type}: {exc!r}")
 
 
@@ -607,7 +607,7 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
     period_start = metrics["period_start"]
     period_end = metrics["period_end"]
 
-    # Match/team volume metrics.
+                                
     if metric == "team_runs":
         if q.get("min_matches") is not None and len(summaries) < int(q["min_matches"]): return False
         return sum(int(s.get("batting_runs") or 0) for s in summaries) >= target
@@ -651,7 +651,7 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
     if metric == "distinct_pitch_wins":
         return len({str(s.get("pitch") or "").lower() for s in summaries if bool(s.get("won")) and str(s.get("pitch") or "")}) >= target
 
-    # Batting metrics.
+                      
     all_batting = [(s, b) for s in summaries for b in _batters(s)]
     if metric == "player_runs_match":
         return max([int(b.get("runs") or 0) for _, b in all_batting] or [0]) >= target
@@ -703,7 +703,7 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
         ids = {str(b.get("player_id")) for _, b in all_batting if b.get("player_id") is not None and int(b.get("runs") or 0) >= 50}
         return len(ids) >= target
 
-    # Bowling metrics.
+                      
     all_bowling = [(s, b) for s in summaries for b in _bowlers(s)]
     if metric == "team_wickets":
         return sum(int(s.get("bowling_wickets") or 0) for s in summaries) >= target
@@ -733,7 +733,7 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
     if metric == "bowled_out_count":
         return sum(1 for s in summaries if int(s.get("bowling_wickets") or 0) >= 10) >= target
 
-    # Over/phase metrics use the user-owned side in each summary.
+                                                                 
     relevant_overs: list[dict[str, Any]] = []
     for summary in summaries:
         for ov in _overs(summary):
@@ -772,7 +772,7 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
             if total >= phase_min: count += 1
         return count >= target
 
-    # Chasing/defending and result-context metrics.
+                                                   
     if metric == "late_chase_wins":
         return sum(1 for s in summaries if bool(s.get("chasing")) and bool(s.get("won")) and bool(s.get("late_chase"))) >= target
     if metric == "chase_target_wins":
@@ -800,10 +800,10 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
                 qualifying += 1
         return qualifying >= target
     if metric == "wins" and q.get("side"):
-        # Kept for clarity; side filtering already reduced the summary set.
+                                                                           
         return sum(1 for s in summaries if bool(s.get("won"))) >= target
 
-    # Event-backed progression/economy metrics.
+                                               
     if metric == "purchase_ovr_count":
         minimum = int(q.get("ovr_min") or 0)
         return _count_event(events, "PLAYER_PURCHASE", lambda r: int(r["metadata"].get("ovr") or 0) >= minimum) >= target
@@ -842,7 +842,7 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
         required = int(q.get("overseas_count") or 0)
         return _count_event(events, "OVERSEAS_XI_CONFIRMED", lambda r: int(r["metadata"].get("overseas_count") or 0) == required) >= target
 
-    # Quest-on-quest metrics are constrained to this task's current period window.
+                                                                                  
     current_completions = _completion_rows_for_period(completions, period_start, period_end)
     if metric == "daily_quests_done":
         return sum(1 for r in current_completions if str(r.get("period_type")) == "daily") >= target
@@ -855,8 +855,8 @@ def _task_satisfied(task: dict[str, Any], period_type: str, metrics: dict[str, A
         by_date = _task_days_from_completions(current_completions, period_start, period_end, "daily")
         return sum(1 for ids in by_date.values() if len(ids) >= 5) >= target
 
-    # The catalog is validated against known metrics before deployment. Returning
-    # False is safer than accidentally granting a task whose evaluator is unknown.
+                                                                                 
+                                                                                  
     return False
 
 
@@ -967,7 +967,7 @@ async def evaluate_and_complete_user(user_id: int) -> None:
         print(f"[quest] evaluation load failed for user_id={user_id}: {exc!r}")
         return
 
-    # Daily first so weekly/monthly quest-on-quest tasks see fresh daily completions.
+                                                                                     
     for period_type in PERIODS:
         try:
             period = periods[period_type]
@@ -1049,7 +1049,7 @@ async def _complete_task(user_id: int, period_type: str, period: dict[str, Any],
     if not awarded:
         return False
 
-    # Completion itself is also useful history for streak tasks on future days.
+                                                                               
     try:
         await _notify_completion(user_id, task, reward)
     except Exception as exc:
@@ -1105,9 +1105,9 @@ async def record_match_summary_for_session(session: Any, innings_1: dict[str, An
         current.setdefault("completed", False)
         full_overs.append(current)
 
-    # Retain compact over summaries and the safe per-ball commentary already
-    # generated by the real match engine. These nested balls are display-only;
-    # quest formulas continue reading the unchanged aggregate keys.
+                                                                            
+                                                                              
+                                                                   
     all_analysis_balls = [dict(ball) for ball in ((match or {}).get("_analysis_balls") or []) if isinstance(ball, dict)]
     balls_by_over: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for ball in all_analysis_balls:
@@ -1185,8 +1185,8 @@ async def record_match_summary_for_session(session: Any, innings_1: dict[str, An
         )
         await record_quest_event(user_id, "MATCH_COMPLETED", metadata={"engine": engine, "match_id": data["match_id"], "mode": match_type})
 
-    # Isolate the two participants: a failure for one player must not stop the other
-    # player's summary (and quest progress) from being recorded.
+                                                                                    
+                                                                
     for uid in (challenger_id, opponent_id):
         try:
             await _one(uid)

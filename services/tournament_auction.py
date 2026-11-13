@@ -30,14 +30,14 @@ from services import tournament_text as tx
 from services import tournament_media as tm
 from services import tournament_tg as _tg
 
-# --- tunables (tests shrink them) -----------------------------------------------------------------
-INTRO_SECONDS = 45            # from "Start auction" to the first lot
-OPENING_GRACE = 3             # the first bid window is a little longer: the group messages need a moment to appear
-MIN_EDIT_GAP = 3.5            # seconds between two edits of the same live message
-MIN_CALL_GAP = 1.0            # seconds between two Telegram calls into the same group
-CALLS_PER_MINUTE_LOW = 14     # live-message edits are held back when the group already got this many calls this minute
-CALLS_PER_MINUTE_HIGH = 19    # structural messages (new lot, result) may use the whole budget
-POLL_BUSY = 0.4               # worker period while an auction is running
+                                                                                                    
+INTRO_SECONDS = 45                                                   
+OPENING_GRACE = 3                                                                                                  
+MIN_EDIT_GAP = 3.5                                                                
+MIN_CALL_GAP = 1.0                                                                    
+CALLS_PER_MINUTE_LOW = 14                                                                                              
+CALLS_PER_MINUTE_HIGH = 19                                                                    
+POLL_BUSY = 0.4                                                          
 POLL_IDLE = 5.0
 
 _ACTIVE: set[int] = set()
@@ -47,9 +47,9 @@ _PRESENTERS: dict[int, "Presenter"] = {}
 _FINISHING: set[int] = set()
 
 
-# ---------------------------------------------------------------------------
-# permissions + small helpers
-# ---------------------------------------------------------------------------
+                                                                             
+                             
+                                                                             
 def is_admin(user_id: Any) -> bool:
     return int(user_id or 0) == int(ADMIN_USER_ID)
 
@@ -86,16 +86,16 @@ def ticker_markup(tid: int, lot: dict, paused: bool = False) -> dict:
     return tx.markup(*rows)
 
 
-# ---------------------------------------------------------------------------
-# Telegram adapter (shared with the match-day worker; replaced by a fake in tests)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                                  
+                                                                             
 def set_telegram(adapter: Any) -> None:
     _tg.set_telegram(adapter)
 
 
-# ---------------------------------------------------------------------------
-# the presenter - what the group sees
-# ---------------------------------------------------------------------------
+                                                                             
+                                     
+                                                                             
 class Presenter:
     def __init__(self, tid: int):
         self.tid = int(tid)
@@ -115,11 +115,11 @@ class Presenter:
         self.recovered = False
         self.pin_warned = False
         self.total_lots = 0
-        self.lot_media: dict[int, tuple[str | None, str | None]] = {}   # ord -> (card key, Telegram file_id of the lot picture)
+        self.lot_media: dict[int, tuple[str | None, str | None]] = {}                                                           
         self.prefetched: dict[int, "tm.LotMedia"] = {}
         self.prefetching: set[int] = set()
 
-    # -- queueing -----------------------------------------------------------------------------------
+                                                                                                     
     def _push(self, kind: str, arg: Any) -> None:
         self.queue.append((kind, arg))
         self.wakeup.set()
@@ -168,7 +168,7 @@ class Presenter:
                 try:
                     await asyncio.wait_for(self.wakeup.wait(), timeout=120)
                 except asyncio.TimeoutError:
-                    return                      # idle for two minutes: the task ends, the next push starts a new one
+                    return                                                                                           
                 continue
             kind, arg = self.queue.popleft()
             self._busy = True
@@ -189,7 +189,7 @@ class Presenter:
             finally:
                 self._busy = False
 
-    # -- pacing -------------------------------------------------------------------------------------
+                                                                                                     
     async def _pace(self, high: bool = True) -> None:
         budget = CALLS_PER_MINUTE_HIGH if high else CALLS_PER_MINUTE_LOW
         while True:
@@ -255,7 +255,7 @@ class Presenter:
         except Exception as exc:
             print(f"[tournament/auction] unpin failed (#{self.tid}): {exc!r}")
 
-    # -- renderers ----------------------------------------------------------------------------------
+                                                                                                     
     async def _view(self, ord_: int) -> tuple[dict | None, dict, dict | None]:
         t = await self._tournament()
         lot = await ar.lot_view(self.tid, ord_)
@@ -302,7 +302,7 @@ class Presenter:
                     mid, fid = await self._photo_call(adapter, chat_id, photo, text, markup)
                 except Exception as exc:
                     print(f"[tournament/auction] photo send failed (#{self.tid}, {'file_id' if media.file_id else 'upload'}): {exc!r}")
-                    if media.file_id:                         # a stored file_id Telegram no longer accepts: draw / download again
+                    if media.file_id:                                                                                             
                         await tm.forget(media.key)
                         data = await tm.bytes_for(lot, media)
                         media = tm.LotMedia(media.key, None, data, media.custom) if data else None
@@ -313,7 +313,7 @@ class Presenter:
                     sent_fid = fid or media.file_id
                     if sent_fid:
                         self.lot_media[ord_] = (media.key, sent_fid)
-                        if media.data is not None:             # a fresh upload: this file_id is now the picture of that card
+                        if media.data is not None:                                                                           
                             await tm.remember(media.key, sent_fid, media.custom)
                         try:
                             await ar.set_lot_media(self.tid, ord_, media.key, sent_fid)
@@ -352,15 +352,15 @@ class Presenter:
         total = int((auction or {}).get("total_lots") or 0)
         self.total_lots = total or self.total_lots
         if lot["status"] not in ("live", "pending") and int(lot.get("shown") or 0) < 2:
-            await self._show_result(ord_, False)         # settled before we got to show it: go straight to the result
+            await self._show_result(ord_, False)                                                                      
             return
         if int(lot.get("shown") or 0) >= 2:
             return
         if not lot.get("a_msg_id"):
-            a_id = await self._send_card(chat_id, lot, t, total)    # photo + details + Open Auction Room, posted automatically ...
+            a_id = await self._send_card(chat_id, lot, t, total)                                                                   
             if a_id:
                 await ar.set_lot_messages(self.tid, ord_, a_msg_id=a_id)
-                await self._pin(chat_id, a_id)                      # ... and pinned
+                await self._pin(chat_id, a_id)                                      
         await ar.set_shown(self.tid, ord_, 1)
         self._prefetch(int(ord_) + 1)
 
@@ -444,9 +444,9 @@ def presenter(tid: int) -> Presenter:
     return pres
 
 
-# ---------------------------------------------------------------------------
-# pool
-# ---------------------------------------------------------------------------
+                                                                             
+      
+                                                                             
 _VARIANT_KEYS = ("player_kind", "edition", "special_edition_id", "showcase_card_id", "showcase_set_id", "showcase_name", "player_id")
 
 
@@ -473,7 +473,7 @@ async def load_pool(pool_key: str) -> list[dict[str, Any]]:
             """) if await _has_variant_tables() else await fetch(
             "SELECT name, country, role, bat_level, bowl_level, batting_hand, bowling_hand, 'global'::TEXT AS player_kind, player_id::BIGINT AS player_id FROM players;")
     else:
-        # real franchise / nation squads only (a team code with a trailing number is another tournament's auction squad)
+                                                                                                                        
         rows = await fetch(
             "SELECT name, country, role, bat_level, bowl_level, batting_hand, bowling_hand, team_code FROM playint_players "
             "WHERE engine_key=$1 AND team_code !~ '[0-9]$';", key)
@@ -501,9 +501,9 @@ async def _has_variant_tables() -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# starting
-# ---------------------------------------------------------------------------
+                                                                             
+          
+                                                                             
 async def start_auction(tid: int, by_user: int) -> dict[str, Any]:
     """Host presses "Start auction". Returns {"ok": bool, "error": str, ...}."""
     t = await tr.get(tid)
@@ -533,7 +533,7 @@ async def start_auction(tid: int, by_user: int) -> dict[str, Any]:
     if why_not and t.get("engine") == "PLAY":
         return {"ok": False, "error": why_not + " Lower the role minimums (/setroles) or the number of teams."}
     if why_not:
-        # official leagues: a thin player database must not block the auction - the shortfall is reported at the end
+                                                                                                                    
         print(f"[tournament/auction] pool cannot cover every role minimum: {why_not}")
     claimed = await tr.cas_status(tid, ["registration"], "auction")
     if claimed is None:
@@ -561,10 +561,10 @@ async def start_auction(tid: int, by_user: int) -> dict[str, Any]:
     return {"ok": True, "lots": len(lots), "sets": len(sets), "teams": len(teams), "players": len(chosen)}
 
 
-# ---------------------------------------------------------------------------
-# bidding + host controls (also used by the Mini App API)
-# ---------------------------------------------------------------------------
-_CHAT_AUCTION: dict[int, tuple[int | None, float]] = {}      # chat id -> (tournament id running an auction there | None, valid until)
+                                                                             
+                                                         
+                                                                             
+_CHAT_AUCTION: dict[int, tuple[int | None, float]] = {}                                                                               
 
 
 def forget_chat(chat_id: int | None = None) -> None:
@@ -633,9 +633,9 @@ async def control(tid: int, user_id: int, action: str) -> dict[str, Any]:
     return {"ok": False, "message": "Unknown action."}
 
 
-# ---------------------------------------------------------------------------
-# the auctioneer
-# ---------------------------------------------------------------------------
+                                                                             
+                
+                                                                             
 async def _accelerated_worthwhile(tid: int, t: dict) -> bool:
     unsold = await ar.unsold_players(tid)
     if not unsold:
@@ -801,7 +801,7 @@ async def _tick(tid: int) -> None:
         return
     if not pres.recovered:
         await _recover(tid, st)
-    # pause / resume notices (whoever triggered them - the bot, the Mini App or the admin)
+                                                                                          
     if pres.seen_status is not None and pres.seen_status != status:
         if status == "paused":
             pres.paused = True
@@ -884,9 +884,9 @@ async def stop_worker() -> None:
         _WORKER = None
 
 
-# ---------------------------------------------------------------------------
-# /auction status card
-# ---------------------------------------------------------------------------
+                                                                             
+                      
+                                                                             
 async def status_card(tid: int, viewer_id: int | None = None) -> tuple[str, dict]:
     t = await tr.get(tid)
     if t is None:

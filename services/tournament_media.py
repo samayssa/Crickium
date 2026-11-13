@@ -43,7 +43,7 @@ async def lookup(key: str) -> str | None:
         return fid
     try:
         fid = await ar.get_card_file(key)
-    except Exception as exc:                                   # a missing table must never stop the auction
+    except Exception as exc:                                                                                
         print(f"[tournament/media] file_id lookup failed: {exc!r}")
         return None
     if fid:
@@ -101,7 +101,7 @@ async def prepare(lot: dict) -> LotMedia | None:
         source = await cp.get_player_card_source(player)
         key = source["key"]
         if source["custom"]:
-            # the admin's image is already a Telegram file: send it as it is
+                                                                            
             return LotMedia(key, (await lookup(key)) or source["file_id"], None, True)
         fid = await lookup(key)
         if fid:

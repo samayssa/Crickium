@@ -20,14 +20,14 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 from card_coordinates import get_coordinates
 from services.card_config_common import FONT_BOLD, FONT_MEDIUM, FONT_REGULAR, NAVY, TEAL, WHITE, BAR_TRACK, MIN_FONT_SIZE
 
-# --- /profile tier card font sizes ---
-# These are STARTING sizes only - _fit_font() shrinks each one down until
-# the text fits inside its box (see card_coordinates/<tier>.py), so a
-# bigger number here just raises the ceiling. These only affect the
-# /profile tier card. They are completely separate from the bat-card /
-# ball-card font sizes used by /claim, /buy, /sell, and /player, which
-# live in services/card_config_common.py instead - changing the numbers
-# below has no effect on those, and vice versa.
+                                       
+                                                                         
+                                                                     
+                                                                   
+                                                                      
+                                                                      
+                                                                       
+                                               
 PLAYER_NAME_FONT_SIZE = 46
 LEVEL_NUMBER_FONT_SIZE = 44
 CAPTAIN_FONT_SIZE = 32
@@ -41,7 +41,7 @@ def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
 
 
 def _text_bbox(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> tuple[int, int, int, int]:
-    # textbbox gives us left/top offsets too, which matters for precise centering.
+                                                                                  
     return draw.textbbox((0, 0), text, font=font)
 
 
@@ -111,10 +111,10 @@ def _scale_point(point: tuple[int, int], sx: float, sy: float) -> tuple[int, int
 def _scale_circle(circle: dict[str, Any], sx: float, sy: float) -> dict[str, Any]:
     cx, cy = _scale_point(tuple(circle["center"]), sx, sy)
     radius = max(1, _scale_num(circle["radius"], (sx + sy) / 2.0))
-    # The circle's box is always DERIVED from center + radius - center and
-    # radius are the single source of truth. Editing them in a
-    # card_coordinates/<tier>.py file is enough; there is nothing else to
-    # keep in sync.
+                                                                          
+                                                              
+                                                                         
+                   
     box = (cx - radius, cy - radius, cx + radius, cy + radius)
     return {
         "center": (cx, cy),
@@ -169,7 +169,7 @@ def _paste_circle_avatar(base: Image.Image, avatar_bytes: bytes | None, circle_b
 
     base.paste(avatar, (x0, y0), mask)
 
-    # Subtle border to make the circle read cleanly over every template.
+                                                                        
     border = ImageDraw.Draw(base)
     border.ellipse((x0, y0, x1 - 1, y1 - 1), outline=(255, 255, 255, 215), width=max(2, size[0] // 80))
 
@@ -209,7 +209,7 @@ def render_profile_card(
     squad_row = _scale_row(coords["SQUAD_ROW"], sx, sy)
     safe_zone = _scale_box(coords["CARD_SAFE_ZONE"]["box"], sx, sy)
 
-    # A faint backdrop to help text remain readable on bright art.
+                                                                  
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
     overlay_draw.rounded_rectangle(safe_zone, radius=max(12, int((safe_zone[3] - safe_zone[1]) * 0.025)), fill=(255, 255, 255, 10))
@@ -222,15 +222,15 @@ def render_profile_card(
     full_name_font = _fit_font(draw, display_name, FONT_BOLD, player_name_box, PLAYER_NAME_FONT_SIZE)
     _draw_left_middle(draw, display_name, player_name_box, full_name_font, WHITE)
 
-    # The tier template art already bakes in "<TIER> * LEVEL" as part of
-    # the image itself - we only ever draw the level NUMBER, in the empty
-    # space right after the word "LEVEL".
+                                                                        
+                                                                         
+                                         
     level_text = str(int(level or 0))
     level_box = tier_pill["value_box"]
     level_font = _fit_font(draw, level_text, FONT_BOLD, level_box, LEVEL_NUMBER_FONT_SIZE)
     _draw_centered(draw, level_text, level_box, level_font, WHITE)
 
-    # Captain / franchise / squad rows
+                                      
     captain_text = str(captain_name or "Not assigned").upper()
     franchise_text = str(franchise_name or "Unknown").upper()
     squad_text = f"{int(squad_len or 0)}/{int(max_squad_size)}"

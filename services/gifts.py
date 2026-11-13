@@ -79,8 +79,8 @@ def _candidate_for_user(candidates: list[dict[str, Any]], squad: list[dict[str, 
         ))
         by_overall.setdefault(overall, []).append(candidate)
 
-    # secrets.choice is backed by the OS CSPRNG and is unbiased over the
-    # available OVR buckets and over cards inside the chosen bucket.
+                                                                        
+                                                                    
     chosen_overall = secrets.choice(tuple(by_overall))
     return dict(secrets.choice(by_overall[chosen_overall]))
 

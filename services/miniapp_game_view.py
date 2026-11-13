@@ -68,9 +68,9 @@ def player_card(p: dict, pos: int | None = None) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# scorecards
-# ---------------------------------------------------------------------------
+                                                                             
+            
+                                                                             
 def _name(g: dict, side: str, slot: int) -> str:
     return g["teams"][side]["xi"][int(slot)]["name"]
 
@@ -160,9 +160,9 @@ def scorecard(g: dict, inn: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# live match block
-# ---------------------------------------------------------------------------
+                                                                             
+                  
+                                                                             
 def _phase_name(g: dict, over_no: int) -> str:
     return {"pp": "Powerplay", "mid": "Middle overs", "death": "Death overs"}[
         ai.phase_of(over_no, int(g["cfg"]["overs"]))]
@@ -229,12 +229,12 @@ def match_block(g: dict, inn: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# stats
-# ---------------------------------------------------------------------------
+                                                                             
+       
+                                                                             
 def _phase_split(g: dict, inn: dict) -> list[dict]:
     overs = int(g["cfg"]["overs"])
-    acc = {"pp": [0, 0, 0], "mid": [0, 0, 0], "death": [0, 0, 0]}   # runs, wkts, legal balls
+    acc = {"pp": [0, 0, 0], "mid": [0, 0, 0], "death": [0, 0, 0]}                            
     for _lab, tok, runs, _b, _w, wk, over_no in inn["log"]:
         phase = ai.phase_of(int(over_no), overs)
         acc[phase][0] += runs
@@ -340,9 +340,9 @@ def stats_block(g: dict) -> dict:
             "choices": {"bat": _choice_rows(g, "bat"), "bowl": _choice_rows(g, "bowl")}}
 
 
-# ---------------------------------------------------------------------------
-# pending action
-# ---------------------------------------------------------------------------
+                                                                             
+                
+                                                                             
 def _meta_list(keys: list[str], table: dict) -> list[dict]:
     return [{"key": k, "label": table[k]["label"], "emoji": table[k]["emoji"], "hint": table[k]["hint"]}
             for k in keys if k in table]
@@ -369,9 +369,9 @@ def need_block(g: dict) -> dict:
     return out
 
 
-# ---------------------------------------------------------------------------
-# config + full view
-# ---------------------------------------------------------------------------
+                                                                             
+                    
+                                                                             
 def config_block() -> dict:
     return {
         "difficulties": eng.public_difficulty_info(),

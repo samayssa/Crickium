@@ -31,8 +31,8 @@ from utils.style import batting_style_text, bowling_style_text
 from utils.country_flags import flag_for
 from utils.overseas import classify_country, is_overseas_player
 
-# Avoid a dependency on any existing game's rendering layer. These are the
-# canonical IPL teams already used by the existing PlayIPL engine.
+                                                                          
+                                                                  
 IPL_TEAM_MAP = {
     "CSK": "Chennai Super Kings",
     "DC": "Delhi Capitals",
@@ -194,10 +194,10 @@ def build_prize_breakdown(coins: int, rubies: int, player: dict | None) -> list[
         total = max(0, int(total))
         raw = [(total * pct) // 100 for pct in percentages]
         remainder = total - sum(raw)
-        # Largest prize gets any integer rounding remainder so the published
-        # total always equals the creator's exact pool.  The remainder is
-        # normally tiny relative to the prize and never changes the intended
-        # ordering.
+                                                                            
+                                                                         
+                                                                            
+                   
         raw[0] += remainder
         return raw
 
@@ -216,9 +216,9 @@ def build_prize_breakdown(coins: int, rubies: int, player: dict | None) -> list[
             }
         )
 
-    # A creator-supplied player card is an additional non-cash prize.  Keep it
-    # attached to the prize structure without using one of the 11 cash/ruby
-    # slices for a card.
+                                                                              
+                                                                           
+                        
     if player:
         result[-1]["player"] = player
 
@@ -708,19 +708,19 @@ async def validate_pool_players(pools: list[dict], errors: list[dict]) -> tuple[
                     base,
                 )
                 if global_row:
-                    # A plain player name is always acceptable. If the name
-                    # exists in the global pool, use that canonical global
-                    # card. Do not reject it merely because Special Edition
-                    # cards with the same display name also exist.
+                                                                           
+                                                                          
+                                                                           
+                                                                  
                     player = dict(global_row)
                     player["is_special"] = False
                     player["special_player_id"] = None
                     identity = f"global:{int(player['player_id'])}"
                 else:
-                    # A plain name is also valid for a Special Edition player
-                    # when there is no global card with that name. This keeps
-                    # the auction pool format source-agnostic: pool authors
-                    # can write the player name normally for either source.
+                                                                             
+                                                                             
+                                                                           
+                                                                           
                     special_row = await fetchrow(
                         """
                         SELECT *
@@ -793,9 +793,9 @@ async def public_group_info(group_id: int) -> tuple[dict | None, str | None]:
         pass
     elif status == "administrator":
         missing = []
-        # These permissions directly cover posting, pinning, and maintaining
-        # the live tournament registration board. If Telegram explicitly
-        # reports a permission as false, surface it to the host.
+                                                                            
+                                                                        
+                                                                
         for key, label in (
             ("can_manage_chat", "manage chat"),
             ("can_delete_messages", "delete messages"),
@@ -975,10 +975,10 @@ async def handle_tournament_reply(message: dict) -> bool:
         parsed["player"] = player
         breakdown = build_prize_breakdown(parsed["coins"], parsed["rubies"], player)
 
-        # Valid input advances the state atomically first. The old prompt and
-        # the creator's reply are then removed, and a brand-new confirmation
-        # message becomes the next reply target. This avoids edits against a
-        # message that Telegram may have stale reply metadata for.
+                                                                             
+                                                                            
+                                                                            
+                                                                  
         await update_tournament(
             draft_id,
             status="confirm_prize",
@@ -1019,9 +1019,9 @@ def prize_command_text(tournament: dict, pool_players: list[dict]) -> str:
         except Exception:
             player = None
 
-    # Always rebuild from the stored total pool so tournaments created with an
-    # older equal-split implementation are displayed using the corrected
-    # structure too.
+                                                                              
+                                                                        
+                    
     breakdown = build_prize_breakdown(
         int(tournament.get("prize_coins") or 0),
         int(tournament.get("prize_rubies") or 0),

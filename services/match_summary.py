@@ -18,8 +18,8 @@ TEMPLATE_PATH = Path(__file__).parent / "assets" / "match_summary_template.png"
 FONT_PATH = Path(__file__).parent / "fonts" / "Poppins-Medium.ttf"
 BOLD_FONT_PATH = Path(__file__).parent / "fonts" / "Poppins-Bold.ttf"
 
-# Edit these values to move or resize any part of the card. Coordinates are
-# based on the bundled 1024x576 template and scale automatically.
+                                                                           
+                                                                 
 CANVAS = (1024, 576)
 COORDINATES = {
     "title": (300, 8, 730, 58),
@@ -34,9 +34,9 @@ COORDINATES = {
     "innings_2_batting": (57, 329, 506, 463),
     "innings_2_bowling": (518, 329, 967, 463),
     "result": (40, 468, 984, 510),
-    # The template already prints a white "#" glyph and a gold "POTM" badge
-    # in the footer row - these two boxes sit right next to each of them so
-    # only the dynamic match number / player details need to be drawn.
+                                                                           
+                                                                           
+                                                                      
     "match_number": (85, 515, 168, 548),
     "potm": (275, 515, 984, 548),
 }
@@ -87,9 +87,9 @@ def _team_name(value: Any) -> str:
     raw = re.sub(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", r"\1", raw, flags=re.IGNORECASE | re.DOTALL)
     cleaned = []
     for ch in raw:
-        # Regional-indicator flags, pictographs, dingbats and symbol fonts can
-        # render as tofu in the bundled Poppins font. Keep ordinary text and
-        # punctuation, drop Unicode symbol characters entirely.
+                                                                              
+                                                                            
+                                                               
         import unicodedata
         if unicodedata.category(ch).startswith("So") or unicodedata.category(ch) in {"Sk", "Sm"}:
             continue
@@ -109,8 +109,8 @@ def _figure(player: dict) -> str:
 
 def _rows(draw, box, snap, kind, color):
     x0, y0, x1, y1 = box
-    # These labels are already part of the supplied artwork. Redrawing them
-    # here creates the doubled labels visible in the faulty output.
+                                                                           
+                                                                   
     rows = (snap.get("batters") if kind == "bat" else snap.get("bowlers")) or []
     rows = sorted(rows, key=(lambda p: int(p.get("runs") or 0)) if kind == "bat"
                   else (lambda p: (int(p.get("wickets") or 0), -int(p.get("runs") or 0))),
@@ -140,9 +140,9 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         x0, y0, x1, y1 = COORDINATES[key]
         return (round(x0 * scale_x), round(y0 * scale_y), round(x1 * scale_x), round(y1 * scale_y))
 
-    # The bundled template already contains the static MATCH SUMMARY title and
-    # 1ST/2ND INNINGS header labels. Do not draw them again here; doing so
-    # creates the duplicated/overlapping text seen on the generated card.
+                                                                              
+                                                                          
+                                                                         
     for idx in range(2):
         snap = innings[idx] if idx < len(innings) else {}
         accent = COLORS["blue"] if idx == 0 else COLORS["green"]
@@ -150,10 +150,10 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         _text(draw, _team_name(snap.get("batting_team_display")),
               (header[0], header[1], header[0] + 375, header[3]),
               COLORS["white"], FONT_SIZES["header"], bold=True)
-        # Static innings labels are already part of the template. Only dynamic
-        # team/over values are rendered by code so coordinates remain unchanged.
-        # The template already prints the word "OVERS" right after this box -
-        # drawing it again here was creating the doubled "OVERS OVERS" text.
+                                                                              
+                                                                                
+                                                                             
+                                                                            
         _text(draw, f"{snap.get('over_text') or '0.0'}",
               box(f"innings_{idx+1}_overs"),
               COLORS["white"], FONT_SIZES["section"], bold=True, align="right")
@@ -163,10 +163,10 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
         _rows(draw, box(f"innings_{idx+1}_batting"), snap, "bat", accent)
         _rows(draw, box(f"innings_{idx+1}_bowling"), snap, "bowl", accent)
 
-    # The template prints its own plain "WON BY" in the middle of this box.
-    # We want one clean gold sentence instead, so the safe zone between the
-    # trophy/wreath icons is painted over with the template's background
-    # color first, then the whole line is drawn fresh on top.
+                                                                           
+                                                                           
+                                                                        
+                                                             
     result_box = box("result")
     erase_box = (
         result_box[0] + round(120 * scale_x), result_box[1] + round(4 * scale_y),
@@ -178,7 +178,7 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
     else:
         winner_text = f"{_team_name(winner)} WON BY {margin}".strip().upper()
     if result_text:
-        # Free-form result line (ties, forfeits, "won by 4 wickets") - same box and style.
+                                                                                          
         winner_text = " ".join(_team_name(result_text).split())
     _text(draw, winner_text, result_box, COLORS["gold"], FONT_SIZES["result"], bold=True, align="center")
     potm = potm or {}
@@ -186,12 +186,12 @@ def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
     if potm.get("wickets") is not None:
         figure = f"{int(potm.get('wickets') or 0)}/{int(potm.get('bowl_runs', potm.get('runs')) or 0)}"
         if "bowl_runs" in potm and not int(potm.get("balls") or 0) and not int(potm.get("runs") or 0):
-            details = figure                    # pure bowling performance
+            details = figure                                              
         else:
             details += f"  |  {figure}"
-    # The template already prints a white "#" and a gold "POTM" badge in the
-    # footer, so only the number and the player's name/details are drawn -
-    # each right next to its matching static element.
+                                                                            
+                                                                          
+                                                     
     _text(draw, str(int(match_number or 0)), box("match_number"),
           COLORS["white"], FONT_SIZES["potm"], bold=True, align="left")
     potm_line = f"{potm.get('name') or '—'}     |     {details}"
@@ -208,11 +208,11 @@ async def completed_match_count() -> int:
         try:
             total += int(await fetchval(f"SELECT COUNT(*) FROM {table} WHERE status='completed';") or 0)
         except Exception:
-            # Older installations may not have every optional engine table.
+                                                                           
             continue
     try:
-        # Play AI stores only completed results in this ledger; it has no
-        # status column like the live-match tables do.
+                                                                         
+                                                      
         total += int(await fetchval("SELECT COUNT(*) FROM miniapp_game_results;") or 0)
     except Exception:
         pass

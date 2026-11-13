@@ -52,9 +52,9 @@ PUNCHLINES = (
     "Activity pays off. Welcome to the winners' circle!",
 )
 
-# --------------------------------------------------------------------------
-# time helpers
-# --------------------------------------------------------------------------
+                                                                            
+              
+                                                                            
 _UNIT_SECONDS = {
     "w": 604800, "wk": 604800, "wks": 604800, "week": 604800, "weeks": 604800,
     "d": 86400, "day": 86400, "days": 86400,
@@ -73,7 +73,7 @@ def parse_duration(text: str | None) -> int | None:
         return 0
     rest = _TOKEN_RE.sub("", raw)
     if re.sub(r"[\s,+&]|and", "", rest):
-        return None  # leftover text we could not understand
+        return None                                         
     total = 0.0
     found = False
     for number, unit in _TOKEN_RE.findall(raw):
@@ -132,9 +132,9 @@ def iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
-# --------------------------------------------------------------------------
-# Telegram Bot API over plain HTTPS (works in the bot AND the Mini App process)
-# --------------------------------------------------------------------------
+                                                                            
+                                                                               
+                                                                            
 class TgError(RuntimeError):
     def __init__(self, description: str, code: int | None = None):
         super().__init__(description)
@@ -151,8 +151,8 @@ async def tg_call(method: str, payload: dict | None = None, timeout: float = 15.
     global _HTTP_BOT, _HTTP_MINI
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     try:
-        import httpx  # Mini App process
-    except ImportError:  # pragma: no cover - bot process without httpx
+        import httpx                    
+    except ImportError:                                                
         httpx = None
     if httpx is not None:
         if _HTTP_MINI is None or _HTTP_MINI.is_closed:
@@ -160,7 +160,7 @@ async def tg_call(method: str, payload: dict | None = None, timeout: float = 15.
         response = await _HTTP_MINI.post(url, json=payload or {}, timeout=timeout)
         data = response.json()
     else:
-        import aiohttp  # bot process
+        import aiohttp               
         if _HTTP_BOT is None or _HTTP_BOT.closed:
             _HTTP_BOT = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=32, keepalive_timeout=75, ttl_dns_cache=300))
         async with _HTTP_BOT.post(url, json=payload or {}, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
@@ -170,7 +170,7 @@ async def tg_call(method: str, payload: dict | None = None, timeout: float = 15.
     return data["result"]
 
 
-_MEMBER_CACHE: dict[int, float] = {}   # user_id -> expires (monotonic) for CONFIRMED members only
+_MEMBER_CACHE: dict[int, float] = {}                                                              
 _MEMBER_TTL = 60.0
 
 
@@ -196,7 +196,7 @@ async def is_main_member(user_id: int, *, use_cache: bool = True) -> bool | None
         member = True
     elif status == "restricted":
         member = bool(result.get("is_member", True))
-    else:  # left / kicked
+    else:                 
         member = False
     if member:
         _MEMBER_CACHE[uid] = now + _MEMBER_TTL
@@ -247,9 +247,9 @@ async def main_group_link() -> str | None:
     return link
 
 
-# --------------------------------------------------------------------------
-# cards
-# --------------------------------------------------------------------------
+                                                                            
+       
+                                                                            
 def squad_entry(card: dict) -> dict:
     """JSON-safe copy of a card in exactly the shape stored in team_squads."""
     entry = json.loads(json.dumps(dict(card), default=str))
@@ -291,7 +291,7 @@ async def resolve_live_card(card: dict) -> dict | None:
         return live
     except Exception as exc:
         print(f"[giveaway] resolve_live_card failed: {type(exc).__name__}: {exc}")
-        return dict(card)  # DB hiccup: fall back to the saved snapshot rather than losing the giveaway
+        return dict(card)                                                                              
 
 
 _ROLE_ICON = {"batsman": "🏏", "bowler": "🎯", "allrounder": "🔄", "wicketkeeper": "🧤"}
@@ -347,19 +347,19 @@ def prize_html(card: dict) -> str:
     )
 
 
-# --------------------------------------------------------------------------
-# activity score + weighted draw
-# --------------------------------------------------------------------------
+                                                                            
+                                
+                                                                            
 SCORE_WEIGHTS = {
-    "matches": 2.0,    # matches played (win OR lose)
-    "wins": 3.0,       # matches won
-    "claims": 1.5,     # /claim attempts
-    "daily": 2.0,      # daily rewards collected
-    "quests": 3.0,     # quests completed
-    "packs": 1.0,      # packs opened
-    "g_games": 1.0,    # Mini App "Play Game" matches
-    "g_wins": 2.0,     # Mini App wins
-    "recent": 0.5,     # bot actions in the last 14 days
+    "matches": 2.0,                                  
+    "wins": 3.0,                    
+    "claims": 1.5,                      
+    "daily": 2.0,                               
+    "quests": 3.0,                       
+    "packs": 1.0,                    
+    "g_games": 1.0,                                  
+    "g_wins": 2.0,                    
+    "recent": 0.5,                                      
 }
 RECENT_CAP = 400
 CHANCE_EXPONENT = 0.85
@@ -441,9 +441,9 @@ async def my_standing(giveaway_id: int, user_id: int) -> dict[str, Any]:
     return {"score": score, "chance": chance, "entries": count}
 
 
-# --------------------------------------------------------------------------
-# eligibility
-# --------------------------------------------------------------------------
+                                                                            
+             
+                                                                            
 def _load_squad(raw: Any) -> list[dict]:
     if isinstance(raw, (str, bytes)):
         try:
@@ -502,9 +502,9 @@ async def requirements(user_id: int, card: dict, *, member: bool | None = None) 
     }
 
 
-# --------------------------------------------------------------------------
-# joining
-# --------------------------------------------------------------------------
+                                                                            
+         
+                                                                            
 async def join(giveaway_id: int, user_id: int, username: str | None, first_name: str | None) -> dict[str, Any]:
     """Try to enter a user. Returns {'status': 'ok'|'already'|<reason>, ...standing}."""
     g = await repo.get(giveaway_id)
@@ -522,7 +522,7 @@ async def join(giveaway_id: int, user_id: int, username: str | None, first_name:
     already = await repo.has_entry(giveaway_id, user_id)
     if not req["ok"]:
         if already and req["reason"] in {"owns", "full", "not_member"}:
-            # keep the old entry; the draw re-checks, but tell them what is wrong now
+                                                                                     
             return {"status": req["reason"], "already": True, "message": REASON_TEXT[req["reason"]]}
         return {"status": req["reason"], "message": REASON_TEXT[req["reason"]]}
 
@@ -533,9 +533,9 @@ async def join(giveaway_id: int, user_id: int, username: str | None, first_name:
     return {"status": "ok" if added else "already", **standing}
 
 
-# --------------------------------------------------------------------------
-# the draw
-# --------------------------------------------------------------------------
+                                                                            
+          
+                                                                            
 async def _credit_and_finish(g: dict, entry: dict, card: dict, score: float, entries_total: int) -> str:
     """Hand the card to one entrant AND close the giveaway in ONE transaction."""
     gid = int(g["giveaway_id"])
@@ -561,7 +561,7 @@ async def _credit_and_finish(g: dict, entry: dict, card: dict, score: float, ent
             "UPDATE team_squads SET squad=$1::jsonb, updated_at=NOW() WHERE user_id=$2;",
             json.dumps(squad, default=str), uid,
         )
-        # a re-obtained card starts with a clean per-user stat line (same as referral rewards)
+                                                                                              
         await conn.execute(
             "DELETE FROM player_user_match_stats WHERE user_id=$1 AND player_id=$2;",
             uid, int(new_card["player_id"]),
@@ -601,7 +601,7 @@ async def run_draw(g: dict) -> dict[str, Any]:
     skipped = {"left": 0, "owns": 0, "full": 0, "no_account": 0}
     for uid in weighted_order(ids, scores):
         member = await is_main_member(uid, use_cache=False)
-        if member is False:      # unknown (None) is trusted: they passed the check when entering
+        if member is False:                                                                      
             skipped["left"] += 1
             continue
         result = await _credit_and_finish(g, by_id[uid], card, scores.get(uid, 0.0), len(ids))

@@ -21,7 +21,7 @@ FONT_BOLD = FONTS_DIR / "Poppins-Bold.ttf"
 FONT_MEDIUM = FONTS_DIR / "Poppins-Medium.ttf"
 FONT_REGULAR = FONTS_DIR / "Poppins-Regular.ttf"
 
-# The template's own reference colors, sampled directly from the artwork.
+                                                                         
 NAVY = (2, 23, 54)
 TEAL = (1, 122, 124)
 WHITE = (241, 241, 243)
@@ -29,8 +29,8 @@ BAR_TRACK = (183, 204, 227)
 
 CARD_SIZE = (1536, 1024)
 
-# Starting font sizes for auto-fit (services/player_card.py shrinks from
-# here until the text fits inside its box).
+                                                                        
+                                           
 FIRST_NAME_MAX_SIZE = 92
 LAST_NAME_MAX_SIZE = 84
 ROLE_MAX_SIZE = 32

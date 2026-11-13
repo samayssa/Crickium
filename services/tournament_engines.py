@@ -51,9 +51,9 @@ def teams_repo(engine: str):
     return importlib.import_module(_TEAMS_MODULE[str(engine).upper()])
 
 
-# ---------------------------------------------------------------------------
-# is anybody busy?
-# ---------------------------------------------------------------------------
+                                                                             
+                  
+                                                                             
 async def _quiet_fetch(query: str, *args):
     from database.connection import get_pool
     async with get_pool().acquire() as conn:
@@ -74,9 +74,9 @@ async def busy(chat_id: int, user_ids: Iterable[int]) -> dict[str, Any]:
     return {"chat": chat_busy, "users": users}
 
 
-# ---------------------------------------------------------------------------
-# squad checks (before a tournament starts / a player joins)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                            
+                                                                             
 async def team_player_count(engine: str, code: str) -> int:
     from database.query import fetchval
     return int(await fetchval("SELECT COUNT(*) FROM playint_players WHERE engine_key=$1 AND team_code=$2;",
@@ -108,9 +108,9 @@ async def custom_player_problem(user_id: int) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# the match card
-# ---------------------------------------------------------------------------
+                                                                             
+                
+                                                                             
 def team_emoji(engine: str, code: str | None) -> str:
     try:
         if engine == "PLAYIPL":
@@ -150,9 +150,9 @@ def match_card(t: dict, fx: dict, home: dict, away: dict, home_user: dict, away_
     )
 
 
-# ---------------------------------------------------------------------------
-# launching a fixture
-# ---------------------------------------------------------------------------
+                                                                             
+                     
+                                                                             
 def _user_dict(row: dict | None, fallback_id: int | None = None) -> dict:
     row = row or {}
     return {"id": int(row.get("user_id") or row.get("id") or fallback_id or 0),
@@ -188,7 +188,7 @@ async def launch(t: dict, fx: dict, home: dict, away: dict, home_user: dict, awa
         else:
             from handlers.play.pitch import send_pitch_selection
             await send_pitch_selection(chat_id, match)
-        try:   # the engines start their 3-minute inactivity clocks from callbacks; nobody has pressed anything yet
+        try:                                                                                                       
             from utils.game_inactivity import sync_after_change
             await sync_after_change(engine, match_id, None)
         except Exception as exc:
@@ -204,9 +204,9 @@ async def launch(t: dict, fx: dict, home: dict, away: dict, home_user: dict, awa
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "match_id": match_id}
 
 
-# ---------------------------------------------------------------------------
-# Custom engine + auction: the auctioned squad instead of the players' own cards
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                                
+                                                                             
 def batting_order(xi: list[dict]) -> list[dict]:
     """Keepers and batters first (best bat first), then all-rounders, then bowlers - the order the engine bats in."""
     def group(p: dict) -> int:
@@ -234,7 +234,7 @@ async def _card(row: dict, catalog: dict[str, dict], index: int) -> dict:
     base = catalog.get(str(row.get("name") or ""))
     if base is not None:
         entry = {k: v for k, v in base.items() if k not in {"created_at", "uploaded_by"}}
-    else:   # the catalog row vanished meanwhile: play the card exactly as it was bought
+    else:                                                                               
         entry = {"player_id": 9_000_000 + index, "name": row.get("name"), "country": row.get("country"), "role": row.get("role"),
                  "bat_level": row.get("bat_level"), "bowl_level": row.get("bowl_level"),
                  "batting_hand": row.get("batting_hand"), "bowling_hand": row.get("bowling_hand")}
@@ -265,7 +265,7 @@ async def custom_squads(match_id: int) -> dict[int, dict[str, list[dict]]] | Non
         cards = [await _card(r, catalog, i) for i, r in enumerate(rows)]
         by_name = {c["name"]: c for c in cards}
         xi = [by_name[str(r["name"])] for r in rows if r.get("xi") and str(r["name"]) in by_name]
-        if len(xi) < 11:   # no stored XI (should not happen) - best legal eleven, else the highest rated
+        if len(xi) < 11:                                                                                 
             picked = tc.pick_best_xi([dict(r, key=r["pkey"]) for r in rows], int(t.get("xi_overseas_max") or 0)) or []
             keys = {p["pkey"] for p in picked}
             xi = [by_name[str(r["name"])] for r in rows if r["pkey"] in keys and str(r["name"]) in by_name]

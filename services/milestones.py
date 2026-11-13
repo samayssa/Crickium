@@ -39,9 +39,9 @@ _EVENT_LABELS = {
     "PARTNERSHIP": ("Partnership Milestone", ""),
 }
 
-# Per-match notification state. Keys are match IDs and values are the event
-# keys already delivered. This prevents a duplicate alert if a callback/retry
-# invokes the post-ball hook more than once.
+                                                                           
+                                                                             
+                                            
 _EMITTED: dict[int, set[str]] = defaultdict(set)
 _HAT_TRICK_STATE: dict[int, tuple[int, int]] = {}
 
@@ -50,8 +50,8 @@ def clear_milestone_state(match_id: int) -> None:
     _EMITTED.pop(int(match_id), None)
     _HAT_TRICK_STATE.pop(int(match_id), None)
     if len(_EMITTED) > 4096:
-        # Safety valve for long-running bots if a completion cleanup hook is
-        # ever skipped by an abnormal process termination.
+                                                                            
+                                                          
         for key in list(_EMITTED)[:1024]:
             _EMITTED.pop(key, None)
             _HAT_TRICK_STATE.pop(key, None)
@@ -120,7 +120,7 @@ def _collect_events(session: Any, outcome: Any, striker_before: Any, partnership
     score = session.innings.score
     events: list[dict[str, Any]] = []
 
-    # Batter milestones: 50 and 100 only, each once per innings/player.
+                                                                       
     pid = _player_id(striker_before)
     pname = _player_name(striker_before)
     runs = int(getattr(striker_before, "runs", 0) or 0)
@@ -140,8 +140,8 @@ def _collect_events(session: Any, outcome: Any, striker_before: Any, partnership
                     }
                 )
 
-    # Current partnership milestone. ``score.wickets`` identifies the current
-    # partnership naturally, because a wicket starts the next partnership.
+                                                                             
+                                                                          
     partnership_runs = int(getattr(session, "partnership_runs", 0) or 0)
     partnership_id = int(partnership_id or (int(getattr(score, "wickets", 0) or 0) + 1))
     if partnership_runs >= 50:
@@ -168,7 +168,7 @@ def _collect_events(session: Any, outcome: Any, striker_before: Any, partnership
                     }
                 )
 
-    # Bowler milestones and hat-trick state.
+                                            
     bowler = getattr(session, "current_bowler", None) or {}
     bowler_id = _player_id(bowler)
     bowler_name = str(bowler.get("name") or "Bowler")
@@ -200,8 +200,8 @@ def _collect_events(session: Any, outcome: Any, striker_before: Any, partnership
                 }
             )
 
-        # Hat-trick uses consecutive *legal* balls by the same bowler. Illegal
-        # balls do not reset the streak; a legal non-wicket does.
+                                                                              
+                                                                 
         previous_bowler, previous_streak = _HAT_TRICK_STATE.get(match_id, (bowler_id, 0))
         if previous_bowler != bowler_id:
             previous_streak = 0
@@ -296,8 +296,8 @@ async def _send_alert(chat_id: int, text: str, media: dict[str, Any] | None = No
             return
         await app.send_message(chat_id, text, parse_mode="HTML")
     except Exception as exc:
-        # Milestones are informational. A Telegram delivery issue must never
-        # interrupt scoring or the active match.
+                                                                            
+                                                
         print(f"[milestones] alert delivery failed: {exc!r}")
 
 

@@ -58,9 +58,9 @@ def can_manage(t: dict | None, user_id: Any) -> bool:
     return can_control(t, user_id)
 
 
-# ---------------------------------------------------------------------------
-# starting a tournament + the schedule
-# ---------------------------------------------------------------------------
+                                                                             
+                                      
+                                                                             
 def _day_times(t: dict, day: date) -> tuple[datetime, datetime, datetime]:
     opens, closes = tc.window_bounds(day, int(t["window_start_min"]), int(t["window_end_min"]), int(t["tz_min"]))
     return opens, closes - timedelta(minutes=tc.REMIND_BEFORE_MIN), closes
@@ -199,9 +199,9 @@ async def _align_days(t: dict) -> None:
             await tr.shift_day(int(t["tid"]), int(d["day_no"]), day, *_day_times(t, day))
 
 
-# ---------------------------------------------------------------------------
-# ready / present / play
-# ---------------------------------------------------------------------------
+                                                                             
+                        
+                                                                             
 async def find_for_user(chat_id: int | None, user_id: int) -> dict | None:
     """The live tournament this player is in - preferably the one hosted in this chat."""
     mine = [x for x in await tr.list_for_user(user_id, 20) if x["status"] == "live"]
@@ -286,9 +286,9 @@ async def _launch_ready(t: dict, fno: int) -> str:
         return "started"
 
 
-# ---------------------------------------------------------------------------
-# the worker
-# ---------------------------------------------------------------------------
+                                                                             
+            
+                                                                             
 async def _teams_map(tid: int) -> dict[int, dict]:
     return {int(x["team_no"]): x for x in await tr.teams(tid)}
 
@@ -361,7 +361,7 @@ async def _after_downtime(t: dict, last: datetime, now: datetime) -> None:
         return
     first = days[0]
     opens, closes = _utc(first["opens_at"]), _utc(first["closes_at"])
-    if closes <= now:                       # the whole window passed while the bot was away: start over today/tomorrow
+    if closes <= now:                                                                                                  
         today = tc.first_play_date(now, int(t["window_start_min"]), int(t["window_end_min"]), int(t["tz_min"]))
         delta = (today - first["play_date"]).days
         for d in days:
@@ -369,7 +369,7 @@ async def _after_downtime(t: dict, last: datetime, now: datetime) -> None:
             await tr.shift_day(int(t["tid"]), int(d["day_no"]), day, *_day_times(t, day))
         if first["status"] == "open":
             await tr.extend_day(int(t["tid"]), int(first["day_no"]), *_day_times(t, today)[1:])
-    elif opens <= now and last < closes:    # a running window lost time: give it back (max 3 h)
+    elif opens <= now and last < closes:                                                        
         lost = min((now - max(last, opens)).total_seconds(), 3 * 3600)
         await tr.extend_day(int(t["tid"]), int(first["day_no"]), _utc(first["remind_at"]) + timedelta(seconds=lost), closes + timedelta(seconds=lost))
     await _say(t, "🛠 The bot was offline for a while — today's match window has been extended so nobody loses their time.")
@@ -403,9 +403,9 @@ async def _tick(tid: int) -> None:
         await _progress(t)
 
 
-# ---------------------------------------------------------------------------
-# playoffs + the end
-# ---------------------------------------------------------------------------
+                                                                             
+                    
+                                                                             
 async def _progress(t: dict) -> None:
     tid = int(t["tid"])
     async with _lock(tid):
@@ -414,7 +414,7 @@ async def _progress(t: dict) -> None:
             return
         fixtures = await tr.fixtures(tid)
         teams = list(await tr.teams(tid))
-        for f in fixtures:      # a knockout with no result is played again
+        for f in fixtures:                                                 
             if f["stage"] != "league" and f["status"] == "done" and f["result_type"] in ("no_result", "tie"):
                 await tr.reset_fixture(tid, int(f["fno"]))
                 return
@@ -433,7 +433,7 @@ async def _progress(t: dict) -> None:
         if plan["stages"] and "F" in done:
             await _complete(t, int(done["F"]["winner"]), int(done["F"]["loser"]))
             return
-        if not plan["stages"]:       # two teams: the league leader is the champion
+        if not plan["stages"]:                                                     
             table = tc.table_from_rows(teams, fixtures)
             await _complete(t, int(table[0]["team_no"]), int(table[1]["team_no"]))
             return
@@ -482,9 +482,9 @@ async def _pay_prizes(t: dict, champ: dict | None, runner: dict | None) -> str:
     return "\n🎁 <b>Prize pool paid</b> — " + tx.esc(tp.describe(res["prize"])) + "\n<blockquote>" + "\n".join(res["lines"]) + "</blockquote>"
 
 
-# ---------------------------------------------------------------------------
-# worker plumbing
-# ---------------------------------------------------------------------------
+                                                                             
+                 
+                                                                             
 async def _worker() -> None:
     last_clean = 0.0
     while True:

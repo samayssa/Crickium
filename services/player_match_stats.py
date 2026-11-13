@@ -87,8 +87,8 @@ async def record_session_player_stats(session: Any) -> None:
 
     current = None
     try:
-        # The current innings may be incomplete. Both engines expose the same
-        # snapshot helper and keep prior completed innings in innings_history.
+                                                                             
+                                                                              
         from engines.play_runtime import snapshot_innings as play_snapshot
         current = play_snapshot(session)
     except Exception:
@@ -108,8 +108,8 @@ async def record_session_player_stats(session: Any) -> None:
     if not snapshots:
         return
 
-    # At any point in a session these two fields represent the two participants'
-    # current XIs, regardless of which side is currently batting.
+                                                                                
+                                                                 
     batting_team_id = int(getattr(session, "batting_team_id", 0) or 0)
     bowling_team_id = int(getattr(session, "bowling_team_id", 0) or 0)
     batting_squad = list(getattr(session, "batting_squad", []) or [])

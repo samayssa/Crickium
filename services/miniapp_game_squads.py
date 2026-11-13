@@ -22,7 +22,7 @@ AI_TEAMS = {
     "expert": ("Legends XI", "LGD"),
 }
 
-# batting order of the computer's side: 4 batters, keeper, 2 all-rounders, 4 bowlers
+                                                                                    
 AI_TEMPLATE = ("Batsman", "Batsman", "Wicketkeeper", "Batsman", "AllRounder",
                "Batsman", "AllRounder", "Bowler", "Bowler", "Bowler", "Bowler")
 
@@ -67,7 +67,7 @@ def make_player(raw: dict, slot: int, *, entity_id: int | None = None, kind: str
     bowl = max(0, min(99, int(raw.get("bowl_level") or raw.get("bowl") or 0)))
     style = str(raw.get("bowling_hand") or raw.get("bw") or "").strip().upper() or None
     if style and style not in {"RAF", "LAF", "RAM", "LAM", "RAO", "LAO", "RAL", "LAL"}:
-        # unknown label -> treat by its words, default to medium pace
+                                                                     
         low = style.lower()
         if "off" in low:
             style = "RAO"
@@ -159,7 +159,7 @@ def build_ai_squad(user_xi: list[dict], difficulty: str, pool: list[dict],
 
     used: set[str] = set()
     squad: list[dict] = []
-    # top order gets a touch more punch, tail a touch less
+                                                          
     spread = {0: 4, 1: 3, 2: 1, 3: 2, 4: 0, 5: -1, 6: -2, 7: 0, 8: 0, 9: -1, 10: -3}
     for slot, role in enumerate(AI_TEMPLATE):
         base = {"Batsman": mean_bat, "Wicketkeeper": mean_bat - 4, "AllRounder": mean_ar,
@@ -173,7 +173,7 @@ def build_ai_squad(user_xi: list[dict], difficulty: str, pool: list[dict],
         choice = rng.choice(top) if top else synthetic_pool(rng, 1)[0]
         used.add(choice["name"])
         squad.append(make_player(choice, slot, entity_id=int(choice.get("player_id") or 0), kind="global"))
-    # make sure at least five of them can bowl (4 overs each -> 20 overs)
+                                                                         
     if sum(1 for p in squad if can_bowl(p)) < 5:
         for p in squad:
             if not can_bowl(p) and p["role"] == "AllRounder":

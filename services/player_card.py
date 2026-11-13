@@ -20,15 +20,15 @@ from services import card_config_bat, card_config_ball
 from services.card_config_common import MIN_FONT_SIZE
 from utils.style import batting_style_code, bowling_style_text
 
-# "bat" -> batsman / WK / all-rounder-with-higher-batting-level card
-# "ball" -> bowler / all-rounder-with-higher-bowling-level card
-# See services/card_provider.resolve_card_type() for how a player's role
-# is mapped to one of these.
+                                                                    
+                                                               
+                                                                        
+                            
 _CARD_CONFIGS = {"bat": card_config_bat, "ball": card_config_ball}
 
-# The shared utils/style.py phrasing ("Right-hand batsman") is meant for
-# chat messages. The template's own placeholder text is much shorter
-# ("RIGHT-HANDED"), so the card uses its own short labels to match it.
+                                                                        
+                                                                    
+                                                                      
 _CARD_BATTING_STYLE_TEXT = {
     "RH": "RIGHT-HANDED",
     "LH": "LEFT-HANDED",
@@ -101,7 +101,7 @@ def _draw_bar(draw, box, percent: float, fill_color, track_color):
     draw.rounded_rectangle(box, radius=radius, fill=track_color)
 
     fill_w = int((x1 - x0) * (percent / 100.0))
-    if fill_w >= (y1 - y0):  # only draw the fill once it's wide enough to have rounded ends
+    if fill_w >= (y1 - y0):                                                                 
         draw.rounded_rectangle((x0, y0, x0 + fill_w, y1), radius=radius, fill=fill_color)
     elif fill_w > 0:
         draw.rectangle((x0, y0, x0 + fill_w, y1), fill=fill_color)
@@ -168,53 +168,53 @@ def render_player_card(player: dict, template_bytes: bytes | None = None, card_t
     batting_style = _card_batting_style(player).upper()
     bowling_style = bowling_style_text(player.get("bowling_hand")).upper()
 
-    # First name (navy)
+                       
     font = _fit_font(draw, first_name.upper(), cfg.FONT_BOLD, cfg.FIRST_NAME_BOX, cfg.FIRST_NAME_MAX_SIZE)
     _draw_left_middle(draw, first_name.upper(), cfg.FIRST_NAME_BOX, font, cfg.NAVY)
 
-    # Surname (teal) - only drawn if the player has one
+                                                       
     if surname:
         font = _fit_font(draw, surname.upper(), cfg.FONT_BOLD, cfg.LAST_NAME_BOX, cfg.LAST_NAME_MAX_SIZE)
         _draw_left_middle(draw, surname.upper(), cfg.LAST_NAME_BOX, font, cfg.TEAL)
 
-    # Role (navy)
+                 
     if role:
         font = _fit_font(draw, role, cfg.FONT_MEDIUM, cfg.ROLE_BOX, cfg.ROLE_MAX_SIZE)
         _draw_left_middle(draw, role, cfg.ROLE_BOX, font, cfg.NAVY)
 
-    # OVR (teal, centered) - now based on the player's higher level
+                                                                   
     ovr_text = str(ovr)
     font = _fit_font(draw, ovr_text, cfg.FONT_BOLD, cfg.OVR_BOX, cfg.OVR_MAX_SIZE)
     _draw_centered(draw, ovr_text, cfg.OVR_BOX, font, cfg.TEAL)
 
-    # Batting level (teal, centered) + progress bar
+                                                   
     bat_text = str(bat_level)
     font = _fit_font(draw, bat_text, cfg.FONT_BOLD, cfg.BAT_VALUE_BOX, cfg.LEVEL_VALUE_MAX_SIZE)
     _draw_centered(draw, bat_text, cfg.BAT_VALUE_BOX, font, cfg.TEAL)
     _draw_bar(draw, cfg.BAT_BAR_BOX, float(bat_level), cfg.TEAL, cfg.BAR_TRACK)
 
-    # Bowling level (teal, centered) + progress bar
+                                                   
     bowl_text = str(bowl_level)
     font = _fit_font(draw, bowl_text, cfg.FONT_BOLD, cfg.BOWL_VALUE_BOX, cfg.LEVEL_VALUE_MAX_SIZE)
     _draw_centered(draw, bowl_text, cfg.BOWL_VALUE_BOX, font, cfg.TEAL)
     _draw_bar(draw, cfg.BOWL_BAR_BOX, float(bowl_level), cfg.TEAL, cfg.BAR_TRACK)
 
-    # Batting style (teal)
+                          
     font = _fit_font(draw, batting_style, cfg.FONT_BOLD, cfg.BATTING_STYLE_BOX, cfg.STYLE_VALUE_MAX_SIZE)
     _draw_left_middle(draw, batting_style, cfg.BATTING_STYLE_BOX, font, cfg.TEAL)
 
-    # Bowling style (teal)
+                          
     font = _fit_font(draw, bowling_style, cfg.FONT_BOLD, cfg.BOWLING_STYLE_BOX, cfg.STYLE_VALUE_MAX_SIZE)
     _draw_left_middle(draw, bowling_style, cfg.BOWLING_STYLE_BOX, font, cfg.TEAL)
 
-    # Country (teal)
+                    
     font = _fit_font(draw, country, cfg.FONT_BOLD, cfg.COUNTRY_BOX, cfg.STYLE_VALUE_MAX_SIZE)
     _draw_left_middle(draw, country, cfg.COUNTRY_BOX, font, cfg.TEAL)
 
     out = BytesIO()
     if str(fmt).upper() in ("JPEG", "JPG"):
-        # Telegram re-compresses photos to JPEG anyway: sending JPEG is ~6x smaller (much faster upload) and
-        # ~10x quicker to encode than the 1.9 MB PNG - important on a small CPU.
+                                                                                                            
+                                                                                
         image.save(out, format="JPEG", quality=92, subsampling=0)
     else:
         image.save(out, format="PNG")

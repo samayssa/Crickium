@@ -41,8 +41,8 @@ def _score(snapshot: dict | None) -> str:
 
 
 async def send_match_completion_notification(app, *, engine: str, pitch: str | None, user1: tuple[str | None, str | None], user2: tuple[str | None, str | None], innings_1: dict, innings_2: dict, result: str | None = None, match_number: int | None = None) -> None:
-    # Callers with a shared completion number can pass it through so the group
-    # notification, summary card and report all show the same match number.
+                                                                              
+                                                                           
     match_no = int(match_number) if match_number is not None else await next_match_number()
     result_text = html.escape(str(result or 'Match completed'))
     text = (

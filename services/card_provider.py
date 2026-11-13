@@ -38,14 +38,14 @@ def resolve_card_type(player: dict) -> str:
     return "bat"
 
 
-# ---------------------------------------------------------------------------
-# speed: media cache + off-loop rendering
-# ---------------------------------------------------------------------------
-# Rendering a card is CPU work (about a second on a full core, many seconds on a small host) and it used to run
-# directly on the event loop - every other command and every /bid froze until it finished. It also downloaded the
-# template / custom image from Telegram on every single call. Now: templates and custom images are cached in
-# memory (keyed by their Telegram file_id, so an /upload_img replacement is picked up at once), and the drawing
-# runs in a worker thread, at most two at a time.
+                                                                             
+                                         
+                                                                             
+                                                                                                               
+                                                                                                                 
+                                                                                                            
+                                                                                                               
+                                                 
 _BYTES_CACHE: "collections.OrderedDict[str, bytes]" = collections.OrderedDict()
 _BYTES_CACHE_MAX_ITEMS = 24
 _BYTES_CACHE_MAX_BYTES = 48 * 1024 * 1024

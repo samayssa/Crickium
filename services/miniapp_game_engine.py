@@ -100,9 +100,9 @@ class GameError(Exception):
         self.detail = detail or code
 
 
-# ---------------------------------------------------------------------------
-# configuration
-# ---------------------------------------------------------------------------
+                                                                             
+               
+                                                                             
 def normalize_config(raw: dict | None, rng: random.Random | None = None) -> dict:
     raw = raw or {}
     rnd = rng or random
@@ -129,9 +129,9 @@ def normalize_config(raw: dict | None, rng: random.Random | None = None) -> dict
             "random_pitch": bool(random_pitch)}
 
 
-# ---------------------------------------------------------------------------
-# creation and Playing XI
-# ---------------------------------------------------------------------------
+                                                                             
+                         
+                                                                             
 def _player_view(p: dict) -> dict:
     return {"pid": p["pid"], "eid": p.get("eid"), "kind": p.get("kind"), "name": p["name"],
             "role": p["role"], "bat": p["bat"], "bowl": p["bowl"], "bh": p.get("bh"), "bw": p.get("bw"),
@@ -269,9 +269,9 @@ def xi_confirm(g: dict) -> None:
     _feed(g, {"k": "info", "text": "Playing XI confirmed. Time for the toss!"})
 
 
-# ---------------------------------------------------------------------------
-# toss
-# ---------------------------------------------------------------------------
+                                                                             
+      
+                                                                             
 def toss_call(g: dict, call: str, rng: random.Random | None = None) -> dict:
     _require_stage(g, "toss")
     rnd = rng or random.Random()
@@ -314,9 +314,9 @@ def _begin_match(g: dict, rng: random.Random) -> None:
     _start_innings(g, 0, first_bat, rng)
 
 
-# ---------------------------------------------------------------------------
-# innings set-up
-# ---------------------------------------------------------------------------
+                                                                             
+                
+                                                                             
 def _new_batter(p: dict, entered_at: dict | None = None) -> dict:
     return {"slot": p["slot"], "name": p["name"], "runs": 0, "balls": 0, "fours": 0, "sixes": 0,
             "dots": 0, "conf": 0.0, "streak": 0, "out": False, "how": None, "kind": None,
@@ -363,9 +363,9 @@ def max_balls(g: dict) -> int:
     return int(g["cfg"]["overs"]) * 6
 
 
-# ---------------------------------------------------------------------------
-# bowler management
-# ---------------------------------------------------------------------------
+                                                                             
+                   
+                                                                             
 def _bowler_stat(inn: dict, slot: int) -> dict:
     key = str(slot)
     if key not in inn["bowlers"]:
@@ -404,9 +404,9 @@ def eligible_bowlers(g: dict, inn: dict | None = None) -> list[dict]:
     if room < overs_left or not cand:
         cand += [p for p in under if not can_bowl(p) and p["slot"] != last]
     if not cand:
-        cand = list(under)            # only the previous bowler is left
+        cand = list(under)                                              
     if not cand:
-        cand = list(xi)               # everybody is at the quota: anybody may bowl
+        cand = list(xi)                                                            
     return [_part_timer_view(p) for p in cand]
 
 
@@ -465,9 +465,9 @@ def choose_bowler(g: dict, slot: int) -> None:
     _assign_bowler(g, inn, int(slot))
 
 
-# ---------------------------------------------------------------------------
-# pending action
-# ---------------------------------------------------------------------------
+                                                                             
+                
+                                                                             
 def pending(g: dict) -> dict:
     stage = g["stage"]
     if stage in {"xi", "toss", "decision", "break", "done"}:
@@ -485,9 +485,9 @@ def pending(g: dict) -> dict:
             "options": list(ai.TACTIC_KEYS[ai.tactic_set_key(p.get("bw") or "RAM")])}
 
 
-# ---------------------------------------------------------------------------
-# delivering
-# ---------------------------------------------------------------------------
+                                                                             
+            
+                                                                             
 def _norm_choice(choice: str) -> str:
     c = str(choice or "").strip().lower().replace(" ", "_").replace("-", "_")
     return CHOICE_ALIASES.get(c, c)
@@ -585,7 +585,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
         if dismissal["kind"] == "run_out":
             inn["run_outs"] += 1
 
-    # confidence / streak (before the batter's own tally changes)
+                                                                 
     streak_before = int(striker["streak"])
     cname = _CONF_NAME.get(outcome) if not wicket else None
     if cname:
@@ -595,7 +595,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
         else:
             striker["streak"] = 0
 
-    # score
+           
     inn["runs"] += runs
     if outcome == "WD":
         inn["extras"]["wd"] += 1
@@ -640,7 +640,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
     if legal:
         inn["partner"]["balls"] += 1
 
-    # per-approach tally for the user's own choices (match centre insight)
+                                                                          
     cs = g.setdefault("cs", {"bat": {}, "bowl": {}})
     if bat_side == "user":
         row = cs["bat"].setdefault(mindset, [0, 0, 0, 0])
@@ -671,7 +671,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
                            "ov": over_wkt_ball, "partner_runs": inn["partner"]["runs"]})
         inn["partnerships"].append({"runs": inn["partner"]["runs"], "balls": inn["partner"]["balls"],
                                     "a": inn["partner"]["a"], "b": inn["partner"]["b"], "wicket": inn["wkts"]})
-        # hat-trick tracking (legal balls only)
+                                               
         if dismissal["bowler_credit"]:
             if inn["hat"][0] == bowl_slot and inn["hat"][1] >= 1:
                 inn["hat"][1] += 1
@@ -688,7 +688,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
     elif legal:
         inn["hat"] = [None, 0]
 
-    # batter milestones
+                       
     if bat_runs and striker["runs"] - bat_runs < 50 <= striker["runs"]:
         milestones.append(com.milestone_line("fifty", striker["name"], f"{striker['balls']} balls"))
         inn["milestones"].append({"k": "fifty", "slot": striker["slot"]})
@@ -696,7 +696,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
         milestones.append(com.milestone_line("hundred", striker["name"]))
         inn["milestones"].append({"k": "hundred", "slot": striker["slot"]})
 
-    # strike rotation (not wide / no-ball), then ends change at the over's end
+                                                                              
     if outcome not in ("WD", "NB") and runs % 2 == 1:
         inn["striker"], inn["non"] = inn["non"], inn["striker"]
     over_ended = legal and inn["balls"] % 6 == 0
@@ -716,7 +716,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
 
     inn["free_hit"] = outcome == "NB"
 
-    # powerplay marker (first 6 overs of a T20-like game, scaled for short games)
+                                                                                 
     pp_balls = _powerplay_balls(g)
     if inn["pp_runs"] is None and legal and inn["balls"] >= pp_balls:
         inn["pp_runs"] = inn["runs"]
@@ -736,7 +736,7 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
     }
     inn["log"].append([label, token, runs, striker["slot"], bowl_slot, 1 if wicket else 0, inn["over"]["no"]])
 
-    # end of over bookkeeping
+                             
     if over_ended:
         _close_over(g, inn)
     _check_innings_end(g, inn)
@@ -818,9 +818,9 @@ def continue_innings(g: dict, rng: random.Random | None = None) -> None:
     _start_innings(g, 1, first["bowl"], rnd)
 
 
-# ---------------------------------------------------------------------------
-# user actions
-# ---------------------------------------------------------------------------
+                                                                             
+              
+                                                                             
 def _validate_choice(g: dict, inn: dict, choice: str) -> str:
     choice = _norm_choice(choice)
     if inn["bat"] == "user":
@@ -912,9 +912,9 @@ def _after_delivery(g: dict, inn: dict, rng: random.Random) -> None:
         _begin_over(g, inn, rng)
 
 
-# ---------------------------------------------------------------------------
-# result
-# ---------------------------------------------------------------------------
+                                                                             
+        
+                                                                             
 def _finish_match(g: dict) -> None:
     a, b = g["inn"][0], g["inn"][1]
     g["stage"] = "done"
@@ -989,9 +989,9 @@ def player_of_match(g: dict) -> dict | None:
             "kind": p.get("kind"), "line": " & ".join(lines) or "-", "pts": round(pts, 1)}
 
 
-# ---------------------------------------------------------------------------
-# misc helpers
-# ---------------------------------------------------------------------------
+                                                                             
+              
+                                                                             
 def _feed(g: dict, item: dict) -> None:
     item = dict(item)
     item["t"] = int(time.time())

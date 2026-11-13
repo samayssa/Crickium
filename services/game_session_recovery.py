@@ -18,8 +18,8 @@ _TERMINAL = {"timed_out", "completed", "declined", "ended", "expired"}
 _SAVER_TASK: asyncio.Task | None = None
 _SAVE_LOCK = asyncio.Lock()
 RECOVERY_CHECKPOINT_SECONDS = 10.0
-# digest of the last snapshot successfully written per (engine, match_id); lets an
-# unchanged session skip its DB write (periodic saver + post-callback sync overlap).
+                                                                                  
+                                                                                    
 _LAST_SNAPSHOT_DIGEST: dict[tuple[str, int], bytes] = {}
 
 
@@ -44,8 +44,8 @@ async def delete_snapshot(engine: str, match_id: int) -> None:
 
 
 def _normalize_for_pickle(session: Any) -> Any:
-    # asyncpg.Record is not reliably pickleable. Runtime `match` values are
-    # plain mapping data, so normalize that field in-place before pickling.
+                                                                           
+                                                                           
     try:
         if hasattr(session, "match") and session.match is not None:
             session.match = dict(session.match)
@@ -68,7 +68,7 @@ async def persist_session(engine: str, session: Any) -> bool:
         digest_key = (str(engine).upper(), match_id)
         digest = hashlib.blake2b(payload, digest_size=16).digest()
         if _LAST_SNAPSHOT_DIGEST.get(digest_key) == digest:
-            return True  # identical to the snapshot already stored in PostgreSQL
+            return True                                                          
         async with _SAVE_LOCK:
             await execute(
                 """
@@ -364,7 +364,7 @@ async def _rebuild_team_engine(engine: str, match: dict) -> Any | None:
     batting_squad = c_squad if batting_id == challenger_id else o_squad
     bowling_squad = c_squad if bowling_id == challenger_id else o_squad
     from engines.play_engine import playing_xi
-    # The live runtimes take a full squad and derive their bowling pool/XI.
+                                                                           
     if engine == "PLAYINT":
         session = create_playint_session(
             match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
@@ -407,8 +407,8 @@ async def restore_or_rebuild(engine: str, match: dict) -> Any | None:
     session = await restore_session(engine, mid)
     if session is not None:
         return session
-    # Only rebuild live/runtime stages. Earlier stages are fully represented
-    # in their match rows and do not need an in-memory runtime object.
+                                                                            
+                                                                      
     if str(match.get("status") or "") != "lineup":
         return None
     if engine == "PLAY":

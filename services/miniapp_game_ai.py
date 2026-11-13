@@ -47,7 +47,7 @@ TACTIC_KEYS: dict[str, tuple[str, ...]] = {
     "leg": ("leg_breaker", "top_spinner", "slider", "flipper", "googly_ball"),
 }
 
-# Share of a batting side's resources (wickets in hand) that is still left.
+                                                                           
 _RESOURCE = (1.00, 0.985, 0.955, 0.91, 0.845, 0.76, 0.65, 0.52, 0.37, 0.20, 0.0)
 
 _BASE_MINDSET_PRIOR = {
@@ -56,10 +56,10 @@ _BASE_MINDSET_PRIOR = {
 }
 
 
-# --------------------------------------------------------------------------
-# small shared helpers (also used by the core engine and the win-probability
-# model, which keep a one-way dependency on this module)
-# --------------------------------------------------------------------------
+                                                                            
+                                                                            
+                                                        
+                                                                            
 def tactic_set_key(bowling_hand: str | None) -> str:
     """Which button set a bowler gets - identical to the bot's keyboard."""
     style = str(bowling_hand or "").strip().upper()
@@ -117,9 +117,9 @@ def _ai_knobs(difficulty: str) -> dict:
     return eng.difficulty_profile(difficulty)["ai"]
 
 
-# --------------------------------------------------------------------------
-# beliefs about the user's hidden choice
-# --------------------------------------------------------------------------
+                                                                            
+                                        
+                                                                            
 def mindset_prior(frac: float, wickets: int, ratio: float | None) -> dict[str, float]:
     """What a sensible captain expects a batter to do in this situation.
 
@@ -175,12 +175,12 @@ def belief_over_mindsets(kind: str, frac: float, wickets: int, ratio: float | No
         return {k: 1.0 / len(MINDSET_KEYS) for k in MINDSET_KEYS}
     if kind == "phase":
         return prior
-    # "history": blend the situational prior with what the user actually does
+                                                                             
     counts = _decayed_counts(history, MINDSET_KEYS)
     total = sum(counts.values())
     if total < 3:
         return prior
-    weight = min(0.65, 0.10 * total)  # trust grows with the sample size
+    weight = min(0.65, 0.10 * total)                                    
     emp = {k: counts[k] / total for k in MINDSET_KEYS}
     return _normalise({k: (1 - weight) * prior[k] + weight * emp[k] for k in MINDSET_KEYS})
 
@@ -200,9 +200,9 @@ def belief_over_tactics(kind: str, history: list[str]) -> dict[str, float]:
     return _normalise({k: (1 - weight) * uniform[k] + weight * counts[k] / total for k in archetypes})
 
 
-# --------------------------------------------------------------------------
-# expected-value helpers built on the real probability engine
-# --------------------------------------------------------------------------
+                                                                            
+                                                             
+                                                                            
 _RUN_VALUE = {0: 0.0, 1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0, 6: 6.0, "WD": 1.0, "NB": 1.0, "LB": 1.0, "BY": 1.0}
 
 
@@ -240,9 +240,9 @@ def _frac(ctx: dict) -> float:
     return min(1.0, max(0.0, 1.0 - ctx["balls_left"] / float(total)))
 
 
-# --------------------------------------------------------------------------
-# public decisions
-# --------------------------------------------------------------------------
+                                                                            
+                  
+                                                                            
 def batting_intent(ctx: dict) -> float:
     """How hard a sensible batter wants to attack right now, on the scale
     0 (defensive) .. 4 (ultra aggressive).  Pure situational cricket sense:
@@ -263,11 +263,11 @@ def batting_intent(ctx: dict) -> float:
 
     faced = int(ctx["balls_faced"])
     if faced < 6:
-        intent -= 0.5                      # play yourself in
+        intent -= 0.5                                        
     elif faced >= 18 and float(ctx["confidence"]) >= 50:
-        intent += 0.4                      # set batter can open up
+        intent += 0.4                                              
     if int(ctx["batter_level"]) < 45 and phase != "death":
-        intent -= 0.4                      # tail-ender: survive
+        intent -= 0.4                                           
 
     par, _cost, ratio = _situation(ctx)
     if ratio is not None:
@@ -278,7 +278,7 @@ def batting_intent(ctx: dict) -> float:
             chase += 0.5
         intent = 0.35 * intent + 0.65 * chase
     else:
-        # first innings: chase the pitch's par score
+                                                    
         played = ctx["overs"] * 6 - ctx["balls_left"]
         if played >= 12:
             crr = ctx["runs"] * 6.0 / played
@@ -314,9 +314,9 @@ def pick_mindset(ctx: dict, history: list[str], rng: random.Random) -> str:
         _par, cost, ratio = _situation(ctx)
         if ratio is not None:
             if ratio > 1.4:
-                cost *= 0.55          # must attack: wickets are cheap
+                cost *= 0.55                                          
             elif ratio < 0.65:
-                cost *= 1.45          # cruising: do not throw it away
+                cost *= 1.45                                          
         belief = belief_over_tactics(knobs["belief"], history)
         utilities = []
         for mindset in MINDSET_KEYS:
@@ -344,7 +344,7 @@ def pick_tactic(ctx: dict, history: list[str], rng: random.Random) -> str:
     keys = TACTIC_KEYS[tactic_set_key(ctx["bowler_style"])]
     value = cost
     if ratio is not None and ratio < 0.85:
-        value *= 1.2     # the batting side is cruising - only wickets will stop them
+        value *= 1.2                                                                 
     utilities = []
     for tactic in keys:
         exp_runs = 0.0
@@ -394,7 +394,7 @@ def pick_bowler(difficulty: str, candidates: list[dict], ctx: dict, rng: random.
         pick = _softmax_pick([str(c["pid"]) for c in candidates], scores, 6.0, 0.0, rng)
         return int(pick)
 
-    # matchup / plan
+                    
     ranked = sorted(candidates, key=lambda c: -float(c["bowl"]))
     top_two = {int(c["pid"]) for c in ranked[:2]}
     total_overs = int(ctx["overs"])
@@ -413,7 +413,7 @@ def pick_bowler(difficulty: str, candidates: list[dict], ctx: dict, rng: random.
                 score -= 3.0
         if mode == "plan":
             if phase != "death" and int(c["pid"]) in top_two and int(c["overs_left"]) <= death_overs_left:
-                score -= 4.0      # save the best bowlers for the end
+                score -= 4.0                                         
             if phase == "death" and int(c["pid"]) in top_two:
                 score += 4.0
         scores.append(score)

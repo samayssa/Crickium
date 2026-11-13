@@ -65,9 +65,9 @@ def markup(*rows: Sequence[dict]) -> dict:
     return {"inline_keyboard": [list(r) for r in rows if r]}
 
 
-# ---------------------------------------------------------------------------
-# small formatters
-# ---------------------------------------------------------------------------
+                                                                             
+                  
+                                                                             
 def team_short(team: Mapping[str, Any] | None) -> str:
     if not team:
         return "—"
@@ -116,9 +116,9 @@ def multiple(final: int, base: int) -> str:
     return f" · {ratio:.1f}× base" if ratio >= 1.5 else ""
 
 
-# ---------------------------------------------------------------------------
-# auction messages
-# ---------------------------------------------------------------------------
+                                                                             
+                  
+                                                                             
 def owner_tag(team: Mapping[str, Any] | None, owner_id: Any = None, owner_name: Any = None, owner_username: Any = None) -> str:
     """The team owner as a clickable mention (@username when there is one)."""
     uid = owner_id if owner_id is not None else (team or {}).get("owner_id")
@@ -302,9 +302,9 @@ def pin_warning() -> str:
             "The auction continues without pinning.")
 
 
-# ---------------------------------------------------------------------------
-# bid feedback (alert text for the person who tapped)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                     
+                                                                             
 def bid_feedback(result: Mapping[str, Any]) -> str:
     """Short plain text (callback alert / Mini App toast) for a place_bid result."""
     if result.get("ok"):

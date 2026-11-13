@@ -17,7 +17,7 @@ from services import tournament_text as tx
 from services import tournament_tg as _tg
 from utils.mentions import mention_html
 
-GAP_SECONDS = 3.2        # a group tolerates ~20 messages a minute
+GAP_SECONDS = 3.2                                                 
 
 
 def _e(v: Any) -> str:

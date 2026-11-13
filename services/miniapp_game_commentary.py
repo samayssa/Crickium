@@ -22,7 +22,7 @@ def ball_line(outcome, *, bat: str, bowl: str, runs: int = 0, wicket_kind: str |
     if ctx is not None:
         try:
             return miniapp_ball_commentary(rng=rng, free_hit=free_hit, outcome=outcome, **ctx)
-        except Exception as exc:   # never break a delivery over a commentary line
+        except Exception as exc:                                                  
             print(f"[miniapp commentary] studio failed, simple line used: {exc!r}")
     return simple_ball_line(_NAME_KIND.get(outcome, "dot"), bat, bowl, runs)
 
@@ -59,7 +59,7 @@ def milestone_line(kind: str, name: str, value: int | str = "", rng: random.Rand
     line = rnd.choice(pool)
     digits = "".join(ch for ch in str(value) if ch.isdigit())
     runs = "100" if kind == "hundred" else "50"
-    if not digits and "{balls}" in line:        # no ball count known: use a line that does not need it
+    if not digits and "{balls}" in line:                                                               
         line = f"{'A CENTURY' if kind == 'hundred' else 'FIFTY'} for {{B}}!"
     for k, v in {"{B}": name, "{W}": name, "{b}": surname(name), "{w}": surname(name), "{runs}": runs, "{balls}": digits, "{p}": digits}.items():
         line = line.replace(k, v)

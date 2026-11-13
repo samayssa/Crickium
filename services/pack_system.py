@@ -51,8 +51,8 @@ async def create_purchase_request(user_id: int, pack_key: str, client_request_id
     request_key = str(client_request_id or "").strip()[:80] or None
     request_id = uuid.uuid4()
 
-    # Reusing a client request ID makes a network retry return the same pending
-    # request rather than creating another independently confirmable request.
+                                                                               
+                                                                             
     if request_key:
         existing = await fetchrow(
             "SELECT request_id,user_id,pack_key,price_sigils,status FROM pack_purchase_requests WHERE user_id=$1 AND client_request_id=$2;",
@@ -187,8 +187,8 @@ async def inventory(user_id: int) -> dict[str, int]:
 
 
 async def _candidate_players(low: int, high: int) -> list[dict[str, Any]]:
-    # Include both normal and special-edition player cards in pack pools. The
-    # existing card renderer already understands both shapes.
+                                                                             
+                                                             
     rows = await fetch(
         """
         SELECT player_id::bigint AS player_id, name, country, role, bat_level, bowl_level,
@@ -253,9 +253,9 @@ async def open_pack(user_id: int, pack_key: str, client_request_id: str | None =
         if existing:
             return _result_from_row(existing)
 
-    # Keep the original per-pack core/bonus ranges. The separate 50/30/20
-    # level-band rule is intentionally not applied to every catalogue pack,
-    # because that would contradict Diamond/Platinum guarantees.
+                                                                         
+                                                                           
+                                                                
     core_pool = await _candidate_players(*p["core"])
     bonus_pool = await _candidate_players(*p["bonus"])
     if not core_pool or not bonus_pool:
@@ -280,7 +280,7 @@ async def open_pack(user_id: int, pack_key: str, client_request_id: str | None =
     opening_id = uuid.uuid4()
 
     async def _tx(conn):
-        # Re-check under the transaction to make retried/concurrent requests idempotent.
+                                                                                        
         if request_key:
             prior = await conn.fetchrow(
                 "SELECT opening_id,pack_key,cards,coins,rubies FROM pack_openings WHERE user_id=$1 AND client_request_id=$2 FOR UPDATE;",
@@ -304,8 +304,8 @@ async def open_pack(user_id: int, pack_key: str, client_request_id: str | None =
         if quantity <= 0:
             return {"status": "empty"}
 
-        # Persist the immutable reveal before consuming inventory. A unique
-        # request key prevents concurrent retries from creating a second opening.
+                                                                           
+                                                                                 
         if request_key:
             inserted = await conn.fetchrow(
                 """

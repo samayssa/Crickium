@@ -114,8 +114,8 @@ def _load_catalog() -> list[dict[str, Any]]:
         if actual != expected:
             raise ValueError(f"Quest catalog {period} count must be {expected}, got {actual}")
 
-    # Preserve the reward schedule required by the Quest economy. The CSV must
-    # match this mapping exactly so the runtime and catalog cannot drift apart.
+                                                                              
+                                                                               
     for task in rows:
         period_key = str(task["period"]).lower()
         reward = REWARD_MAP[period_key][str(task["difficulty"])]
@@ -139,8 +139,8 @@ DIFFICULTY_COUNTS = {
     "monthly": {"Easy": 3, "Medium": 4, "Hard": 3},
 }
 
-# REWARD_MAP is declared after the loader above, so validate again here with a
-# compact deterministic pass once the mapping exists.
+                                                                              
+                                                     
 for _task in QUEST_TASKS:
     _period = str(_task["period"]).lower()
     _reward = REWARD_MAP[_period][str(_task["difficulty"])]

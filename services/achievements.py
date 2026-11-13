@@ -13,23 +13,23 @@ from typing import Any
 from database import achievements_repo as repo
 from database.query import fetchrow, fetchval
 
-# (key, chapter, icon, title, description, metric, target, points)
+                                                                  
 _RAW: list[tuple] = [
-    # Chapter 1 - Rookie
+                        
     ("first_steps", "Rookie", "👣", "First Steps", "Open your Crickium account", "joined", 1, 5),
     ("squad_5", "Rookie", "👥", "Gathering Talent", "Hold 5 players in your squad", "squad", 5, 10),
     ("squad_11", "Rookie", "🧢", "Full Eleven", "Build a squad of 11 players", "squad", 11, 15),
     ("captain", "Rookie", "©️", "Leader of Men", "Appoint a captain", "captain", 1, 15),
     ("daily_1", "Rookie", "🎁", "Daily Habit", "Claim your first daily reward", "daily_total", 1, 10),
     ("first_pack", "Rookie", "📦", "Fresh Wrapper", "Open your first pack", "packs", 1, 15),
-    # Chapter 2 - Debut
+                       
     ("match_1", "Debut", "🏏", "Debut Day", "Play your first match", "matches", 1, 20),
     ("win_1", "Debut", "🏆", "Taste of Victory", "Win your first match", "wins", 1, 25),
     ("match_5", "Debut", "🎯", "Getting Warmer", "Play 5 matches", "matches", 5, 20),
     ("win_5", "Debut", "🔥", "Winning Habit", "Win 5 matches", "wins", 5, 30),
     ("game_1", "Debut", "🎮", "Vs The Machine", "Finish a Play Game match", "g_games", 1, 20),
     ("game_win_1", "Debut", "⚔️", "Machine Slayer", "Beat the computer once", "g_wins", 1, 25),
-    # Chapter 3 - Rising
+                        
     ("level_5", "Rising", "⭐", "Rising Star", "Reach level 5", "level", 5, 25),
     ("packs_5", "Rising", "🎴", "Pack Hunter", "Open 5 packs", "packs", 5, 25),
     ("squad_20", "Rising", "🧩", "Deep Bench", "Hold 20 players in your squad", "squad", 20, 30),
@@ -38,7 +38,7 @@ _RAW: list[tuple] = [
     ("rare_card", "Rising", "💎", "Rare Find", "Own a Rare (75+) card", "best_card", 75, 30),
     ("game_5", "Rising", "🕹️", "Arcade Regular", "Finish 5 Play Game matches", "g_games", 5, 30),
     ("easy_win", "Rising", "🌱", "Easy Does It", "Win on Easy difficulty", "g_wins_easy", 1, 20),
-    # Chapter 4 - Contender
+                           
     ("match_25", "Contender", "📈", "Seasoned Pro", "Play 25 matches", "matches", 25, 40),
     ("win_15", "Contender", "🥇", "Serial Winner", "Win 15 matches", "wins", 15, 45),
     ("level_15", "Contender", "🚀", "On The Rise", "Reach level 15", "level", 15, 40),
@@ -49,7 +49,7 @@ _RAW: list[tuple] = [
     ("fifty", "Contender", "5️⃣", "Half Century", "Score 50+ in a Play Game match", "g_fifties", 1, 40),
     ("six_25", "Contender", "💥", "Sky Hitter", "Hit 25 sixes in Play Game", "g_sixes", 25, 40),
     ("chase_1", "Contender", "🎢", "Cool Chaser", "Win a Play Game chase", "g_chases", 1, 40),
-    # Chapter 5 - Elite
+                       
     ("hard_win", "Elite", "🛡️", "Hard Earned", "Win on Hard difficulty", "g_wins_hard", 1, 60),
     ("win_50", "Elite", "👑", "Dynasty", "Win 50 matches", "wins", 50, 70),
     ("match_100", "Elite", "💯", "Centurion", "Play 100 matches", "matches", 100, 70),
@@ -58,7 +58,7 @@ _RAW: list[tuple] = [
     ("defend_1", "Elite", "🧱", "Fortress", "Defend a target in Play Game", "g_defended", 1, 60),
     ("streak_3", "Elite", "⚡", "Hat-trick Streak", "Win 3 Play Game matches in a row", "g_best_streak", 3, 60),
     ("level_30", "Elite", "🏔️", "High Altitude", "Reach level 30", "level", 30, 70),
-    # Chapter 6 - Legend
+                        
     ("expert_win", "Legend", "🐉", "Expert Slayer", "Win on Expert difficulty", "g_wins_expert", 1, 120),
     ("legend_card", "Legend", "🏛️", "Legendary Collector", "Own a Legendary (95+) card", "best_card", 95, 100),
     ("win_150", "Legend", "🔱", "Living Legend", "Win 150 matches", "wins", 150, 120),
@@ -188,7 +188,7 @@ async def check_and_unlock(user_id: int) -> list[dict]:
     if not new_keys:
         return []
     fresh = set(await repo.unlock_many(user_id, new_keys))
-    # hall_of_fame may become reachable after the others are stored
+                                                                   
     stored2 = await repo.unlocked(user_id)
     items = _evaluate(metrics, stored2)
     extra = [i["key"] for i in items if i["done"] and i["key"] not in stored2]

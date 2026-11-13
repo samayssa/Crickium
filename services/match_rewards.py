@@ -49,8 +49,8 @@ async def award_timeout_rewards(winner_id: int, loser_id: int) -> dict:
     TIMEOUT_LOSS_RUBIES = -25
 
     async def _tx(conn):
-        # Do not call award_competitive_rewards here: inactivity has a distinct
-        # economy rule and must never inherit the normal +10k/+50 payout.
+                                                                               
+                                                                         
         for uid, coins_delta, rubies_delta in (
             (int(winner_id), TIMEOUT_WIN_COINS, TIMEOUT_WIN_RUBIES),
             (int(loser_id), TIMEOUT_LOSS_COINS, TIMEOUT_LOSS_RUBIES),

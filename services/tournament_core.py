@@ -16,25 +16,25 @@ import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
-# ---------------------------------------------------------------------------
-# constants
-# ---------------------------------------------------------------------------
+                                                                             
+           
+                                                                             
 TZ_MIN_IST = 330
-BID_SECONDS = 30                  # every bid restarts this countdown
-BETWEEN_LOTS_SECONDS = 2          # the next player arrives 2 s after a lot closes (the presenter still respects Telegram's group rate limit)
-GOING_ONCE_AT = 10                # seconds left -> "going once"
-GOING_TWICE_AT = 5                # seconds left -> "going twice"
+BID_SECONDS = 30                                                     
+BETWEEN_LOTS_SECONDS = 2                                                                                                                     
+GOING_ONCE_AT = 10                                              
+GOING_TWICE_AT = 5                                               
 
 POINTS_WIN = 2
 POINTS_NO_RESULT = 1
 POINTS_TIE = 1
 POINTS_WALKOVER = 2
-POINTS_ABANDONED = 0              # both players were absent
+POINTS_ABANDONED = 0                                        
 
-WINDOW_START_MIN = 17 * 60        # match day opens 5 PM
-WINDOW_END_MIN = 21 * 60          # ... and closes 9 PM
-REMIND_BEFORE_MIN = 60            # "your time is going" 1 h before the close
-LATE_START_GUARD_MIN = 90         # a tournament started later than (end - this) begins tomorrow
+WINDOW_START_MIN = 17 * 60                              
+WINDOW_END_MIN = 21 * 60                               
+REMIND_BEFORE_MIN = 60                                                       
+LATE_START_GUARD_MIN = 90                                                                       
 
 WINDOW_PRESETS = (
     (17 * 60, 21 * 60),
@@ -43,7 +43,7 @@ WINDOW_PRESETS = (
     (15 * 60, 19 * 60),
 )
 
-# Official IPL auction ladder: (exclusive upper bound in lakh, step in lakh).
+                                                                             
 OFFICIAL_LADDER: tuple[tuple[int | None, int], ...] = ((100, 5), (200, 10), (500, 20), (None, 25))
 FAST_LADDER: tuple[tuple[int | None, int], ...] = ((100, 10), (200, 20), (500, 25), (None, 50))
 LADDER_PRESETS = {
@@ -105,9 +105,9 @@ def profile(engine: str) -> dict[str, Any]:
     return ENGINE_PROFILES.get(str(engine or "").upper()) or ENGINE_PROFILES["PLAYIPL"]
 
 
-# ---------------------------------------------------------------------------
-# money
-# ---------------------------------------------------------------------------
+                                                                             
+       
+                                                                             
 def fmt_money(lakh: int | float | None) -> str:
     """75 -> '₹75 L', 100 -> '₹1 Cr', 125 -> '₹1.25 Cr'."""
     value = int(round(float(lakh or 0)))
@@ -132,9 +132,9 @@ def parse_money(text: Any, default_unit: str = "cr") -> int | None:
     return lakh if 1 <= lakh <= 1_000_000 else None
 
 
-# ---------------------------------------------------------------------------
-# bid ladder
-# ---------------------------------------------------------------------------
+                                                                             
+            
+                                                                             
 def normalize_ladder(raw: Any) -> tuple[tuple[int | None, int], ...]:
     """Accept lists/tuples (e.g. what JSON gives back) and validate the ladder."""
     if not raw:
@@ -209,9 +209,9 @@ def ladder_to_json(ladder: Any) -> list[list[int | None]]:
     return [[b, s] for b, s in normalize_ladder(ladder)]
 
 
-# ---------------------------------------------------------------------------
-# players
-# ---------------------------------------------------------------------------
+                                                                             
+         
+                                                                             
 def norm_role(role: Any) -> str:
     raw = re.sub(r"[^a-z]", "", str(role or "").lower())
     if raw in {"wicketkeeper", "wk", "keeper", "wkbatter", "wkbatsman"}:
@@ -255,9 +255,9 @@ def player_ovr(player: Mapping[str, Any]) -> int:
     return max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
 
 
-# ---------------------------------------------------------------------------
-# auction pool + sets
-# ---------------------------------------------------------------------------
+                                                                             
+                     
+                                                                             
 _CATEGORY_NAMES = {
     "BA": "Batters", "AL": "All-Rounders", "WK": "Wicket-Keepers", "FA": "Fast Bowlers", "SP": "Spinners",
 }
@@ -352,7 +352,7 @@ def build_auction_sets(players: Iterable[Mapping[str, Any]], prof: Mapping[str, 
     ordered = sorted(pool, key=lambda p: -p["value"])
     remaining = list(pool)
 
-    # --- marquee ---------------------------------------------------------
+                                                                           
     marquee_total = 0
     if len(pool) >= 16:
         marquee_total = max(4, min(16, int(round(len(pool) * 0.06))))
@@ -366,7 +366,7 @@ def build_auction_sets(players: Iterable[Mapping[str, Any]], prof: Mapping[str, 
         for number, chunk in enumerate(chunks, start=1):
             add_set(f"M{number}", f"Marquee Set {number}", POOL_MARQUEE, chunk)
 
-    # --- category tracks -------------------------------------------------
+                                                                           
     tracks_capped: dict[str, list[list[dict[str, Any]]]] = {}
     tracks_uncapped: dict[str, list[list[dict[str, Any]]]] = {}
     for cat in _CATEGORY_NAMES:
@@ -457,9 +457,9 @@ def accelerated_lots(unsold_rows: Iterable[Mapping[str, Any]], rng: random.Rando
     return flatten_sets(sets)
 
 
-# ---------------------------------------------------------------------------
-# squad rules
-# ---------------------------------------------------------------------------
+                                                                             
+             
+                                                                             
 def select_pool(players: Iterable[Mapping[str, Any]], target: int, rng: random.Random | None = None) -> list[dict[str, Any]]:
     """A quality-weighted random subset (a different one every auction) of about ``target`` players.
 
@@ -516,7 +516,7 @@ def xi_feasible(players: Sequence[Mapping[str, Any]], xi_overseas_max: int = 0) 
     Rule: 11 players, Batsman >= 1, 2 <= AllRounder <= 4, 3 <= Bowler <= 4,
     Wicketkeeper >= 1 and (franchise leagues) at most N overseas players.
     """
-    have: dict[str, list[int]] = {r: [0, 0] for r in ROLES}      # [home-born, overseas]
+    have: dict[str, list[int]] = {r: [0, 0] for r in ROLES}                             
     for p in players:
         role = norm_role(p.get("role"))
         have[role][1 if is_overseas(p.get("country")) and xi_overseas_max else 0] += 1
@@ -566,7 +566,7 @@ def pick_best_xi(players: Sequence[Mapping[str, Any]], xi_overseas_max: int = 0)
                     guard = 0
                     while sum(1 for r in ROLES for p in pick[r] if p["_os"]) > xi_overseas_max and guard < 40:
                         guard += 1
-                        swap = None            # (loss, role, out, in)
+                        swap = None                                   
                         for r in ROLES:
                             chosen_ids = {id(p) for p in pick[r]}
                             home = [p for p in by_role[r] if not p["_os"] and id(p) not in chosen_ids]
@@ -687,9 +687,9 @@ def max_bid_for_team(purse_left: int, squad_count: int, squad_min: int, min_base
     return int(purse_left) - slots_after * int(min_base)
 
 
-# ---------------------------------------------------------------------------
-# role (batter / keeper / all-rounder / bowler) and overseas squad rules
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                        
+                                                                             
 ROLE_PLURAL = {ROLE_BAT: "Batters", ROLE_WK: "Wicket-keepers", ROLE_AR: "All-rounders", ROLE_BOWL: "Bowlers"}
 ROLE_ALIASES = {
     "bat": ROLE_BAT, "batter": ROLE_BAT, "batters": ROLE_BAT, "batsman": ROLE_BAT, "batsmen": ROLE_BAT,
@@ -893,9 +893,9 @@ def rules_lines(rules: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-# ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
+                                                                             
+          
+                                                                             
 def round_robin_rounds(team_ids: Sequence[int], rng: random.Random | None = None) -> list[list[tuple[int, int]]]:
     """Circle-method rounds; every team plays at most once per round (odd N -> a bye)."""
     rng = rng or random.Random()
@@ -979,9 +979,9 @@ def next_playoff_fixtures(plan: Mapping[str, Any], seeds: Sequence[int], done: M
     return out
 
 
-# ---------------------------------------------------------------------------
-# points table
-# ---------------------------------------------------------------------------
+                                                                             
+              
+                                                                             
 def _overs_balls(balls: int, wickets: int, limit_balls: int) -> int:
     """All out -> the team is charged the full quota, otherwise the balls actually faced."""
     return limit_balls if int(wickets) >= 10 else int(balls)
@@ -1026,7 +1026,7 @@ def compute_table(teams: Sequence[Mapping[str, Any]], fixtures: Sequence[Mapping
                 row["abandoned"] += 1
                 row["points"] += POINTS_ABANDONED
                 row["form"].append("A")
-        else:  # no result / tie
+        else:                   
             for row in (home, away):
                 row["nr"] += 1
                 row["points"] += POINTS_NO_RESULT
@@ -1066,9 +1066,9 @@ def fmt_nrr(value: float) -> str:
     return f"{value:+.3f}"
 
 
-# ---------------------------------------------------------------------------
-# no-show resolution
-# ---------------------------------------------------------------------------
+                                                                             
+                    
+                                                                             
 def resolve_no_show(present_home: bool, present_away: bool, stage: str = "league", home_seed: int = 1, away_seed: int = 2) -> dict[str, Any]:
     """What happens to a fixture that was not played by the day's deadline?
 
@@ -1086,9 +1086,9 @@ def resolve_no_show(present_home: bool, present_away: bool, stage: str = "league
     return {"action": "abandoned", "winner": "home" if home_seed <= away_seed else "away"}
 
 
-# ---------------------------------------------------------------------------
-# match statistics
-# ---------------------------------------------------------------------------
+                                                                             
+                  
+                                                                             
 def _num(value: Any) -> int:
     try:
         return int(value or 0)
@@ -1161,7 +1161,7 @@ def extract_match(payload: Mapping[str, Any], team_by_user: Mapping[int, int]) -
         for b in inn.get("batters") or []:
             balls, dismissed = _num(b.get("balls")), bool(b.get("dismissed"))
             if balls == 0 and not dismissed:
-                continue                                       # did not bat
+                continue                                                    
             ln = line_for(bat_team, b.get("name") or "Player")
             ln["batted"] = True
             ln["runs"] += _num(b.get("runs")); ln["balls"] += balls
@@ -1225,9 +1225,9 @@ def match_margin(innings: Sequence[Mapping[str, Any]], winner_team: int | None, 
     return f"by {diff} run{'s' if diff != 1 else ''}" if diff > 0 else ""
 
 
-# ---------------------------------------------------------------------------
-# match-day clock
-# ---------------------------------------------------------------------------
+                                                                             
+                 
+                                                                             
 def tzinfo(tz_min: int = TZ_MIN_IST) -> timezone:
     return timezone(timedelta(minutes=int(tz_min)))
 
@@ -1270,9 +1270,9 @@ def clean_name(text: Any, max_len: int = 36) -> str | None:
     return value[:max_len].strip()
 
 
-# ---------------------------------------------------------------------------
-# manual schedule (.txt) - parse / render
-# ---------------------------------------------------------------------------
+                                                                             
+                                         
+                                                                             
 SCHEDULE_HELP = (
     "# Tournament schedule - one match per line\n"
     "# DAY lines start a match day. Date (YYYY-MM-DD) is optional; without it days follow one after another.\n"

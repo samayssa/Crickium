@@ -135,7 +135,7 @@ def activation_strength(upgrade: UpgradeDef, *, tier: int, phase: str, tactic: s
         if not chasing or rate < 10 or float(confidence) < 60:
             return 0.0
     if upgrade.key == "turn_extractor":
-        # Pitch gating is handled by caller through a compatible family/phase check.
+                                                                                    
         pass
     strength = tier_strength(tier)
     if upgrade.tactics and tactic in upgrade.tactics and upgrade.phases and phase in upgrade.phases:
@@ -196,7 +196,7 @@ def apply_upgrade_layer(weights: Mapping[Any, float], *, batting_upgrade: Mappin
         role = role_key(batter_role if is_batting else bowler_role)
         if role not in upgrade.roles:
             return
-        # Tier strength is centralized in utils.upgrade_prices: 5%, 7.5%, 10%, 12.5%, 15%.
+                                                                                          
         strength = activation_strength(
             upgrade, tier=tier, phase=phase, tactic=tactic, mindset=mindset,
             bowler_family_name=bowler_family_name, batsman_balls_faced=batsman_balls_faced,
@@ -204,7 +204,7 @@ def apply_upgrade_layer(weights: Mapping[Any, float], *, batting_upgrade: Mappin
         )
         if strength <= 0:
             return
-        # Spin surface specialists need the actual pitch family.
+                                                                
         if key == "turn_extractor" and pitch not in {"dusty", "dry", "slow"}:
             return
 
@@ -235,7 +235,7 @@ def apply_upgrade_layer(weights: Mapping[Any, float], *, batting_upgrade: Mappin
     apply_one(batting_upgrade, True)
     apply_one(bowling_upgrade, False)
 
-    # Final upgrade-only relative safety caps.
+                                              
     baseline = max(1e-12, sum(max(0.0, float(v)) for v in weights.values()))
     for key, value in list(out.items()):
         if not (value >= 0.0):

@@ -65,7 +65,7 @@ async def _handle(payload: dict) -> None:
     match_id = int(payload.get("match_id") or 0)
     if engine == "PLAYSO":
         if term == "completed":
-            return                      # the origin match reports the final result (with the Super Over)
+            return                                                                                       
         origin = await _origin_of_decider(payload)
         if origin is None:
             return
@@ -82,7 +82,7 @@ async def _handle(payload: dict) -> None:
         return
     tg = _tg.get()
     chat_id = int(t["host_chat_id"])
-    if term == "abandoned":             # an admin stopped the game: the fixture goes back on the schedule
+    if term == "abandoned":                                                                               
         await tr.reset_fixture(tid, fno)
         await tg.send(chat_id, f"⚠️ <b>Match {fno}</b> was abandoned by an admin. It is back on the schedule — "
                                f"both players can use /tplay to play it again.", tx.markup([tx.hub_button(tid)]))
@@ -106,7 +106,7 @@ async def _handle(payload: dict) -> None:
             res["result_text"] = f"{tx.team_short(winner_team)} won {margin}".strip()
         else:
             res.update(result_type="tie", result_text="Match tied")
-    else:                               # exited / timed_out: the player who stayed gets a walkover win
+    else:                                                                                              
         if winner_team is None:
             res.update(result_type="no_result", result_text="No result")
         else:

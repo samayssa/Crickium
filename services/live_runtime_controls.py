@@ -40,7 +40,7 @@ def impact_batting_position_allowed(session: Any, team_id: int) -> bool:
                 return idx >= start and not bool(slot.dismissed)
         return False
 
-    # Bowling side.
+                   
     return int(getattr(innings, "innings_number", 1) or 1) < 2 or bool(getattr(innings, "completed", False))
 
 
@@ -153,7 +153,7 @@ def _active_batter_ids(session: Any, team_id: int) -> set[int]:
 
 
 def impact_out_candidates(session: Any, team_id: int) -> list[dict[str, Any]]:
-    # The Impact Player UI intentionally exposes the complete current XI.
+                                                                         
     return [dict(p) for p in current_xi(session, team_id)]
 
 
@@ -220,14 +220,14 @@ def apply_impact_replacement(
             replaced.append(dict(player))
     set_current_xi(session, team_id, replaced)
 
-    # Batting side, innings in progress:
-    #   * out player already dismissed  -> his scorecard entry stays untouched and
-    #     the Impact player is appended as a brand-new *future* batter (so the
-    #     position selector can place him anywhere in the remaining order).
-    #   * out player at the crease / still to bat -> the Impact player takes that
-    #     slot in place (future batters can then be repositioned).
-    # After the innings has completed (innings break) the finished batting order
-    # is history and must not be edited at all.
+                                        
+                                                                                  
+                                                                              
+                                                                           
+                                                                                 
+                                                                  
+                                                                                
+                                               
     if team_id == int(session.batting_team_id) and not bool(getattr(session.innings, "completed", False)):
         order = session.innings.batting_order
         for idx, slot in enumerate(order):
@@ -244,9 +244,9 @@ def apply_impact_replacement(
                     session.innings.non_striker = replacement
             break
 
-    # Keep the auto plans valid after an Impact replacement. A removed player
-    # must never remain as a stale future bowler/batter reference. Replace it
-    # with the incoming card where possible.
+                                                                             
+                                                                             
+                                            
     if hasattr(session, "auto_bowler_queue"):
         session.auto_bowler_queue[:] = [
             in_id if int(pid) == out_id else int(pid)
@@ -265,8 +265,8 @@ def apply_impact_replacement(
             for pid in session.pending_batsman_order
         ]
 
-    # If the removed player is the current bowler, replace the current bowler
-    # immediately and force a fresh tactic choice for the incoming player.
+                                                                             
+                                                                          
     if team_id == int(session.bowling_team_id) and session.current_bowler is not None:
         if int(session.current_bowler.get("player_id") or 0) == out_id:
             session.current_bowler = dict(in_player)
@@ -274,9 +274,9 @@ def apply_impact_replacement(
             session.current_tactic = None
             session.stage = "choose_tactic"
 
-    # Replacing a queued/curr-bowler card with a card that cannot bowl would
-    # otherwise create a dead auto-bowler plan. Keep the incoming card only if
-    # it is a legitimate bowling candidate; otherwise clear that planned slot.
+                                                                            
+                                                                              
+                                                                              
     if team_id == int(session.bowling_team_id):
         eligible_ids = {int(p.get("player_id") or 0) for p in bowling_candidates(session.bowling_squad)}
         if hasattr(session, "auto_bowler_queue"):
@@ -284,9 +284,9 @@ def apply_impact_replacement(
         if getattr(session, "pending_next_bowler_id", None) is not None and int(session.pending_next_bowler_id) not in eligible_ids:
             session.pending_next_bowler_id = None
 
-    # Preserve the selected pair permanently for later innings-break, result,
-    # summary, and live rendering even after the transient workflow clears
-    # out_id/in_id from the state.
+                                                                             
+                                                                          
+                                  
     impact_state = ensure_impact_state(session, team_id)
     impact_state["impact_out_id"] = out_id
     impact_state["impact_in_id"] = in_id
@@ -295,9 +295,9 @@ def apply_impact_replacement(
 
 
 def future_batting_candidates(session: Any, team_id: int | None = None) -> list[dict[str, Any]]:
-    # When a team is not currently batting, its whole current XI is still a
-    # future batting order. This is used by the runtime Impact Player flow so
-    # the bowling-side user can place the incoming player for innings two.
+                                                                           
+                                                                             
+                                                                          
     if team_id is not None and int(team_id) != int(session.batting_team_id):
         xi = current_xi(session, int(team_id))
         return [
@@ -386,8 +386,8 @@ def confirm_batting_order(session: Any) -> list[int]:
     by_id = {int(slot.player_id or 0): slot for slot in slots if slot.player_id is not None}
     if any(int(pid) not in by_id for pid in selected):
         raise ValueError("One or more selected batters are no longer available.")
-    # Preserve the exact click/selection order. The order in `pending_batsman_order`
-    # is the user's intended replacement queue, not the roster's original order.
+                                                                                    
+                                                                                
     selected_slots = [by_id[int(pid)] for pid in selected]
     selected_set = {int(pid) for pid in selected}
     remaining_slots = [slot for slot in slots if int(slot.player_id or 0) not in selected_set]
@@ -426,11 +426,11 @@ def scheduled_bowler_candidates(session: Any) -> list[dict[str, Any]]:
         completed_overs = balls // 6
         actual_left = MAX_BOWLER_OVERS - completed_overs
 
-        # A newly selected/current bowler has already committed one over even
-        # before the first legal ball is delivered. This makes the displayed
-        # "Left" quota reflect the confirmed plan immediately. Once six balls
-        # of that over are completed, the completed-over count takes over and
-        # the extra commitment is no longer subtracted.
+                                                                             
+                                                                            
+                                                                             
+                                                                             
+                                                       
         current_commitment = 0
         if current_pid is not None and pid == current_pid:
             if balls % 6 != 0 or str(getattr(session, "stage", "")) == "choose_tactic":
@@ -557,7 +557,7 @@ def move_batting_player_to_position(session: Any, player_id: int, target_positio
 
 def apply_entry_role_after_wicket(session: Any) -> None:
     """Apply a saved striker/non-striker preference when a planned batter enters."""
-    # /playint sessions have no Impact Player state - nothing to apply there.
+                                                                             
     for state in (getattr(session, "impact_state", None) or {}).values():
         in_id = state.get("in_id")
         role = state.get("entry_role")

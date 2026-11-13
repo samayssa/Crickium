@@ -18,11 +18,11 @@ from database.query import fetch, fetchrow, fetchval, transaction
 
 MAX_REFERRAL_REWARDS = 50
 
-# The user explicitly specified the early/mid tiers. For the later milestones
-# where only the milestone numbers were supplied, the amounts below continue
-# the established +500,000 coins / +250 rubies pattern from the 15th tier.
-# Keeping the table centralized makes those later amounts easy to change later
-# without touching referral logic.
+                                                                             
+                                                                            
+                                                                          
+                                                                              
+                                  
 REFERRAL_TIERS: dict[int, dict] = {
     1: {"coins": 50_000, "rubies": 50, "players": []},
     2: {"coins": 50_000, "rubies": 50, "players": []},
@@ -119,7 +119,7 @@ def tier_for_referral(number: int) -> dict:
     if number in REFERRAL_TIERS:
         return dict(REFERRAL_TIERS[number])
 
-    # Between milestones, the amount repeats but no new player is granted.
+                                                                          
     earlier = max(
         (n for n in MILESTONE_LEVELS if n < number),
         default=1,
@@ -368,8 +368,8 @@ async def refresh_referral_progress(user_id: int) -> dict | None:
 
         reward_number = completed_count + 1
 
-        # Lock the referrer wallet row before calculating the next reward
-        # number. This serializes concurrent referral completions.
+                                                                         
+                                                                  
         user_row = await conn.fetchrow(
             """
             SELECT balance, rubies
@@ -404,8 +404,8 @@ async def refresh_referral_progress(user_id: int) -> dict | None:
 
         tier = tier_for_referral(reward_number)
 
-        # Lock the recipient wallet and squad so a retry cannot double-credit
-        # the same referral or race another squad update.
+                                                                             
+                                                         
         user_row = await conn.fetchrow(
             """
             SELECT balance, rubies
@@ -440,8 +440,8 @@ async def refresh_referral_progress(user_id: int) -> dict | None:
             squad = list(squad or [])
 
         if len(squad) + len(tier["players"]) > 25:
-            # Preserve the referral as fully qualified but leave payout pending
-            # until the inviter has room to receive the player cards.
+                                                                               
+                                                                     
             return dict(row)
 
         reward_players = []
@@ -511,8 +511,8 @@ async def refresh_referral_progress(user_id: int) -> dict | None:
                     d["special_edition_id"] = None
 
             if not d:
-                # No matching player in the current database means the reward
-                # stays pending rather than crediting a partial tier.
+                                                                             
+                                                                     
                 return dict(row)
 
             pid = int(d["player_id"])
