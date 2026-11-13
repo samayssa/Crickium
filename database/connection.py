@@ -168,8 +168,8 @@ def _make_verified_ssl_context(
     context.check_hostname = sslmode == "verify-full"
     context.verify_mode = ssl.CERT_REQUIRED
 
-    # Harmless for standard PostgreSQL SSL negotiation and needed by asyncpg's
-    # direct-TLS support for PostgreSQL 17+ when an explicit SSLContext is used.
+                                                                              
+                                                                                
     if hasattr(context, "set_alpn_protocols"):
         context.set_alpn_protocols(["postgresql"])
     return context
@@ -192,7 +192,7 @@ def _ssl_connect_kwargs(
         return {"dsn": clean_dsn, "ssl": sslmode}
 
     if sslmode == "require":
-        # Encrypted transport, but no CA/hostname verification. Prefer verify-full.
+                                                                                   
         context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
@@ -218,7 +218,7 @@ async def get_asyncpg_connect_kwargs() -> dict:
 
     parts = urlsplit(dsn)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    # An explicit Railway setting takes precedence over the URL's sslmode.
+                                                                          
     sslmode = (DB_SSL_MODE or query.get("sslmode") or "verify-full").lower()
     if sslmode not in _VALID_SSL_MODES:
         allowed = ", ".join(sorted(_VALID_SSL_MODES))
@@ -228,11 +228,11 @@ async def get_asyncpg_connect_kwargs() -> dict:
     ca_file: Path | None = None
     ca_pem: str | None = None
 
-    # Ignore TLS CA material only for modes that explicitly disable verification.
+                                                                                 
     needs_verification = sslmode in {"verify-ca", "verify-full"}
     if needs_verification:
-        # Generic settings work with Supabase, Neon, CockroachDB, and other
-        # PostgreSQL-compatible providers without changing this module.
+                                                                           
+                                                                       
         ca_file, ca_pem = _configured_provider_ca()
 
         if (
@@ -243,7 +243,7 @@ async def get_asyncpg_connect_kwargs() -> dict:
         ):
             ca_file = _resolve_cert_file(embedded_root, "DATABASE_URL sslrootcert")
 
-        # Preserve older Cockroach deployments when no generic certificate was set.
+                                                                                   
         default_root_values = _DEFAULT_SSLROOTCERT_VALUES | {None, ""}
         if (
             ca_file is None
@@ -274,23 +274,23 @@ async def connect():
         print("[db/connection] No existing pool, creating new asyncpg pool...")
         try:
             connect_kwargs = await get_asyncpg_connect_kwargs()
-            # CockroachDB exposes this session setting to allow pgwire portal
-            # execution that asyncpg can otherwise trigger when statements are
-            # prepared/executed back-to-back inside one transaction. Keep it
-            # scoped to CockroachDB so the same code remains compatible with
-            # ordinary PostgreSQL if the DATABASE_URL is ever switched back.
+                                                                             
+                                                                              
+                                                                            
+                                                                            
+                                                                            
             if _is_cockroach_url(DATABASE_URL):
                 connect_kwargs["server_settings"] = {
                     "multiple_active_portals_enabled": "true",
                 }
             _pool = await asyncpg.create_pool(
                 **connect_kwargs,
-                # One connection stays warm so the first /bid after a quiet minute does not pay a TLS + auth
-                # handshake; 10 can run in parallel (5 starved the auction worker, the presenter and the commands).
+                                                                                                            
+                                                                                                                   
                 min_size=max(0, int(os.getenv("DB_POOL_MIN", "1"))),
                 max_size=max(2, int(os.getenv("DB_POOL_MAX", "10"))),
-                # Close idle connections after 5 minutes so Neon can autosuspend the
-                # compute endpoint; never let a stalled network wait forever.
+                                                                                    
+                                                                             
                 max_inactive_connection_lifetime=300.0,
                 command_timeout=60.0,
                 timeout=30.0,

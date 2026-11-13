@@ -89,9 +89,9 @@ async def ensure_schema() -> None:
     _ready = True
 
 
-# ---------------------------------------------------------------------------
-# user context
-# ---------------------------------------------------------------------------
+                                                                             
+              
+                                                                             
 def _json(value: Any, fallback: Any) -> Any:
     if value is None:
         return fallback
@@ -143,7 +143,7 @@ async def load_user_context(user_id: int) -> dict:
     try:
         from database.player_upgrades_repo import load_snapshot_players
         snapshot = await load_snapshot_players([int(user_id)], {int(user_id): raw_squad})
-    except Exception as exc:                                    # upgrades are a bonus, never a blocker
+    except Exception as exc:                                                                           
         print(f"[miniapp_game] upgrade snapshot unavailable: {type(exc).__name__}")
 
     squad = []
@@ -181,9 +181,9 @@ async def ai_pool() -> list[dict]:
     return pool
 
 
-# ---------------------------------------------------------------------------
-# sessions
-# ---------------------------------------------------------------------------
+                                                                             
+          
+                                                                             
 async def save_session(game: dict) -> None:
     await ensure_schema()
     status = "done" if game["stage"] == "done" else "active"
@@ -223,9 +223,9 @@ async def prune_old(days: int = 30) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# results
-# ---------------------------------------------------------------------------
+                                                                             
+         
+                                                                             
 def result_row(game: dict) -> dict | None:
     """Flatten a finished game into the results row (None = nothing to record)."""
     res = game.get("result")
@@ -366,7 +366,7 @@ async def career_stats(user_id: int) -> dict:
         int(user_id),
     )
     stats = dict(row) if row else {}
-    # longest winning streak, newest results last
+                                                 
     seq = await fetch(
         "SELECT outcome FROM miniapp_game_results WHERE user_id=$1 ORDER BY finished_at ASC LIMIT 500;", int(user_id)
     )
@@ -387,14 +387,14 @@ async def career_stats(user_id: int) -> dict:
     return stats
 
 
-# ---------------------------------------------------------------------------
-# group links (/playai): one token per command use
-# ---------------------------------------------------------------------------
+                                                                             
+                                                  
+                                                                             
 async def create_link(user_id: int, user_name: str | None, chat_id: int, message_id: int | None,
                       overs: int | None) -> str:
     import secrets
     await ensure_schema()
-    # an older, never-started link of the same user is replaced
+                                                               
     await execute("UPDATE miniapp_game_links SET status='expired' WHERE user_id=$1 AND status='open';", int(user_id))
     token = secrets.token_urlsafe(8).replace("-", "x").replace("_", "y")[:10]
     await execute(

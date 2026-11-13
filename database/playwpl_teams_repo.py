@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from services.tournament_virtual import base_code as _vbase
 
-# Official WPL franchise set currently consists of five teams.
-# Kept separate from the IPL registry so WPL team validation and uploads
-# cannot accidentally accept an IPL franchise code.
+                                                              
+                                                                        
+                                                   
 TEAM_MAP = {
     "DC": "Delhi Capitals",
     "GG": "Gujarat Giants",
@@ -32,7 +32,7 @@ def normalize_team_keyword(value: str):
 
 
 def team_name(code: str) -> str:
-    # Tournament teams use virtual codes (UPW12): show the franchise they are dressed as.
+                                                                                         
     return TEAM_MAP[_vbase(code)]
 
 

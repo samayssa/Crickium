@@ -33,15 +33,15 @@ PROBABILITY_KEY_ALIASES = {
     "WIDE BALL": "WIDE",
 }
 
-# The selector grammar is intentionally strict enough to be safe, but flexible
-# enough to survive human typing and Telegram formatting.
+                                                                              
+                                                         
 _SELECTOR_BLOCK_RE = re.compile(r"\[([^\[\]]+)\]")
 _ROW_RE = re.compile(r"\[\s*([A-Za-z0-9 _\-]+?)\s*\]\s*=\s*\[\s*([^\[\]]+?)\s*\]")
 _PERCENT_RE = re.compile(r"^(-?\d+(?:\.\d+)?)\s*%?$")
 _RANGE_RE = re.compile(r"^(?P<label>[A-Z_ ]+)\s*(?P<start>\d+)\s*[-–]\s*(?P<end>\d+)$", re.I)
 
-# Common lofted / aerial shot families that should not be used with a
-# grounded approach.
+                                                                     
+                    
 LOFT_KEYWORDS = (
     "LOFT",
     "LOFTED",
@@ -70,9 +70,9 @@ LOFT_KEYWORDS = (
     "CHARGE + SWING",
 )
 
-# ---------------------------------------------------------------------
-# Normalization helpers
-# ---------------------------------------------------------------------
+                                                                       
+                       
+                                                                       
 
 def _norm_token(value: str | None) -> str:
     text = str(value or "").strip().upper()
@@ -112,9 +112,9 @@ def _is_loft_shot(shot: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------
-# Selector parsing
-# ---------------------------------------------------------------------
+                                                                       
+                  
+                                                                       
 
 def _parse_selector_command(command_text: str) -> dict[str, Any]:
     blocks = [b.strip() for b in _SELECTOR_BLOCK_RE.findall(command_text or "")]
@@ -182,10 +182,10 @@ def _parse_selector_command(command_text: str) -> dict[str, Any]:
     if balls_min > balls_max:
         raise ValueError("balls-faced range start must be <= end")
 
-    # Guardrails requested by the user:
-    # - Grounded approach rejects lofted shots
-    # - Lofted approach rejects grounded shots
-    # - Advance is intentionally permissive so any shot family can be used.
+                                       
+                                              
+                                              
+                                                                           
     if movement != "ADVANCE":
         if approach == "GROUND" and _is_loft_shot(shot):
             raise ValueError(f"shot {shot!r} is a lofted shot, so it cannot be used with approach GROUND")
@@ -280,9 +280,9 @@ async def parse_probability_upload(command_text: str, rows_text: str) -> tuple[d
     return selectors, probabilities, row_errors
 
 
-# ---------------------------------------------------------------------
-# DB helpers
-# ---------------------------------------------------------------------
+                                                                       
+            
+                                                                       
 
 async def load_probability_profiles() -> list[dict[str, Any]]:
     rows = await fetch("SELECT * FROM probability_profiles ORDER BY profile_id ASC;")
@@ -511,9 +511,9 @@ async def get_probability_system_summary() -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------
-# Convenience helpers for the probability engine
-# ---------------------------------------------------------------------
+                                                                       
+                                                
+                                                                       
 
 def normalize_profile_value(value: Any) -> str:
     return _norm_token(str(value or ""))

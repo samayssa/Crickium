@@ -57,11 +57,11 @@ PROTECTED_MERGE_KEYS = {
     "broadcast_targets": "chat_id",
 }
 
-# During a full restore, user identity labels should remain current when they
-# already exist in the destination database. Every other backed-up users
-# column is authoritative, especially wallet/economy and game progression
-# fields (balance, rubies, sigils, totals, XP, level, team data, etc.).
-# Empty destination identity fields fall back to the backup values.
+                                                                             
+                                                                        
+                                                                         
+                                                                       
+                                                                   
 _MY_GIFT_BACKUP_TABLES = {
     "miniapp_gift_campaigns",
     "miniapp_gift_user_rewards",
@@ -184,9 +184,9 @@ def _decode_backup_file(file_path: str | Path) -> dict:
     with source_path.open("rb") as probe:
         is_gzip = probe.read(2) == b"\x1f\x8b"
 
-    # Stage decompressed JSON on the container's temporary filesystem. This
-    # avoids keeping compressed bytes, decompressed bytes, and a decoded string
-    # in RAM at the same time during a restore on a small Railway instance.
+                                                                           
+                                                                               
+                                                                           
     with tempfile.TemporaryFile(mode="w+b") as decoded_file:
         opener = gzip.open if is_gzip else open
         try:
@@ -218,7 +218,7 @@ def _decode_backup(raw_bytes: bytes | str | Path) -> dict:
     if len(raw_bytes) > MAX_BACKUP_COMPRESSED_BYTES:
         raise ValueError("Backup file is too large to restore safely.")
     try:
-        # Bounded decompression: a tiny gzip "bomb" must not exhaust memory.
+                                                                            
         decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
         raw = decompressor.decompress(raw_bytes, MAX_BACKUP_DECOMPRESSED_BYTES + 1)
         if len(raw) > MAX_BACKUP_DECOMPRESSED_BYTES or decompressor.unconsumed_tail:
@@ -321,9 +321,9 @@ class _JSONStreamReader:
                 self.position = end
                 return value
             except json.JSONDecodeError as exc:
-                # A token may be incomplete even when the decoder reports an
-                # error at its opening quote/container. Refill until the token
-                # completes or the underlying file reaches EOF.
+                                                                            
+                                                                              
+                                                               
                 if self.eof:
                     raise ValueError(
                         f"Invalid backup JSON near character {self.position}: {exc.msg}."
@@ -829,7 +829,7 @@ async def _encode_gzip_json(payload: dict) -> bytes:
     import asyncio
     import zlib
 
-    co = zlib.compressobj(6, zlib.DEFLATED, 31)          # 31 = gzip container
+    co = zlib.compressobj(6, zlib.DEFLATED, 31)                               
     parts: list[bytes] = []
 
     def feed(text: str) -> None:
@@ -924,9 +924,9 @@ async def export_tables(
         "tables": tables,
     }
 
-    # Serialised in small slices with an ``await asyncio.sleep(0)`` between them (and zlib in a streaming object):
-    # one big json.dumps + gzip of the whole database used to hold the event loop for seconds - on a small host the
-    # entire bot (every /bid, /claim, ...) froze each time the 30-minute auto-backup ran.
+                                                                                                                  
+                                                                                                                   
+                                                                                         
     compressed = await _encode_gzip_json(payload)
 
     print(
@@ -1439,16 +1439,16 @@ def _infer_backup_column_type(
     if len(kinds) == 1:
         return next(iter(kinds))
 
-    # If the same column contains mixed JSON-like values, preserve them as JSONB.
+                                                                                 
     if "JSONB" in kinds:
         return "JSONB"
 
-    # Mixed numeric values can safely live in DECIMAL.
+                                                      
     if kinds.issubset({"BIGINT", "DOUBLE PRECISION", "DECIMAL"}):
         return "DECIMAL"
 
-    # Mixed integer/text data is safest as TEXT rather than risking a failed
-    # schema migration. The backup can still be restored without data loss.
+                                                                            
+                                                                           
     if "TEXT" in kinds:
         return "TEXT"
 
@@ -2226,8 +2226,8 @@ async def _import_tables_from_streamed_file(file_path: str | Path) -> dict[str, 
                 for table in sorted(set(clear_set) | restorable_backup_set):
                     metadata_by_table[table] = await _table_column_metadata(conn, table)
 
-                # Keep the original restore semantics: delete in reverse FK order,
-                # then restore parents before children, all inside one transaction.
+                                                                                  
+                                                                                   
                 for table in reversed(ordered_clear):
                     await conn.execute(f'DELETE FROM "{table}";')
 
@@ -2278,8 +2278,8 @@ async def _import_tables_from_streamed_file(file_path: str | Path) -> dict[str, 
                         + ", ".join(created_backup_only)
                     )
 
-                # Fail the transaction if a protected user merge or a gift
-                # table restore did not leave the expected records in place.
+                                                                          
+                                                                            
                 if "users" in original_backup_set:
                     restored_users = int(await conn.fetchval('SELECT COUNT(*) FROM "users";') or 0)
                     expected_users = int(table_stats["users"]["row_count"])
@@ -2340,7 +2340,7 @@ async def _import_tables_from_streamed_file(file_path: str | Path) -> dict[str, 
                         + (", ".join(f"{row['status']}={row['n']}" for row in gift_status_rows) or "no reward rows")
                     )
 
-        # Restore-related caches must be invalidated only after the DB transaction commits.
+                                                                                           
         try:
             from services.quest_engine import invalidate_period_cache
             invalidate_period_cache()
@@ -2472,18 +2472,18 @@ async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
                 )
             )
 
-            # A backup may also come from a newer schema revision where an
-            # existing table has gained columns that do not yet exist in the
-            # live database. Add those columns before metadata validation and
-            # before any rows are restored.
+                                                                          
+                                                                            
+                                                                             
+                                           
             await _ensure_backup_columns(
                 conn,
                 tables,
                 current_set,
             )
 
-            # Missing tables with no rows cannot be reconstructed from the
-            # current JSON format. Do not abort all other restored data.
+                                                                          
+                                                                        
             still_missing = sorted(
                 original_backup_set - current_set
             )
@@ -2544,21 +2544,21 @@ async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
                     )
                 )
 
-            # Use row-level DELETE rather than TRUNCATE during recovery.
-            #
-            # CockroachDB can reject TRUNCATE when a table participates in an
-            # index-drop/rebuild operation, producing errors such as:
-            #   cannot perform TRUNCATE on "special_player_card_images"
-            #   which has indexes being dropped
-            #
-            # DELETE does not perform that schema/index operation. We execute
-            # tables in reverse foreign-key order so dependent rows are removed
-            # before their parents. This also avoids CASCADE deleting protected
-            # identity data such as `users` and `broadcast_targets`.
-            #
-            # Sequences are reset explicitly after restoration by
-            # `_reset_sequences`, so switching from TRUNCATE to DELETE does not
-            # leave restored SERIAL/BIGSERIAL IDs in a bad state.
+                                                                        
+             
+                                                                             
+                                                                     
+                                                                       
+                                               
+             
+                                                                             
+                                                                               
+                                                                               
+                                                                    
+             
+                                                                 
+                                                                               
+                                                                 
             for table in reversed(
                 ordered_clear
             ):
@@ -2566,10 +2566,10 @@ async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
                     f'DELETE FROM "{table}";'
                 )
 
-            # Restore user economy/progression columns even when the user id
-            # already exists in the destination. Preserve current Telegram
-            # username/first_name when non-empty and latest last_seen_at.
-            # broadcast_targets keep their insert-if-missing behavior.
+                                                                            
+                                                                          
+                                                                         
+                                                                      
             for (
                 table,
                 key_column,
@@ -2626,7 +2626,7 @@ async def _import_tables_from_payload(payload: dict) -> dict[str, int]:
                 )
 
 
-    # Restored quest tables may carry different period rows than the cached ones.
+                                                                                 
     try:
         from services.quest_engine import invalidate_period_cache
         invalidate_period_cache()

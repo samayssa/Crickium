@@ -83,9 +83,9 @@ async def reserve_report(
 
         last_number = int(counter["last_number"] or 0)
         if last_number <= 0:
-            # Start from the bot's existing terminal-match population so the
-            # first HTML file continues the project's long-running match
-            # numbering instead of resetting to Match1 after deployment.
+                                                                            
+                                                                        
+                                                                        
             try:
                 baseline = await conn.fetchval(
                     """

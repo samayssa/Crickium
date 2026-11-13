@@ -289,7 +289,7 @@ LIVE_STATUSES = ("registration", "auction", "ready", "live")
 ACTIVE_STATUSES = ("setup", "registration", "auction", "ready", "live")
 _JSON_FIELDS = ("ladder", "prize", "card", "role_rules")
 
-# columns update_fields may touch (everything else goes through dedicated functions)
+                                                                                    
 _TOURNAMENT_FIELDS = {
     "kind", "name", "engine", "preset", "mode", "status", "creator_name", "host_chat_id", "host_chat_title",
     "max_teams", "purse_lakh", "ladder", "squad_min", "squad_max", "overseas_squad_max", "xi_overseas_max",
@@ -342,9 +342,9 @@ def _rows(raws: Iterable[Any]) -> list[dict]:
     return [r for r in (_row(x) for x in raws) if r is not None]
 
 
-# ---------------------------------------------------------------------------
-# tournaments
-# ---------------------------------------------------------------------------
+                                                                             
+             
+                                                                             
 async def create_draft(creator_id: int, creator_name: str | None, chat_id: int, chat_title: str | None, kind: str = "user") -> dict:
     """A wizard draft. A creator has at most one draft; an existing one is returned instead."""
 
@@ -369,7 +369,7 @@ async def create_draft(creator_id: int, creator_name: str | None, chat_id: int, 
             out = _row(row) or {}
             out["_created"] = created
             return out
-        except Exception as exc:                       # a concurrent create picked the same tid
+        except Exception as exc:                                                                
             if getattr(exc, "sqlstate", None) == "23505" or "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
                 last = exc
                 continue
@@ -451,9 +451,9 @@ async def touch_tick(tid: int) -> None:
     await execute("UPDATE tour_tournaments SET last_tick_at=NOW() WHERE tid=$1;", int(tid))
 
 
-# ---------------------------------------------------------------------------
-# teams + members
-# ---------------------------------------------------------------------------
+                                                                             
+                 
+                                                                             
 async def teams(tid: int) -> list[dict]:
     return _rows(await fetch("SELECT * FROM tour_teams WHERE tid=$1 ORDER BY team_no;", int(tid)))
 
@@ -581,9 +581,9 @@ async def members(tid: int) -> list[dict]:
     return _rows(await fetch("SELECT * FROM tour_members WHERE tid=$1 ORDER BY joined_at;", int(tid)))
 
 
-# ---------------------------------------------------------------------------
-# fixtures + days
-# ---------------------------------------------------------------------------
+                                                                             
+                 
+                                                                             
 async def create_fixtures(tid: int, fixtures: list[dict]) -> list[dict]:
     """fixtures: [{stage, day_no, seq, home, away}] -> inserted rows (fno assigned in order)."""
 
@@ -778,11 +778,11 @@ async def extend_day(tid: int, day_no: int, remind_at, closes_at) -> None:
         int(tid), int(day_no), remind_at, closes_at)
 
 
-# ---------------------------------------------------------------------------
-# statistics
-# ---------------------------------------------------------------------------
+                                                                             
+            
+                                                                             
 _BOARDS: dict[str, tuple[str, str]] = {
-    # key: (select columns/aggregates, order by)  - grouped per player
+                                                                      
     "orange": ("SUM(runs) AS value, SUM(balls) AS balls, COUNT(*) FILTER (WHERE batted) AS inns, MAX(runs) AS best",
                "value DESC, balls ASC"),
     "purple": ("SUM(wickets) AS value, SUM(bowl_runs) AS runs_given, SUM(bowl_balls) AS bowl_balls",
@@ -802,7 +802,7 @@ _BOARD_HAVING = {
     "fifties": "SUM(CASE WHEN runs >= 50 THEN 1 ELSE 0 END) > 0", "hundreds": "SUM(CASE WHEN runs >= 100 THEN 1 ELSE 0 END) > 0",
     "sixes": "SUM(sixes) > 0", "fours": "SUM(fours) > 0", "sr": "SUM(balls) >= 30", "economy": "SUM(bowl_balls) >= 12",
 }
-# single-innings records (one row per player per match)
+                                                       
 _RECORDS: dict[str, tuple[str, str, str]] = {
     "fastest50": ("fifty_balls AS value, runs", "fifty_balls IS NOT NULL", "fifty_balls ASC, runs DESC"),
     "fastest100": ("hundred_balls AS value, runs", "hundred_balls IS NOT NULL", "hundred_balls ASC, runs DESC"),
@@ -866,9 +866,9 @@ async def cleanup_candidates(days_after: int = 3) -> list[dict]:
         """, int(days_after)))
 
 
-# ---------------------------------------------------------------------------
-# schedule editing + worker probes
-# ---------------------------------------------------------------------------
+                                                                             
+                                  
+                                                                             
 async def clear_schedule(tid: int) -> int:
     """Remove every fixture that has not started (and the days that are left empty). Refuses (returns -1)
     when a match is running or finished - a manual schedule can only replace an untouched one."""

@@ -4,9 +4,9 @@ import time
 from database.query import execute, fetch
 from utils.bounded_dict import BoundedDict
 
-# chat_id -> (target_type, title, monotonic time of the last successful DB write).
-# upsert_chat() used to run one INSERT..ON CONFLICT for every message the bot received.
-# An unchanged chat is now written at most once per refresh window per process.
+                                                                                  
+                                                                                       
+                                                                               
 _UPSERT_REFRESH_SECONDS = 6 * 3600
 _RECENT_UPSERTS: BoundedDict = BoundedDict(20000)
 

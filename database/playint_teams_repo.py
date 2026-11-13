@@ -22,7 +22,7 @@ def normalize_team_keyword(value: str):
 
 
 def team_name(code):
-    # Tournament teams use virtual codes (IND12): show the nation they are dressed as.
+                                                                                      
     return TEAM_MAP[_vbase(code)]
 
 

@@ -76,7 +76,7 @@ SCHEMA_STATEMENTS = [
 
 _ready = False
 
-# Statuses in which a giveaway is still "live" for admins / the Mini App.
+                                                                         
 LIVE_STATUSES = ("scheduled", "active")
 
 
@@ -107,9 +107,9 @@ def _rows(raws) -> list[dict]:
     return [r for r in (_row(x) for x in raws) if r is not None]
 
 
-# ---------------------------------------------------------------------------
-# giveaways
-# ---------------------------------------------------------------------------
+                                                                             
+           
+                                                                             
 async def create_draft(created_by: int, player: dict, card_key: str, main_chat_id: int,
                        setup_chat_id: int | None) -> dict:
     row = await fetchrow(
@@ -307,9 +307,9 @@ async def list_recent_finished(limit: int = 10, days: int = 60) -> list[dict]:
     ))
 
 
-# ---------------------------------------------------------------------------
-# entries
-# ---------------------------------------------------------------------------
+                                                                             
+         
+                                                                             
 async def add_entry(giveaway_id: int, user_id: int, username: str | None, first_name: str | None) -> bool:
     """True if the user was newly added, False if they were already in."""
     row = await fetchrow(
@@ -364,9 +364,9 @@ async def has_entry(giveaway_id: int, user_id: int) -> bool:
     ))
 
 
-# ---------------------------------------------------------------------------
-# deliveries
-# ---------------------------------------------------------------------------
+                                                                             
+            
+                                                                             
 async def delivered_chat_ids(giveaway_id: int) -> set[int]:
     rows = await fetch("SELECT chat_id FROM giveaway_deliveries WHERE giveaway_id=$1;", int(giveaway_id))
     return {int(r["chat_id"]) for r in rows}
@@ -409,10 +409,10 @@ async def delivery_counts(giveaway_id: int) -> tuple[int, int]:
     return sent, failed
 
 
-# ---------------------------------------------------------------------------
-# activity metrics (each source is independent, so one missing table never
-# breaks the draw)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                          
+                  
+                                                                             
 async def _safe_rows(query: str, ids: list[int]) -> list[Any]:
     try:
         return list(await fetch(query, ids))
@@ -465,9 +465,9 @@ async def activity_metrics(user_ids: list[int]) -> dict[int, dict[str, float]]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# tiny key/value helper (re-uses the bot_runtime_state table)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                             
+                                                                             
 async def kv_get(key: str) -> str | None:
     try:
         return await fetchval("SELECT state_value FROM bot_runtime_state WHERE state_key=$1 LIMIT 1;", key)

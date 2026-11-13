@@ -326,9 +326,9 @@ TABLES = {
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """,
-    # Dedicated to the /play command's own challenge -> pitch -> toss ->
-    # decision -> lineup flow. Kept entirely separate from
-    # match_challenges (used by /match) so nothing about /match changes.
+                                                                        
+                                                          
+                                                                        
     "play_matches": """
         CREATE TABLE IF NOT EXISTS play_matches(
             match_id SERIAL PRIMARY KEY,
@@ -349,9 +349,9 @@ TABLES = {
             created_at TIMESTAMP DEFAULT NOW()
         );
     """,
-    # PLAYSO is a first-class persisted runtime table. It used to be
-    # created lazily by database/playso_repo.py, which made hot game traffic
-    # run CREATE TABLE checks against Neon. Keep the schema centralized here.
+                                                                    
+                                                                            
+                                                                             
     "playso_matches": """
         CREATE TABLE IF NOT EXISTS playso_matches(
             match_id SERIAL PRIMARY KEY,
@@ -463,9 +463,9 @@ TABLES = {
             PRIMARY KEY (engine, match_id)
         );
     """,
-    # Caches one Telegram file_id per stadium name, so /play's MATCH
-    # READY card only has to search + download a stadium photo once -
-    # every later match at that same stadium reuses the saved file_id.
+                                                                    
+                                                                     
+                                                                      
     "stadium_images": """
         CREATE TABLE IF NOT EXISTS stadium_images(
             stadium_name TEXT PRIMARY KEY,
@@ -501,6 +501,27 @@ async def migrate():
     print("[migrate] Ensuring 'users.last_seen_at' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();")
     print("[migrate] 'users.last_seen_at' OK.")
+
+    print("[migrate] Ensuring private bot-start tracking exists...")
+    await execute("""
+        CREATE TABLE IF NOT EXISTS bot_started_users(
+            user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+    await execute("""
+        INSERT INTO bot_started_users(user_id)
+        SELECT legacy.user_id
+        FROM (
+            SELECT r.referrer_id AS user_id FROM referrals r
+            UNION
+            SELECT r.referred_id AS user_id FROM referrals r
+        ) AS legacy
+        WHERE legacy.user_id IS NOT NULL
+        ON CONFLICT (user_id) DO NOTHING;
+    """)
+    await execute("CREATE INDEX IF NOT EXISTS idx_bot_started_users_started_at ON bot_started_users(started_at);")
+    print("[migrate] Private bot-start tracking OK.")
 
     print("[migrate] Ensuring 'users.captain_player_id' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captain_player_id BIGINT;")
@@ -725,14 +746,14 @@ async def migrate():
     await execute("ALTER TABLE template_card_image DROP CONSTRAINT IF EXISTS template_card_image_single_row;")
     await execute("ALTER TABLE template_card_image ALTER COLUMN id DROP DEFAULT;")
     await execute("ALTER TABLE template_card_image ADD COLUMN IF NOT EXISTS card_type TEXT;")
-    # Any pre-existing template (from the old single-template /upload_img
-    # template flow) becomes the bat-card template, since that's what it
-    # was always used for.
+                                                                         
+                                                                        
+                          
     await execute("UPDATE template_card_image SET card_type = 'bat' WHERE card_type IS NULL;")
     await execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_template_card_image_type ON template_card_image(card_type);")
     print("[migrate] 'template_card_image' upgrade OK.")
 
-    # --- Ruby -> Coin exchange request ledger (one-time callback guard) ---
+                                                                            
     print("[migrate] Ensuring table 'coin_exchange_requests' exists...")
     await execute(
         """
@@ -750,7 +771,7 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_coin_exchange_requests_user ON coin_exchange_requests(user_id, created_at DESC);")
     print("[migrate] coin_exchange_requests OK.")
 
-    # --- Level system (Level 1-30, 6 tiers) + franchise identity for /profile ---
+                                                                                  
     print("[migrate] Ensuring 'users.level' column exists...")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1;")
     print("[migrate] 'users.level' OK.")
@@ -786,7 +807,7 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_referrals_referred_status ON referrals(referred_id, status);")
     print("[migrate] referral indexes OK.")
 
-    # --- Tier card images uploaded via '/upload_img <tier>' (bronze/silver/gold/...) ---
+                                                                                         
     print("[migrate] Ensuring table 'tier_card_images' exists...")
     await execute(
         """
@@ -801,8 +822,8 @@ async def migrate():
     )
     print("[migrate] tier_card_images OK.")
 
-    # --- Career batting/bowling stats for /plstats (cricket player cards,
-    # NOT the same as user-level player_stats used by /profile's XP system) ---
+                                                                          
+                                                                               
     print("[migrate] Ensuring players career-stat columns exist...")
     await execute(
         """
@@ -825,9 +846,9 @@ async def migrate():
     )
     print("[migrate] players career-stat columns OK.")
 
-    # --- PlayInt engine/team scoped player storage ---
-    # Existing PlayInt rows belong to the T20I engine. Keep them intact while
-    # replacing the old team-only uniqueness rule with engine + team + name.
+                                                       
+                                                                             
+                                                                            
     print("[migrate] Ensuring playint_players engine scope...")
     await execute("ALTER TABLE playint_players ADD COLUMN IF NOT EXISTS engine_key TEXT NOT NULL DEFAULT 'T20I';")
     await execute("UPDATE playint_players SET engine_key='T20I' WHERE engine_key IS NULL OR engine_key='';")
@@ -836,17 +857,17 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_playint_players_engine_team ON playint_players(engine_key, team_code);")
     print("[migrate] playint_players engine scope OK.")
 
-    # /plstats stores the same signed squad-facing player_id used by team_squads.
-    # Global players are positive IDs; special editions use the negative
-    # special_player_id namespace. The old FK to players blocked all writes
-    # whenever one special-edition player appeared in a match ledger.
+                                                                                 
+                                                                        
+                                                                           
+                                                                     
     print("[migrate] Relaxing player_user_match_stats.player_id FK for global + special IDs...")
     await execute("ALTER TABLE player_user_match_stats DROP CONSTRAINT IF EXISTS player_user_match_stats_player_id_fkey;")
     print("[migrate] player_user_match_stats player identity constraint OK.")
 
 
 
-    # --- Player upgrade system ---
+                                   
     print("[migrate] Ensuring player upgrade tables exist...")
     await execute(
         """
@@ -930,8 +951,8 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_user_player_loadouts_user_player ON user_player_loadouts(user_id, player_id, player_kind);")
     await execute("CREATE INDEX IF NOT EXISTS idx_match_player_upgrade_snapshots_match_user ON match_player_upgrade_snapshots(match_id, user_id);")
     await execute("CREATE INDEX IF NOT EXISTS idx_upgrade_catalog_key_active ON upgrade_catalog(upgrade_key, active);")
-    # Existing deployments were created with four-tier CHECK constraints.
-    # Replace them in-place so old data remains valid while Tier V becomes available.
+                                                                         
+                                                                                     
     await execute("ALTER TABLE upgrade_catalog_tiers DROP CONSTRAINT IF EXISTS upgrade_catalog_tiers_tier_check;")
     await execute("ALTER TABLE upgrade_catalog_tiers ADD CONSTRAINT upgrade_catalog_tiers_tier_check CHECK (tier BETWEEN 1 AND 5);")
     await execute("ALTER TABLE user_player_upgrades DROP CONSTRAINT IF EXISTS user_player_upgrades_tier_check;")
@@ -974,10 +995,10 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_trade_sender_status ON trade_requests(sender_id, status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_trade_recipient_status ON trade_requests(recipient_id, status);")
 
-    # Allow the 'showcase' card kind in existing CHECK constraints. Done AFTER every table
-    # exists (a fresh database used to fail here because trade_requests was altered before
-    # it was created) and only when the live constraint does not already allow it, so
-    # normal restarts do not re-validate these tables.
+                                                                                          
+                                                                                          
+                                                                                     
+                                                      
     for _table, _constraint, _check in (
         ("user_player_upgrades", "user_player_upgrades_player_kind_check", "player_kind IS NULL OR player_kind IN ('global','special','showcase')"),
         ("user_player_loadouts", "user_player_loadouts_player_kind_check", "player_kind IN ('global','special','showcase')"),
@@ -1005,9 +1026,9 @@ async def migrate():
     import json as _json
     import hashlib as _hashlib
 
-    # Seeding is ~150 statements. Skip it when the catalogue definition is unchanged
-    # since the last successful seed (fingerprint kept in bot_runtime_state) and the
-    # table still holds every upgrade, so routine restarts do not wake Neon for it.
+                                                                                    
+                                                                                    
+                                                                                   
     from database.query import fetchval as _fetchval
     _seed_fingerprint = _hashlib.sha256(_json.dumps(
         [[u.key, u.name, u.category, u.description, u.detail, sorted(u.roles), u.family,
@@ -1039,7 +1060,7 @@ async def migrate():
             _json.dumps(sorted(upgrade.phases)), _json.dumps(sorted(upgrade.approaches)),
             _json.dumps({"effect_kind": upgrade.effect_kind, "outcomes": list(upgrade.outcomes), "fund_from": list(upgrade.fund_from), "counter_approaches": sorted(upgrade.counter_approaches)}),
         )
-        # Read the seeded catalogue ID through fetchval before inserting tier rows.
+                                                                                   
         from database.query import fetchval
         upgrade_id = await fetchval("SELECT upgrade_id FROM upgrade_catalog WHERE upgrade_key=$1;", upgrade.key)
         for tier, strength in TIER_STRENGTHS.items():

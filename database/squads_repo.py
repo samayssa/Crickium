@@ -138,8 +138,8 @@ async def refresh_all_team_squads() -> tuple[int, int]:
         )
         showcase_map = {int(r["showcase_card_id"]): dict(r) for r in rows}
 
-    # Preserve the existing special delete/recreate recovery semantics, but in
-    # one batch query rather than one query per stale card.
+                                                                              
+                                                           
     missing_special_context = []
     candidate_names: set[str] = set()
     for user_id, squad in squads_by_user.items():
@@ -243,7 +243,7 @@ async def refresh_all_team_squads() -> tuple[int, int]:
             refreshed.append(p)
         await save_team_squad(user_id, refreshed)
 
-    # Keep /plstats attached when a special card was intentionally re-created.
+                                                                              
     for user_id, old_pid, new_pid in remaps:
         await execute(
             """

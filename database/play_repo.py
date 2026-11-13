@@ -1,9 +1,9 @@
 from database.query import execute, fetchrow
 
-# Statuses a match can sit in while it is still "in progress" - i.e. it
-# occupies the one-match-per-group slot and its two players are considered
-# "in a game". Terminal statuses (declined/completed/ended) are excluded so
-# a finished match never blocks a new /play.
+                                                                       
+                                                                          
+                                                                           
+                                            
 ACTIVE_STATUSES = ("pending", "accepted", "pitch_selected", "toss_done", "lineup", "live")
 
 

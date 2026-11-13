@@ -7,8 +7,8 @@ Database operations for player card images uploaded via /upload_img:
 
 from database.query import execute, fetchrow
 
-# Fixed ids for the two template rows (table still has an `id` column
-# for backward compatibility with the old single-template schema).
+                                                                     
+                                                                  
 _CARD_TYPE_IDS = {"bat": 1, "ball": 2}
 
 

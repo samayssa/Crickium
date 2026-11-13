@@ -27,10 +27,10 @@ async def get_recent_xi(user_id: int, engine_key: str, team_code: str):
 
 
 async def save_recent_xi(user_id: int, engine_key: str, team_code: str, player_ids):
-    # Some engine-specific match flows can legitimately reach lineup
-    # persistence before the shared /users row has been created.  The
-    # recent-XI table intentionally references users, so ensure that parent
-    # row exists before saving. This does not alter gameplay or simulation.
+                                                                    
+                                                                     
+                                                                           
+                                                                           
     uid = int(user_id)
     await execute(
         """

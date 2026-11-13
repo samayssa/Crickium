@@ -51,8 +51,8 @@ def as_special_player(row) -> dict:
     player["edition"] = player.get("edition")
     special_id = int(player.get("special_player_id") or 0)
     player["special_edition_id"] = special_id
-    # Special IDs use the negative side of the existing squad player_id namespace,
-    # so a global player_id and a special-edition id can never collide in a squad.
+                                                                                  
+                                                                                  
     player["player_id"] = -special_id
     return player
 
@@ -251,7 +251,7 @@ async def delete_special_player(special_player_id: int) -> bool:
 
 async def delete_global_player(player_id: int) -> bool:
     pid = int(player_id)
-    # Remove dependent rows first, because these reference players.player_id.
+                                                                             
     await execute("DELETE FROM player_card_images WHERE player_id=$1;", pid)
     await execute("DELETE FROM player_claims WHERE player_id=$1;", pid)
     await execute("DELETE FROM player_user_match_stats WHERE player_id=$1;", pid)
@@ -274,8 +274,8 @@ async def get_delete_targets(parsed_player: dict) -> dict:
         if player:
             return {"kind": "special", "player": player, "name": name, "edition": edition}
 
-        # Legacy fallback: this exact parenthesized value may be the real global
-        # player name from before the special-edition feature existed.
+                                                                                
+                                                                      
         from database.players_repo import get_player
         legacy_global = await get_player(raw_name)
         if legacy_global:

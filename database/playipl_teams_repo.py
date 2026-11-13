@@ -17,7 +17,7 @@ TEAM_MAP = {
 
 TEAM_ORDER = ['CSK', 'DC', 'GT', 'KKR', 'LSG', 'MI', 'PBKS', 'RR', 'RCB', 'SRH']
 
-# One emoji is used only as a lightweight franchise-theme marker in buttons/text.
+                                                                                 
 TEAM_COLOR = {
     'CSK': '🟡',
     'DC': '🔵',
@@ -40,7 +40,7 @@ def normalize_team_keyword(value: str):
 
 
 def team_name(code: str) -> str:
-    # Tournament teams use virtual codes (CSK12): show the franchise they are dressed as.
+                                                                                         
     return TEAM_MAP[_vbase(code)]
 
 

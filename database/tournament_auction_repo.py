@@ -15,13 +15,13 @@ import json
 from typing import Any
 
 from database.query import execute, fetch, fetchrow, fetchval, transaction
-from database.tournament_repo import TourError, _row, _rows  # noqa: F401  (re-exported helpers)
+from database.tournament_repo import TourError, _row, _rows                                     
 from services import tournament_core as tc
 
 
-# ---------------------------------------------------------------------------
-# auction row
-# ---------------------------------------------------------------------------
+                                                                             
+             
+                                                                             
 async def get_auction(tid: int) -> dict | None:
     return _row(await fetchrow("SELECT * FROM tour_auction WHERE tid=$1;", int(tid)))
 
@@ -138,9 +138,9 @@ async def bump_version(tid: int) -> None:
     await execute("UPDATE tour_auction SET version=version+1 WHERE tid=$1;", int(tid))
 
 
-# ---------------------------------------------------------------------------
-# lots
-# ---------------------------------------------------------------------------
+                                                                             
+      
+                                                                             
 async def lot(tid: int, ord_: int) -> dict | None:
     return _row(await fetchrow("SELECT * FROM tour_lots WHERE tid=$1 AND ord=$2;", int(tid), int(ord_)))
 
@@ -323,9 +323,9 @@ async def add_round(tid: int, round_no: int, lots: list[dict[str, Any]]) -> int:
     return int(await transaction(_tx))
 
 
-# ---------------------------------------------------------------------------
-# bidding + hammer
-# ---------------------------------------------------------------------------
+                                                                             
+                  
+                                                                             
 def _jload(value: Any, default: Any) -> Any:
     if isinstance(value, (str, bytes)):
         try:
@@ -489,9 +489,9 @@ async def settle(tid: int, ord_: int, between_s: int | None = None, force: bool 
     return out
 
 
-# ---------------------------------------------------------------------------
-# worker helpers (quiet: they run every second, so they skip the per-query logging of database.query)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                                                     
+                                                                             
 async def _quiet_fetchrow(query: str, *args):
     from database.connection import get_pool
     async with get_pool().acquire() as conn:
@@ -574,9 +574,9 @@ async def sale_summary(tid: int) -> dict[str, Any]:
     return {"sold": counts_["sold"], "unsold": counts_["unsold"], "pending": counts_["pending"], "buys": buys}
 
 
-# ---------------------------------------------------------------------------
-# squads
-# ---------------------------------------------------------------------------
+                                                                             
+        
+                                                                             
 async def squad(tid: int, team_no: int) -> list[dict]:
     return _rows(await fetch(
         "SELECT * FROM tour_squad WHERE tid=$1 AND team_no=$2 ORDER BY xi DESC, price_lakh DESC, name;", int(tid), int(team_no)))
@@ -644,9 +644,9 @@ async def set_xi(tid: int, team_no: int, pkeys: list[str]) -> None:
     await transaction(_tx)
 
 
-# ---------------------------------------------------------------------------
-# virtual team rows for the match engines
-# ---------------------------------------------------------------------------
+                                                                             
+                                         
+                                                                             
 async def materialize_engine_squads(tid: int, engine_key: str) -> int:
     """Copy every auctioned squad into playint_players under the team's virtual code, so the
     existing IPL / WPL / T20I match flows can read it exactly like a franchise squad."""

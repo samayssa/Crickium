@@ -10,7 +10,7 @@ from database.connection import (
     mark_database_quota_exhausted,
 )
 
-# Per-query logging (2 lines per query, with row previews) was a measurable cost on a small host: opt in with DB_QUERY_LOG=1.
+                                                                                                                             
 _LOG = os.getenv("DB_QUERY_LOG", "0") == "1"
 MAX_LOG_VALUE = 180
 MAX_LOG_QUERY = 120
@@ -151,8 +151,8 @@ async def transaction(callback, *, max_retries: int = 5):
                 mark_database_quota_exhausted(e)
 
             if is_retryable_transaction_error(e) and attempt < attempts - 1:
-                # Small exponential backoff with jitter prevents two competing
-                # callbacks from immediately colliding again.
+                                                                              
+                                                             
                 delay = min(0.80, 0.05 * (2 ** attempt)) + random.uniform(0.0, 0.05)
                 print(
                     f"[db/query] TRANSACTION retry {attempt + 1}/{attempts - 1} "

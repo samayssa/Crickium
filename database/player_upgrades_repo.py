@@ -6,6 +6,7 @@ from typing import Any
 
 from database.query import execute, fetch, fetchrow, fetchval, transaction
 from services.player_upgrades import UPGRADES
+from services.card_identity import player_kind as identify_player_kind
 from utils.upgrade_prices import UPGRADE_RUBY_PRICES
 
 
@@ -47,13 +48,14 @@ async def get_upgrade_tiers(upgrade_id: int) -> list[dict[str, Any]]:
 async def user_owned_upgrades(user_id: int) -> list[dict[str, Any]]:
     rows = await fetch(
         """
-        SELECT uui.id, uui.user_id, uui.upgrade_id, uui.tier, uui.owned_at,
+        SELECT DISTINCT ON (uui.upgrade_id)
+               uui.id, uui.user_id, uui.upgrade_id, uui.tier, uui.owned_at,
                uc.upgrade_key, uc.name, uc.category, uc.description, uc.detail,
                uui.source
         FROM user_player_upgrades uui
         JOIN upgrade_catalog uc ON uc.upgrade_id = uui.upgrade_id
         WHERE uui.user_id = $1
-        ORDER BY uc.upgrade_id, uui.tier DESC;
+        ORDER BY uui.upgrade_id, uui.tier DESC, uui.owned_at DESC, uui.id DESC;
         """,
         int(user_id),
     )
@@ -83,12 +85,12 @@ async def owned_upgrade_tier(user_id: int, upgrade_id: int) -> int | None:
 
 
 async def purchase_upgrade(user_id: int, upgrade_id: int, tier: int, price: int) -> str:
-    # /ubuy is reserved for acquiring a new upgrade at Tier I.
+                                                              
     if int(tier) != 1 or int(price) != int(UPGRADE_RUBY_PRICES[1]):
         return "invalid_purchase"
 
     async def _tx(conn):
-        # Lock the user's row so two concurrent purchases cannot both spend the same balance.
+                                                                                             
         row = await conn.fetchrow("SELECT rubies FROM users WHERE user_id = $1 FOR UPDATE;", int(user_id))
         if not row:
             return "user_missing"
@@ -226,26 +228,37 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
         return "invalid_slot"
 
     async def _tx(conn):
+        await conn.fetchrow(
+            "SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE;",
+            int(user_id),
+        )
         highest_tier = await conn.fetchval(
             "SELECT MAX(tier) FROM user_player_upgrades WHERE user_id=$1 AND upgrade_id=$2;",
             int(user_id), int(upgrade_id),
         )
         if highest_tier is None:
             return "not_owned"
-        # The user's highest purchased tier is authoritative. The callback's
-        # tier is only a UI snapshot and must never downgrade the owned level.
+                                                                            
+                                                                              
         tier = int(highest_tier)
 
         squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(user_id))
         if not squad_row:
             return "player_not_owned"
+        already_equipped = await conn.fetchval(
+            """
+            SELECT 1 FROM user_player_loadouts
+            WHERE user_id=$1 AND (batting_upgrade_id=$2 OR bowling_upgrade_id=$2)
+            LIMIT 1;
+            """,
+            int(user_id), int(upgrade_id),
+        )
+        if already_equipped:
+            return "already_equipped"
         raw_squad = squad_row["squad"]
         if isinstance(raw_squad, str):
             raw_squad = json.loads(raw_squad)
-        def _player_kind(player_row: dict[str, Any]) -> str:
-            return player_kind(player_row)
-
-        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and _player_kind(p) == player_kind), None)
+        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and identify_player_kind(p) == player_kind), None)
         if not player:
             return "player_not_owned"
 
@@ -255,8 +268,8 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
         from services.player_upgrades import bowler_family, role_key
         role = role_key(player.get("role"))
         eligible_roles = catalog["eligible_roles"] or []
-        # asyncpg commonly returns JSON/JSONB columns as text unless a custom
-        # codec is installed. Treat both decoded arrays and JSON text alike.
+                                                                             
+                                                                            
         if isinstance(eligible_roles, str):
             try:
                 eligible_roles = json.loads(eligible_roles)
@@ -303,10 +316,7 @@ async def unequip_upgrade(user_id: int, player_id: int, player_kind: str, slot: 
         raw_squad = squad_row["squad"]
         if isinstance(raw_squad, str):
             raw_squad = json.loads(raw_squad)
-        def _player_kind(player_row: dict[str, Any]) -> str:
-            return player_kind(player_row)
-
-        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and _player_kind(p) == player_kind), None)
+        player = next((p for p in (raw_squad or []) if int(p.get("player_id") or 0) == int(player_id) and identify_player_kind(p) == player_kind), None)
         if not player:
             return "player_not_owned"
         row = await conn.fetchrow(
