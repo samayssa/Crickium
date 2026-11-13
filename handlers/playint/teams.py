@@ -40,8 +40,8 @@ async def send_team_selection(chat_id, match):
         if old_message_id <= 0:
             raise
         try:
-            # Styled keyboards use the raw Bot API in app.py, so this fallback
-            # does not depend on the MTProto edit path.
+                                                                              
+                                                       
             await app.edit_message_text(
                 chat_id, old_message_id, team_text,
                 parse_mode='HTML', reply_markup=markup,
@@ -94,7 +94,7 @@ async def playint_team(callback_query):
     _,mid_s,code=callback_query['data'].split(':'); mid=int(mid_s); uid=int(callback_query['from']['id']); match=await get_match(mid)
     if not match or match['status'] not in {'accepted','team_selection'}:
         await app.answer_callback_query(callback_query['id'],'Team selection is no longer active.',show_alert=True); return
-    # challenger always selects first
+                                     
     if not match.get('challenger_team_code') and uid!=int(match['challenger_id']):
         await app.answer_callback_query(callback_query['id'],'The challenger must choose the first team.',show_alert=True); return
     if uid not in {int(match['challenger_id']),int(match['opponent_id'])}:
@@ -103,7 +103,7 @@ async def playint_team(callback_query):
         await app.answer_callback_query(callback_query['id'],'Your team is already selected.',show_alert=True); return
     if uid==int(match['opponent_id']) and match.get('opponent_team_code'):
         await app.answer_callback_query(callback_query['id'],'Your team is already selected.',show_alert=True); return
-    # Teams cannot be duplicated.
+                                 
     other=match.get('opponent_team_code') if uid==int(match['challenger_id']) else match.get('challenger_team_code')
     if other==code:
         await app.answer_callback_query(callback_query['id'],'That national team is already selected.',show_alert=True); return

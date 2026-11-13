@@ -55,11 +55,11 @@ from services.super_over_bridge import build_draw_result_text, start_decider
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
-# Minimum gap between edits to the SAME live-scorecard message during
-# ball-by-ball simulation. Telegram throttles rapid edits to one
-# message (~1/sec in practice, stricter under load); app.py already
-# retries on FloodWait, but keeping a safe pace here means we hit that
-# limit far less often in the first place.
+                                                                     
+                                                                
+                                                                   
+                                                                      
+                                          
 BALL_EDIT_DELAY = 1.6
 
 
@@ -401,8 +401,8 @@ async def on_playint_start_auto_bowler(callback_query):
         await app.answer_callback_query(callback_query['id'], 'Schedule at least one next bowler first.', show_alert=True); return
     session.auto_bowler_enabled=True
     await app.answer_callback_query(callback_query['id'], 'Auto bowler enabled for the scheduled overs!')
-    # Keep the current over intact. The queued bowler is consumed only when
-    # the next over actually begins.
+                                                                           
+                                    
     await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled))
 
 
@@ -517,7 +517,7 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
 
     try:
         if winner_id is None:
-            # Tied match: both players get the tie XP, no win/loss recorded.
+                                                                            
             await add_match_xp(challenger_id, TIE_XP)
             await add_match_xp(opponent_id, TIE_XP)
             await record_match_result(challenger_id, won=None)
@@ -528,8 +528,8 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
     except Exception as exc:
         print(f"[playint] Failed to award match XP/stats for match_id={session.match_id}: {exc!r}")
 
-    # H2H persistence is independent from rewards/stats. A reward failure must
-    # never prevent a finished match from appearing in head-to-head history.
+                                                                              
+                                                                            
     try:
         await record_h2h_result(
             int(session.match_id),
@@ -542,9 +542,9 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
 
 
 async def _finish_over_and_prompt_next(session) -> None:
-    # The live scorecard message itself becomes the short over summary.
-    # Keep it visible for exactly a brief moment, then remove it and create
-    # the fresh live scorecard with the next bowler choices.
+                                                                       
+                                                                           
+                                                            
     summary = over_complete_text(session)
     try:
         await app.edit_message_text(
@@ -588,7 +588,7 @@ async def _finish_over_and_prompt_next(session) -> None:
                 session.live_message_id = live["message_id"]
             return
 
-        # Second (or later) innings just finished - the match is over.
+                                                                      
         innings_2_snapshot = snapshot_innings(session)
         innings_1_snapshot = session.innings_history[0] if session.innings_history else innings_2_snapshot
         winner_id, margin = match_winner(innings_1_snapshot, innings_2_snapshot)
@@ -681,7 +681,7 @@ async def _finish_over_and_prompt_next(session) -> None:
     session.this_over = []
     session.over_commentary = []
 
-    # Auto-bowler consumes the next pre-planned bowler without asking again.
+                                                                            
     if session.auto_bowler_enabled and session.auto_bowler_queue:
         player = consume_next_scheduled_bowler(session)
         if player and assign_bowler(session, player):
@@ -741,8 +741,8 @@ async def on_playint_strategy(callback_query):
     session.stage = "over_in_progress"
     await app.answer_callback_query(callback_query["id"], f"{strategy.upper()} selected!")
 
-    # Remove the approach buttons immediately, then simulate the whole over
-    # internally. No ball-by-ball scorecard edits are shown to the users.
+                                                                           
+                                                                         
     await _safe_edit_scorecard(session)
 
     legal_balls_before = session.innings.score.legal_balls
