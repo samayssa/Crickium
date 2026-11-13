@@ -6,6 +6,7 @@ import re
 
 from app import app
 from database.query import fetchval
+from utils.debut_gate import has_completed_debut
 
 
 def _bot_username() -> str:
@@ -49,15 +50,19 @@ async def require_started_user(
     username: str | None = None,
     first_name: str | None = None,
 ) -> bool:
-    if user_id and await has_started_bot(int(user_id)):
-        return True
+    if user_id:
+        uid = int(user_id)
+        if await has_started_bot(uid):
+            return True
+        if await has_completed_debut(uid):
+            return True
 
     target = _target_label(user_id, username, first_name)
     bot_name = html.escape(_bot_username())
     await app.send_message(
         int(chat_id),
-        f"⚠️ <b>{target}, you haven't started {bot_name} yet.</b>\n\n"
-        f"Please open {bot_name} and press Start first to play.",
+        f"<b>{target}, you're not part of {bot_name} yet.\n"
+        "Send /start and /debut in the bot DM to play.</b>",
         parse_mode="HTML",
         reply_markup=start_bot_keyboard(),
     )
