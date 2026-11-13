@@ -55,7 +55,7 @@ def add_runtime_commentary(session: Any, commentary: str) -> None:
         if history and isinstance(history[-1], dict):
             history[-1]["commentary"] = str(commentary or "").strip()
     except Exception:
-        # Telemetry must never affect or interrupt the match simulation.
+                                                                        
         return
 
 

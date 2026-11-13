@@ -136,9 +136,9 @@ def _worm_wicket_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "batter": ball.get("batter") or "Batter",
             })
 
-        # Some legacy/early-exit reports retain only fall-of-wicket records.
-        # Use their recorded over value as a fallback without inventing a ball
-        # number when detailed ball telemetry is unavailable.
+                                                                            
+                                                                              
+                                                             
         if not inning_events:
             for wicket in snap.get("wickets_fallen") or []:
                 over_text = str(wicket.get("over") or "")
