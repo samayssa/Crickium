@@ -34,15 +34,15 @@ BONUS_AD_COOLDOWN_SECONDS = 60 * 60
 AD_ATTEMPT_TIMEOUT_SECONDS = 20 * 60
 CRICKIUM_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
-# Kit Bag OVR-tier odds total 100%. Higher-rated tiers become progressively
-# rarer. Odds apply to the tier first, then a random eligible card is selected
-# uniformly from that tier.
+                                                                           
+                                                                              
+                           
 KITBAG_OVR_BANDS = (
-    (65, 72, 50),  # Common: 50%
-    (73, 78, 30),  # Uncommon: 30%
-    (79, 80, 12),  # Rare: 12%
-    (81, 82, 6),   # Very rare: 6%
-    (83, 85, 2),   # Extremely rare: 2%
+    (65, 72, 50),               
+    (73, 78, 30),                 
+    (79, 80, 12),             
+    (81, 82, 6),                  
+    (83, 85, 2),                       
 )
 
 
@@ -79,8 +79,8 @@ def _choose_kitbag_candidate(candidates: list[dict[str, Any]], rng: Any = random
     )[0]
     return rng.choice(selected_players)
 
-# This schedule mirrors handlers/daily.py and is deliberately owned by the
-# server. The client cannot submit or alter a reward amount.
+                                                                          
+                                                            
 DAILY_REWARDS = {
     1: {"coins": 500, "rubies": 100, "player_range": None},
     2: {"coins": 1000, "rubies": 200, "player_range": None},
@@ -107,8 +107,8 @@ MATCH_SOURCE_TABLES = {
     "PLAYWPL": ("wpl_matches", "match_id"),
     "MATCH": ("match_challenges", "challenge_id"),
 }
-# Columns needed only to label a historical card. Avoid SELECT * here: the source
-# rows also carry XI/state JSONB fields that are not used by the Matches screen.
+                                                                                 
+                                                                                
 MATCH_HISTORY_COLUMNS = {
     "PLAY": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "created_at"),
     "PLAYSO": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "created_at"),
@@ -266,8 +266,8 @@ async def _get_player_image_source(kind: str, entity_id: int) -> tuple[str, str]
     player = await _select_player(kind, entity_id)
     if not player:
         return None
-    # Keep template selection identical to the bot renderer, including role
-    # aliases and the All Rounder batting/bowling-level tiebreaker.
+                                                                           
+                                                                   
     from services.card_provider import resolve_card_type
     card = resolve_card_type(player)
     template = await fetchrow("SELECT file_id FROM template_card_image WHERE card_type=$1;", card)
@@ -311,8 +311,8 @@ async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str, str
             if downloaded:
                 template_bytes = downloaded[0]
         except Exception as exc:
-            # If Telegram's stored template cannot be fetched, use the same
-            # bundled template fallback that the bot's card provider uses.
+                                                                           
+                                                                          
             print(f"[miniapp_backend] card template fetch failed: {type(exc).__name__}")
     try:
         from services.card_provider import resolve_card_type
@@ -321,7 +321,7 @@ async def player_image_bytes(kind: str, entity_id: int) -> tuple[bytes, str, str
         return rendered, "image/png", "rendered-template"
     except Exception as exc:
         print(f"[miniapp_backend] default card render failed: {type(exc).__name__}")
-        # Returning no image allows the frontend's branded fallback to remain usable.
+                                                                                     
         return None
 
 
@@ -457,17 +457,17 @@ async def _runtime_session(engine: str, match_id: int):
     if engine not in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
         return None
 
-    # The Mini App web process never owns a live game: the bot process does.
-    # Anything found in THIS process's registries was injected by an earlier
-    # snapshot restore and is stale (the score would freeze on the first
-    # snapshot that was ever read). Always read the newest persisted snapshot
-    # first; the in-memory registry is only a fallback.
+                                                                            
+                                                                            
+                                                                        
+                                                                             
+                                                       
     if _SNAPSHOT_FIRST:
         fresh = await _fresh_snapshot(engine, numeric_id)
         if fresh is not None:
             return fresh
 
-    # The /match runtime is keyed by chat_id, so resolve it using challenge_id.
+                                                                               
     if engine == "MATCH":
         try:
             from engines.match_engine import MATCH_ENGINE
@@ -477,8 +477,8 @@ async def _runtime_session(engine: str, match_id: int):
         except Exception:
             pass
 
-    # restore_session checks each engine's in-memory registry before loading a
-    # saved snapshot, and also injects a restored snapshot into that registry.
+                                                                              
+                                                                              
     try:
         from services.game_session_recovery import restore_session
         session = await restore_session(engine, numeric_id)
@@ -487,8 +487,8 @@ async def _runtime_session(engine: str, match_id: int):
     except Exception as exc:
         print(f"[miniapp_backend] runtime recovery unavailable engine={engine} id={numeric_id} type={type(exc).__name__}")
 
-    # Keep a direct-read compatibility fallback for deployments where the
-    # recovery helper is temporarily unavailable or older than this backend.
+                                                                         
+                                                                            
     try:
         row = await fetchrow(
             "SELECT payload FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
@@ -510,8 +510,8 @@ def _team_names_from_match(row: dict[str, Any]) -> tuple[str, str]:
 
 async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    # Each engine has its own table. A small per-source cap still finds concurrent
-    # modes while avoiding dozens of snapshot reads on every Matches refresh.
+                                                                                  
+                                                                             
     per_source_limit = max(5, min(int(limit), 10))
     for table, engine in MATCH_TABLES:
         try:
@@ -592,9 +592,9 @@ async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
             item["current_score"] = None
 
             if engine == "PLAYSO":
-                # The full JSONB state contains ball-by-ball history and can grow
-                # throughout a match. The active-match card needs only these four
-                # scalar values, selected directly by PostgreSQL above.
+                                                                                 
+                                                                                 
+                                                                       
                 try:
                     balls = max(0, int(item.get("_state_legal_balls") or 0))
                     runs = max(0, int(item.get("_state_runs") or 0))
@@ -606,7 +606,7 @@ async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
                     item["over_text"] = f"{balls // 6}.{balls % 6}"
                     item["current_score"] = f"{runs}/{wickets} ({item['over_text']})"
                 except (TypeError, ValueError):
-                    # Malformed optional score metadata must not hide the match card.
+                                                                                     
                     pass
                 item.pop("_state_runs", None)
                 item.pop("_state_wickets", None)
@@ -628,7 +628,7 @@ async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
                     item["batting_team"] = getattr(session, "batting_team_display", None)
             result.append(item)
     result.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    # Match IDs are local to their engine. Preserve source engine in all cards/routes.
+                                                                                      
     return result[:limit]
 
 
@@ -821,9 +821,9 @@ async def build_market_response(viewer: TelegramViewer, params: dict[str, str]) 
         limit = max(1, min(int(params.get("limit") or 24), 50))
     except ValueError:
         limit = 24
-    # Market browsing must not silently be limited to the 50 highest-rated
-    # cards returned by the search endpoint. Read a bounded catalog window from
-    # each real card source, then apply the user's filters and server prices.
+                                                                          
+                                                                               
+                                                                             
     groups = await asyncio.gather(
         _query_players("global", query, 250),
         _query_players("special", query, 250),
@@ -1006,8 +1006,8 @@ async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, An
             """, int(user_id), max(1, min(int(limit), 250)),
         )
     except Exception as exc:
-        # Older databases can lack the pack ledger until the additive migration
-        # has run. The UI should remain available while the startup migration runs.
+                                                                               
+                                                                                   
         print(f"[miniapp_backend] pack collection unavailable: {type(exc).__name__}")
         return []
 
@@ -1024,8 +1024,8 @@ async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, An
         if not isinstance(card, dict) or not isinstance(card.get("player"), dict):
             continue
         player = dict(card["player"])
-        # Prefer the immutable opening snapshot, but verify it matches the
-        # normalized ownership ledger row before showing it as a collected card.
+                                                                          
+                                                                                
         try:
             if int(player.get("player_id") or card.get("player_id") or 0) != int(row.get("player_id") or 0):
                 continue
@@ -1034,8 +1034,8 @@ async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, An
         card_ovr = int(card.get("ovr") or max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0)))
         output.append({
             **_player_payload(player, owned=True),
-            # Pack inventory sells using the saved opening's OVR. Mirror that
-            # exact value in the collection UI to keep confirmation and credit aligned.
+                                                                             
+                                                                                       
             "sell_price": int(get_price(card_ovr)[1]),
             "pack_key": str(row.get("pack_key") or ""),
             "pack_slot": str(row.get("card_kind") or card.get("kind") or "bonus"),
@@ -1077,7 +1077,7 @@ async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
 
 async def build_news_list_response(viewer: TelegramViewer, limit: int = 30) -> dict[str, Any]:
     """Return recently published club news for the authenticated Mini App viewer."""
-    del viewer  # Access control is enforced by the ASGI router; articles are club-wide.
+    del viewer                                                                          
     bounded_limit = max(1, min(int(limit or 30), 50))
     rows = await fetch(
         """
@@ -1169,9 +1169,9 @@ async def swap_playing_xi_players(viewer: TelegramViewer, playing_player_id: int
                 return {"status": "player_not_in_xi"}
             if substitute_player_id in lineup_ids:
                 return {"status": "player_already_in_xi"}
-            # Mirror /changeXL: swap the incoming player's squad position with
-            # the outgoing one as well as updating the authoritative XI IDs.
-            # The bot's /squad numbering and XI management therefore stay aligned.
+                                                                              
+                                                                            
+                                                                                  
             playing_index = next(i for i, item in enumerate(squad) if int(item.get("player_id") or 0) == playing_player_id)
             substitute_index = next(i for i, item in enumerate(squad) if int(item.get("player_id") or 0) == substitute_player_id)
             updated_squad = list(squad)
@@ -1216,9 +1216,9 @@ async def update_playing_xi_order(viewer: TelegramViewer, player_ids: list[Any])
             current = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
             if len(current) != 11 or set(current) != set(requested):
                 return {"status": "lineup_changed", "lineup_player_ids": current}
-            # Keep the bot's existing squad numbering/order aligned with the XI:
-            # first eleven cards are now in the saved Playing XI order, followed
-            # by substitutes in their previous relative order.
+                                                                                
+                                                                                
+                                                              
             requested_set = set(requested)
             squad_by_id = {int(item.get("player_id") or 0): dict(item) for item in squad}
             ordered_xi = [squad_by_id[player_id] for player_id in requested]
@@ -1275,7 +1275,7 @@ async def sell_squad_players(viewer: TelegramViewer, player_ids: list[Any]) -> d
 
             selected_set = set(selected_ids)
             remaining_squad = [dict(item) for item in squad if int(item.get("player_id") or 0) not in selected_set]
-            # The UI only presents substitutes for bulk-sale, so the XI remains unchanged.
+                                                                                          
             await conn.execute(
                 "UPDATE team_squads SET squad=$2::jsonb,updated_at=NOW() WHERE user_id=$1;",
                 int(viewer.id), json.dumps(remaining_squad, default=str),
@@ -1337,7 +1337,7 @@ async def sell_squad_player(viewer: TelegramViewer, player_id: int) -> dict[str,
             remaining_ids = _player_id_set(remaining_squad)
             lineup_row = await conn.fetchrow("SELECT player_ids FROM team_lineups WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
             current_lineup = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
-            # If a sold player was in the XI, refill that XI slot from the bench.
+                                                                                 
             next_lineup = [pid for pid in current_lineup if pid in remaining_ids]
             for item in remaining_squad:
                 pid = int(item.get("player_id") or 0)
@@ -1453,9 +1453,9 @@ async def build_matches_response(viewer: TelegramViewer) -> dict[str, Any]:
     )
     active = await _active_matches(viewer.id, limit=30)
 
-    # The summary table is deliberately compact and does not contain team labels.
-    # Enrich history in one bounded query per engine rather than issuing one query
-    # per card (which would create avoidable database load on each Matches refresh).
+                                                                                 
+                                                                                  
+                                                                                    
     recent_dicts = [dict(raw) for raw in recent]
     ids_by_engine: dict[str, set[int]] = {}
     for row in recent_dicts:
@@ -1505,7 +1505,7 @@ async def build_matches_response(viewer: TelegramViewer) -> dict[str, Any]:
                 "created_at": _iso(source.get("created_at")),
             })
         else:
-            # Don't substitute invented teams when older source rows no longer exist.
+                                                                                     
             item.update({"team_a_name": "Team details unavailable", "team_b_name": "Team details unavailable"})
         recent_items.append(item)
     return {
@@ -1585,7 +1585,7 @@ def _enrich_match_innings(innings: list[dict[str, Any]]) -> list[dict[str, Any]]
             else:
                 key = None
             if key:
-                # Only recorded team runs are used for extra totals.
+                                                                    
                 extras[key] = extras.get(key, 0) + ball_runs
             legal = ball.get("legal")
             if legal is None:
@@ -1620,15 +1620,15 @@ def _enrich_match_innings(innings: list[dict[str, Any]]) -> list[dict[str, Any]]
             if not inning.get("over_text"):
                 inning["over_text"] = _overs_from_balls(inning.get("legal_balls") or legal_balls)
 
-        # Scorecard rows: always carry SR / dismissal text for batters and
-        # economy for bowlers, whichever engine produced the snapshot.
+                                                                          
+                                                                      
         fallen_text: dict[str, str] = {}
         for fall in (inning.get("wickets_fallen") or []):
             if isinstance(fall, dict) and fall.get("batter"):
                 text = fall.get("text") or _legacy_dismissal_text(fall)
                 if text:
                     fallen_text[str(fall["batter"])] = text
-        # Maidens: a bowler's over of six legal balls with no runs charged.
+                                                                           
         maiden_count: dict[str, int] = {}
         over_groups: dict[tuple[Any, Any, Any], list[dict[str, Any]]] = {}
         for ball in (inning.get("analysis_balls") or []):
@@ -1680,8 +1680,8 @@ def _completed_potm(engine: str, innings: list[dict[str, Any]]) -> dict[str, Any
             player_name = None
     if not player_name:
         return None
-    # Preserve the engine's actual existing award selection rule where it is
-    # exposed; attach the recorded player's real figures from this scorecard.
+                                                                            
+                                                                             
     for inning in snapshots:
         for batter in inning.get("batters") or []:
             if str(batter.get("name") or "") == player_name:
@@ -1778,7 +1778,7 @@ async def _source_match_row(engine: str, match_id: int, user_id: int, *, allow_s
     table, id_column = spec
     try:
         if allow_shared:
-            # Table/identifier names are selected exclusively from MATCH_SOURCE_TABLES.
+                                                                                       
             row = await fetchrow(f"SELECT * FROM {table} WHERE {id_column}=$1;", int(match_id))
         else:
             row = await fetchrow(
@@ -1847,8 +1847,8 @@ def _attach_live_session_fields(payload: dict[str, Any], session: Any) -> dict[s
             inning["extras"] = dict(getattr(score_obj, "extras", {}) or {})
             inning["wickets_fallen"] = list(getattr(score_obj, "wickets_fallen", []) or [])
 
-        # Include every eligible bowling option, including bowlers who have not
-        # yet delivered a ball, while preserving figures stored by the engine.
+                                                                               
+                                                                              
         bowling_candidates = getattr(session, "bowling_pool", None) or getattr(session, "bowling_squad", None) or []
         full_bowlers = []
         seen_ids = set()
@@ -1966,7 +1966,7 @@ def _attach_legacy_session_fields(payload: dict[str, Any], session: Any) -> dict
             inning["extras"] = dict(getattr(getattr(innings_obj, "score", None), "extras", {}) or {})
             wickets_fallen = list(getattr(getattr(innings_obj, "score", None), "wickets_fallen", []) or [])
             inning["wickets_fallen"] = wickets_fallen
-            # Preserve the engine's dismissal records, while leaving unknown details blank.
+                                                                                           
             dismissed_by_name = {str(item.get("batter") or ""): item for item in wickets_fallen if isinstance(item, dict)}
             for batter in inning["batters"]:
                 dismissal = dismissed_by_name.get(str(batter.get("name") or ""))
@@ -2081,9 +2081,9 @@ async def _live_engine_payload(engine: str, match_id: int, match_row: dict[str, 
             current_bowler_name = str(bowler_row.get("name") or bowl_stat.get("name") or "")
             current_bowler = _simple_bowler({"name": current_bowler_name, **bowl_stat}, current_bowler_name) if bowler_row or bowl_stat else None
 
-            # The live Super Over state keeps statistics only for batters who
-            # have faced a delivery. Expand that to the selected batting XI so
-            # the scorecard can correctly distinguish yet-to-bat players.
+                                                                             
+                                                                              
+                                                                         
             wicket_names = {str(x.get("batter") or x.get("name") or "") for x in (state.get("wickets_fallen") or []) if isinstance(x, dict)}
             full_batters = []
             for player_id, player in selected.items():
@@ -2134,9 +2134,9 @@ async def _live_engine_payload(engine: str, match_id: int, match_row: dict[str, 
 
 
 def _summary_innings_from_rows(rows: list[dict[str, Any]], source_match: dict[str, Any] | None, engine: str, match_id: int) -> list[dict[str, Any]]:
-    # Completed summaries persist per-user batting stats and each user's bowling
-    # figures. Pair the defending/chasing rows to recover both innings without
-    # fabricating delivery-level commentary that is not stored in this table.
+                                                                                
+                                                                              
+                                                                             
     defending = next((r for r in rows if bool(r.get("defending"))), None)
     chasing = next((r for r in rows if bool(r.get("chasing"))), None)
     innings_out = []
@@ -2199,12 +2199,12 @@ async def _build_match_detail_impl(viewer: TelegramViewer, engine: str, match_id
     if engine not in MATCH_SOURCE_TABLES:
         return None
 
-    # Regular match links are participant-gated. The explicit shared-score route
-    # permits read-only access to other users' scorecards from a signed-in Mini App.
+                                                                                
+                                                                                    
     source_match = await _source_match_row(engine, match_id, int(viewer.id), allow_shared=allow_shared)
 
-    # Live data is read before any completed-summary queries so a missing or
-    # temporarily unavailable quest summary table cannot break an active match.
+                                                                            
+                                                                               
     active_status = str((source_match or {}).get("status") or "").lower()
     if source_match and active_status not in _TERMINAL_MATCH_STATUSES:
         live_payload = await _live_engine_payload(engine, match_id, source_match, active_status)
@@ -2219,8 +2219,8 @@ async def _build_match_detail_impl(viewer: TelegramViewer, engine: str, match_id
             live_payload.update({
                 "engine": engine, "match_id": match_id,
                 "match_type": source_match.get("format") or source_match.get("match_type") or engine,
-                # When an actual runtime snapshot exists, keep this match polling
-                # even if the source table retains a setup status such as toss_done.
+                                                                                 
+                                                                                    
                 "status": current_status, "is_live": True,
                 "is_completed": False, "team_a_name": first, "team_b_name": second,
                 "challenger_name": str(source_match.get("challenger_name") or first),
@@ -2240,16 +2240,16 @@ async def _build_match_detail_impl(viewer: TelegramViewer, engine: str, match_id
             })
             return live_payload
 
-        # If the detailed collector cannot process a legacy/partial telemetry
-        # field, the current score itself is still authoritative and can be
-        # rendered from the live session or the persisted Super Over state.
+                                                                             
+                                                                           
+                                                                           
         fallback_payload = await _live_score_fallback_payload(engine, match_id, source_match)
         if fallback_payload and fallback_payload.get("scorecard_available"):
             return fallback_payload
 
-    # If the source table row is temporarily unavailable but this is an explicit
-    # shared link, try the authoritative runtime snapshot. Do not bypass the
-    # participant gate for ordinary match-detail requests.
+                                                                                
+                                                                            
+                                                          
     if source_match is None and allow_shared and engine in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
         try:
             session = await _runtime_session(engine, match_id)
@@ -2287,8 +2287,8 @@ async def _build_match_detail_impl(viewer: TelegramViewer, engine: str, match_id
         except Exception as exc:
             print(f"[miniapp_backend] shared runtime fallback failed engine={engine} id={match_id} type={type(exc).__name__}")
 
-    # Completed score summaries may not exist on older deployments. Treat them as
-    # optional so the match's authoritative live/metadata route does not 500.
+                                                                                 
+                                                                             
     summary = None
     try:
         if allow_shared:
@@ -2364,9 +2364,9 @@ async def _build_match_detail_impl(viewer: TelegramViewer, engine: str, match_id
             "note": "Completed match details use Crickium's persisted scorecards and delivery commentary. Missing historical ball data is not fabricated.",
         }
 
-    # Super Over state is stored directly on playso_matches. Even if an older
-    # deployment did not write quest summaries, use this authoritative state for
-    # completed scorecards rather than rendering a metadata-only match.
+                                                                             
+                                                                                
+                                                                       
     if engine == "PLAYSO" and source_match:
         try:
             state_value = _as_mapping(source_match.get("state"))
@@ -2398,9 +2398,9 @@ async def _build_match_detail_impl(viewer: TelegramViewer, engine: str, match_id
         except Exception as exc:
             print(f"[miniapp_backend] completed Super Over snapshot unavailable id={match_id} type={type(exc).__name__}")
 
-    # The legacy /match engine does not write quest_match_summaries. Use its
-    # persisted runtime snapshot for full live/completed scorecards instead of
-    # falling back to a metadata-only record.
+                                                                            
+                                                                              
+                                             
     if engine == "MATCH":
         try:
             session = await _runtime_session("MATCH", match_id)
@@ -2680,8 +2680,8 @@ async def build_match_detail(viewer: TelegramViewer, engine: str, match_id: int,
     except Exception as exc:
         print(f"[miniapp_backend] match detail failed engine={normalized_engine} id={numeric_id} type={type(exc).__name__}")
 
-    # Keep participant gating for ordinary match cards. Only explicitly shared
-    # match-ready links may recover a score without the viewer being a player.
+                                                                              
+                                                                              
     source_match = None
     session_hint = None
     try:
@@ -2750,8 +2750,8 @@ async def build_adsgram_ad_status(viewer: TelegramViewer) -> dict[str, Any]:
     local_now = datetime.now(CRICKIUM_TIMEZONE)
     usage_date = local_now.date()
 
-    # Expire abandoned AdsGram SDK sessions; old-provider attempts are made
-    # inactive by the additive migration and never lock the new flow.
+                                                                           
+                                                                     
     await execute(
         """UPDATE miniapp_ad_attempts SET status='expired',updated_at=NOW()
            WHERE user_id=$1 AND provider='adsgram' AND status='pending'
@@ -2762,8 +2762,8 @@ async def build_adsgram_ad_status(viewer: TelegramViewer) -> dict[str, Any]:
         "SELECT COUNT(*) FROM miniapp_ad_attempts WHERE user_id=$1 AND usage_date=$2 AND status='rewarded';",
         user_id, usage_date,
     ) or 0)
-    # Keep cooldown continuous across the provider migration, including a
-    # reward earned by the previous provider earlier in the same hour.
+                                                                         
+                                                                      
     last_reward = await fetchrow(
         "SELECT rewarded_at FROM miniapp_ad_attempts WHERE user_id=$1 AND status='rewarded' ORDER BY rewarded_at DESC LIMIT 1;",
         user_id,
@@ -3284,10 +3284,10 @@ async def claim_kitbag(viewer: TelegramViewer) -> dict[str, Any]:
             if last_at and (now - last_at).total_seconds() < KITBAG_COOLDOWN_SECONDS:
                 remaining = KITBAG_COOLDOWN_SECONDS - int((now - last_at).total_seconds())
                 return {"status": "cooldown", "seconds_until_available": remaining}
-            # Pick from real, unowned global cards with OVR 65-85. The tier
-            # odds are server-side and intentionally descend as OVR increases.
-            # At squad capacity the chosen reward is persisted as pending, so
-            # the player can choose whom to replace.
+                                                                           
+                                                                              
+                                                                             
+                                                    
             candidates = await conn.fetch(
                 """
                 SELECT p.*,'global'::text player_kind
@@ -3374,8 +3374,8 @@ async def replace_kitbag_player(viewer: TelegramViewer, claim_id: str, replaced_
             lineup_ids = _normalize_lineup_ids(lineup_row["player_ids"] if lineup_row else None, squad)
 
             if len(squad) < MAX_SQUAD_SIZE:
-                # The user may have sold a card after opening the Kit Bag. Use
-                # that now-free slot instead of forcing a second, unnecessary sale.
+                                                                              
+                                                                                   
                 updated_squad = list(squad) + [new_player]
                 await conn.execute(
                     """
@@ -3434,7 +3434,7 @@ async def replace_kitbag_player(viewer: TelegramViewer, claim_id: str, replaced_
 
 
 async def claim_daily_reward(viewer: TelegramViewer) -> dict[str, Any]:
-    # Preserve the existing bot's debut gate and seven-day progression.
+                                                                       
     debut = await fetchval("SELECT 1 FROM team_squads WHERE user_id=$1 LIMIT 1;", int(viewer.id))
     if not debut:
         return {"status": "debut_required"}

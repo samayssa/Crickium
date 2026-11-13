@@ -101,9 +101,9 @@ async def migrate() -> None:
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_sigils_earned BIGINT DEFAULT 0;")
     await execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_sigils_spent BIGINT DEFAULT 0;")
 
-    # Make the bot's existing pack store available even if the Mini App server
-    # starts slightly before the bot's main migration finishes. All DDL is
-    # additive/idempotent and matches services/pack_system.py.
+                                                                              
+                                                                          
+                                                              
     await execute("""
         CREATE TABLE IF NOT EXISTS pack_inventory(
             user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -169,19 +169,19 @@ async def migrate() -> None:
         );
         """
     )
-    # Additive fields support a Kit Bag reward that is held for replacement when
-    # the 25-card squad is already full. Existing claims are treated as already added.
+                                                                                
+                                                                                      
     await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'added';")
     await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS replaced_player_id BIGINT;")
     await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;")
-    # Keep ad-earned Kit Bags separate from the existing hourly free-claim clock.
-    # Existing rows retain the 'free' default, preserving prior cooldown history.
+                                                                                 
+                                                                                 
     await execute("ALTER TABLE miniapp_kitbag_claims ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'free';")
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_kitbag_claims_user_time ON miniapp_kitbag_claims(user_id, opened_at DESC);"
     )
-    # Persistent My Gifts campaigns and per-user rewards are shared by the
-    # Telegram bot process and this authenticated Mini App backend.
+                                                                          
+                                                                   
     await execute("""
         CREATE TABLE IF NOT EXISTS miniapp_gift_campaigns(
             gift_id BIGSERIAL PRIMARY KEY,
@@ -217,8 +217,8 @@ async def migrate() -> None:
     await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_gifts_user_status ON miniapp_gift_user_rewards(user_id,status,gift_id DESC);")
     await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_gifts_scheduled ON miniapp_gift_campaigns(status,scheduled_at);")
 
-    # Provider-neutral ad attempt ledger. The existing ymid column is retained
-    # for database compatibility but stores our internal one-time attempt ID.
+                                                                              
+                                                                             
     await execute("""
         CREATE TABLE IF NOT EXISTS miniapp_ad_attempts(
             ymid TEXT PRIMARY KEY,
@@ -239,7 +239,7 @@ async def migrate() -> None:
         );
     """)
     await execute("ALTER TABLE miniapp_ad_attempts ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'legacy';")
-    # A pending attempt from the retired provider must not block AdsGram.
+                                                                         
     await execute("UPDATE miniapp_ad_attempts SET status='expired',updated_at=NOW() WHERE status='pending' AND provider <> 'adsgram';")
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_ad_attempts_user_date ON miniapp_ad_attempts(user_id, usage_date, status);"
@@ -247,7 +247,7 @@ async def migrate() -> None:
     await execute(
         "CREATE INDEX IF NOT EXISTS idx_miniapp_ad_attempts_user_rewarded_at ON miniapp_ad_attempts(user_id, rewarded_at DESC) WHERE status='rewarded';"
     )
-    # Shared news storage; image file IDs stay server-side and are proxied to clients.
+                                                                                      
     await execute("""
         CREATE TABLE IF NOT EXISTS miniapp_news_articles(
             article_id BIGSERIAL PRIMARY KEY,

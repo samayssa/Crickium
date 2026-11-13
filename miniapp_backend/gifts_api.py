@@ -52,8 +52,8 @@ async def build_list(viewer) -> dict[str, Any]:
             "has_image": bool(row.get("image_file_id")),
             "image_url": f"/api/image/gift?id={int(row['gift_id'])}" if row.get("image_file_id") else None,
             "status": status,
-            # Keep exact values private until the user opens the gift. The
-            # staged reveal is meant to be the first place they see amounts.
+                                                                          
+                                                                            
             "has_coins": max(0, int(reward.get("coins") or 0)) > 0,
             "has_rubies": max(0, int(reward.get("rubies") or 0)) > 0,
             "has_player": isinstance(reward.get("player"), dict),

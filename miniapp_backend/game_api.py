@@ -83,7 +83,7 @@ async def _estimate(game: dict, record: bool = True) -> None:
     loop = asyncio.get_running_loop()
     try:
         est = await loop.run_in_executor(None, wp.estimate, game)
-    except Exception as exc:                               # never block a delivery on the model
+    except Exception as exc:                                                                    
         print(f"[miniapp_game] win probability failed: {type(exc).__name__}: {exc}")
         return
     if record:
@@ -128,10 +128,10 @@ async def _finish_hooks(user_id: int, game: dict) -> dict:
     _STATS_CACHE.pop(user_id, None)
     link = game.get("link")
     if link and link.get("token"):
-        # started with /playai: report goes where the command was used
+                                                                      
         asyncio.create_task(_report_to_group(game, dict(link)))
     elif game.get("inn"):
-        # played straight in the Mini App: the report goes to the player's DM
+                                                                             
         name = (game.get("teams", {}).get("user", {}) or {}).get("name") or ""
         asyncio.create_task(_report_to_group(game, {"token": None, "chat_id": int(user_id), "message_id": None,
                                                     "user_id": int(user_id), "user_name": name}))
@@ -152,9 +152,9 @@ async def _persist(game: dict) -> None:
         print(f"[miniapp_game] save failed: {type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# entry point
-# ---------------------------------------------------------------------------
+                                                                             
+             
+                                                                             
 async def handle(viewer: Any, method: str, path: str, query: dict, payload: dict) -> tuple[int, dict]:
     route = path.removeprefix("/api/game").strip("/")
     uid = int(viewer.id)
@@ -324,9 +324,9 @@ async def _act(viewer: Any, route: str, payload: dict) -> tuple[int, dict]:
         return view_status
 
 
-# ---------------------------------------------------------------------------
-# group links + live spectating (/playai)
-# ---------------------------------------------------------------------------
+                                                                             
+                                         
+                                                                             
 _FINAL: dict[str, tuple[float, dict]] = {}
 
 
@@ -337,7 +337,7 @@ async def _report_to_group(game: dict, link: dict) -> None:
         from services import miniapp_game_report as report
         res = game.get("result") or {}
         view = gv.build_view(game)
-        if link.get("token"):                       # group link: close it and keep the final view for spectators
+        if link.get("token"):                                                                                    
             try:
                 await repo.finish_link(link["token"], res.get("text"))
             except Exception as exc:
@@ -347,10 +347,10 @@ async def _report_to_group(game: dict, link: dict) -> None:
                 for key in sorted(_FINAL, key=lambda k: _FINAL[k][0])[:100]:
                     _FINAL.pop(key, None)
         if not game.get("inn"):
-            return                                  # nothing was played - no match result to announce
+            return                                                                                    
 
-        # Use the same cross-engine number as PLAY, PLAYINT, PLAYIPL, PLAYWPL
-        # and MATCH. The result row has already been saved by _finish_hooks.
+                                                                             
+                                                                            
         number = 0
         try:
             from services.match_notification import next_match_number
@@ -358,9 +358,9 @@ async def _report_to_group(game: dict, link: dict) -> None:
         except Exception as exc:
             print(f"[miniapp_game] shared match number unavailable: {type(exc).__name__}: {exc}")
 
-        # PLAY AI uses the same central notification group and message format
-        # as the other engines. Keep report delivery independent so a Telegram
-        # notification problem does not prevent the existing card/HTML report.
+                                                                             
+                                                                              
+                                                                              
         try:
             from app import app as telegram_app
             from services.match_notification import send_match_completion_notification

@@ -157,7 +157,7 @@ async def _send_static(send, path: str):
         return
     data = candidate.read_bytes()
     mime, _ = mimetypes.guess_type(str(candidate))
-    # Always revalidate the live Mini App shell/code so Telegram WebView does not retain a stale SDK integration after deployment.
+                                                                                                                                  
     fresh_assets = {"index.html", "app_v2.js", "miniapp_v2.css", "match_centre.css", "kitbag_animation.css", "kitbag_animation.js", "packs_ui.css", "packs_ui.js", "game_ui.css", "game_ui.js", "achievements_ui.css", "achievements_ui.js", "giveaway_ui.css", "giveaway_ui.js", "tournament_ui.css", "tournament_ui.js", "gifts_ui.css", "gifts_ui.js"}
     cache_control = b"no-cache, no-store, must-revalidate" if path == "/" or candidate.name in fresh_assets else b"private, max-age=300"
     await _send_bytes(send, data, mime or "application/octet-stream", cache_control=cache_control)
@@ -202,8 +202,8 @@ class CrickiumMiniApp:
         try:
             await self._dispatch(scope, receive, guarded_send)
         except Exception as exc:
-            # Do not expose database/provider exceptions (or connection strings)
-            # to Mini App clients. If headers are already sent, only log type.
+                                                                                
+                                                                              
             print(f"[miniapp_backend] request failed: {type(exc).__name__}")
             if scope.get("type") == "http" and not response_started:
                 await _send_json(send, {"ok": False, "detail": "Internal server error"}, 500)
@@ -216,8 +216,8 @@ class CrickiumMiniApp:
                     try:
                         await self._startup()
                     except Exception as exc:
-                        # Avoid echoing database/provider exception text, which may
-                        # include hosts, usernames, or connection details in logs.
+                                                                                   
+                                                                                  
                         safe_message = f"Mini App startup failed: {type(exc).__name__}"
                         print(f"[miniapp_backend] {safe_message}")
                         await send({"type": "lifespan.startup.failed", "message": safe_message})
@@ -260,7 +260,7 @@ class CrickiumMiniApp:
 
         is_game = path == "/api/game" or path.startswith("/api/game/")
         if is_game:
-            # A match is hundreds of small taps: it gets its own, higher budget.
+                                                                                
             if _rate_limited(f"{viewer.id}:game", _GAME_LIMIT):
                 await _send_json(send, {"ok": False, "detail": "Slow down a little"}, 429)
                 return
@@ -280,7 +280,7 @@ class CrickiumMiniApp:
             return
 
         if path == "/api/tournaments" or path.startswith("/api/tournaments/"):
-            # The live auction room polls about once a second: its own, higher budget.
+                                                                                      
             if _rate_limited(f"{viewer.id}:tour", _GAME_LIMIT):
                 await _send_json(send, {"ok": False, "detail": "Slow down a little"}, 429)
                 return

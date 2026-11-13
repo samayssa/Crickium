@@ -69,7 +69,7 @@ def _parse_user_blob(params: dict[str, Any]) -> TelegramViewer:
 def _get_value(mapping: Mapping[str, str], key: str) -> str:
     if not mapping:
         return ""
-    # header maps are usually lower-case; query params may preserve case.
+                                                                         
     return mapping.get(key) or mapping.get(key.lower()) or mapping.get(key.upper()) or ""
 
 

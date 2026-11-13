@@ -299,7 +299,7 @@ async def control(viewer, tid: int, action: str) -> tuple[int, dict]:
 
 
 async def handle(viewer, method: str, path: str, query: dict, payload: dict) -> tuple[int, dict]:
-    parts = [p for p in path.split("/") if p][2:]       # after api/tournaments
+    parts = [p for p in path.split("/") if p][2:]                              
     try:
         if not parts and method == "GET":
             return 200, await build_list(viewer)

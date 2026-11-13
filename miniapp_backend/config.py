@@ -11,8 +11,8 @@ STATIC_DIR = APP_ROOT / "static"
 
 DATABASE_URL = ROOT_DATABASE_URL
 BOT_TOKEN = ROOT_BOT_TOKEN
-# Mini App requests must fail closed even when the bot's broader debug flag is
-# enabled. Local auth bypass is opt-in and uses a separate environment switch.
+                                                                              
+                                                                              
 DEBUG = os.getenv("MINIAPP_DEBUG_AUTH", "").strip().lower() in {"1", "true", "yes"}
 MINIAPP_URL = ROOT_MINIAPP_URL
 
