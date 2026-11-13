@@ -29,7 +29,7 @@ from engines.match_engine import (
     reminder_message,
 )
 from engines.score_engine import create_score_state
-from engines.commentary_engine import innings_summary, match_result_message
+from engines.commentary_studio import innings_summary, match_result_message
 from engines.lineup_engine import (
     load_squad,
     find_player_by_id,

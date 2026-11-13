@@ -9,7 +9,7 @@ from buttons.playso_buttons import length_keyboard, delivery_keyboard, line_keyb
 from database.playso_repo import get_match, set_state, set_basic
 from engines.playso_probability import deliveries_for_family, shots_for
 from engines.playso_engine import resolve_ball
-from engines.commentary_play_engine import get_commentary
+from engines.commentary_studio import so_ball_commentary, simple_ball_line
 from database.query import transaction
 from engines.level_engine import add_xp, WIN_XP
 from handlers.playso.common import match_lock, bowling_family, bowling_family_label, role_emoji, mention_html, callback_message_is_current
@@ -282,17 +282,18 @@ async def playso_shot(callback_query):
         state["this_over"] = over
         comments = list(state.get("commentary") or [])
         innings_ball_number = len(comments) + 1
-        commentary = get_commentary(
-            _commentary_outcome_key(result),
-            over_number=1,
-            balls_faced=int(((state.get("batter_stats") or {}).get(str(current_striker_id)) or {}).get("balls") or 0),
-            result={
-                "outcome": _commentary_outcome_key(result), "runs": int(result.runs or 0),
-                "batter_name": batter.get("name"), "bowler_name": bowler.get("name"),
-                "shot_name": shot, "delivery_name": state.get("delivery"),
-                "line": state.get("line"), "length": state.get("length"),
-            },
-        )
+        try:
+            _dis = None
+            if result.wicket:
+                from engines.tactics_engine import pick_wicket_kind, build_dismissal
+                _xi = [p for p in (state.get("bowling_xi") or []) if isinstance(p, dict)]
+                _keeper = any("wicket" in str(p.get("role") or "").lower() for p in _xi if p.get("player_id") != bowler.get("player_id"))
+                _dis = build_dismissal(pick_wicket_kind(bowler.get("bowling_hand"), bowler.get("role"), 0, keeper_available=_keeper), bowler, _xi)
+            _ns = _player_by_id(state, "batting_xi", int(state.get("current_non_striker_id") or 0))
+            commentary = so_ball_commentary(state, result, batter, bowler, _ns, _dis, str(shot or ""), _commentary_outcome_key(result))
+        except Exception as exc:
+            print(f"[commentary] SO studio failed, simple line used: {exc!r}")
+            commentary = simple_ball_line(_commentary_outcome_key(result), str(batter.get("name") or ""), str(bowler.get("name") or ""), int(result.runs or 0))
         comments.append(commentary)
         state["commentary"] = comments
         if result.legal:
