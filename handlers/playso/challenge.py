@@ -12,6 +12,7 @@ from engines.lineup_engine import load_current_xi
 from handlers.playso.common import active_external_match, callback_message_is_current, match_lock
 from utils.mentions import mention_html
 from utils.timers import start_timer, cancel_timer
+from utils.challenge_start_gate import require_started_user
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -41,8 +42,10 @@ async def _resolve_target(message: dict) -> dict | None:
     else:
         row = await fetchrow("SELECT user_id, username, first_name FROM users WHERE LOWER(username)=LOWER($1) LIMIT 1;", str(target["username"]))
     if not row:
-        return None
-    return {"id": int(row["user_id"]), "username": row["username"], "first_name": row["first_name"]}
+        if target.get("id"):
+            return {"id": int(target["id"]), "username": target.get("username"), "first_name": target.get("first_name"), "is_bot": bool(target.get("is_bot"))}
+        return {"id": None, "username": str(target.get("username") or ""), "first_name": str(target.get("username") or "") }
+    return {"id": int(row["user_id"]), "username": row["username"], "first_name": row["first_name"], "is_bot": bool(target.get("is_bot"))}
 
 
 def _challenge_text(a: str, b: str) -> str:
@@ -63,13 +66,19 @@ async def playso_command(message):
     chat_id = int(message["chat"]["id"])
     sender = message.get("from", {})
     challenger_id = int(sender.get("id") or 0)
+    raw_target = _target(message.get("text", ""), message.get("reply_to_message"))
     opponent = await _resolve_target(message)
-    if not opponent:
+    if not raw_target:
         await app.send_message(chat_id, "<b>⚠️ Reply to a user, add @username, or provide a user ID.</b>", parse_mode="HTML"); return
+    if not opponent:
+        await require_started_user(chat_id, None)
+        return
     if opponent.get("is_bot"):
         await app.send_message(chat_id, "<b>⚠️ You can't challenge a bot.</b>", parse_mode="HTML"); return
-    if int(opponent["id"]) == challenger_id:
+    if opponent.get("id") and int(opponent["id"]) == challenger_id:
         await app.send_message(chat_id, "<b>⚠️ You can't challenge yourself.</b>", parse_mode="HTML"); return
+    if not await require_started_user(chat_id, int(opponent["id"]) if opponent.get("id") else None, opponent.get("username"), opponent.get("first_name")):
+        return
     for uid, label in [(challenger_id, "Your"), (int(opponent["id"]), "Your opponent's")]:
         xi = await load_current_xi(uid)
         if len(xi) < 11:

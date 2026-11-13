@@ -63,7 +63,7 @@ def cancel_inactivity_match(engine: str, match_id: int) -> None:
 def eligible_bowlers(xi: list[dict[str, Any]], locked: int | None = None) -> list[int]:
     """Player ids that may bowl. A locked bowler is released if nobody else could bowl (no dead end)."""
     roles = [int(p.get("player_id") or 0) for p in xi if str(p.get("role") or "") in {"Bowler", "AllRounder"}]
-    if not roles:                       # a XI without any bowler must still be able to play the over
+    if not roles:                                                                                    
         roles = [int(p.get("player_id") or 0) for p in xi]
     free = [pid for pid in roles if locked is None or pid != int(locked)]
     return free or roles
@@ -103,7 +103,7 @@ def dedup_selection_click(match_id: int, stage: str, user_id: int, choice_id: in
     key = (int(match_id), str(stage), int(user_id), int(choice_id))
     previous = _DEDUP.get(key)
     _DEDUP[key] = now
-    # Cheap cleanup for the in-process map.
+                                           
     cutoff = now - max(2.0, window * 4)
     for k, stamp in list(_DEDUP.items()):
         if stamp < cutoff:

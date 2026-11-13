@@ -63,7 +63,7 @@ async def start_setup(chat_id: int, match: dict, innings_no: int = 1):
     if locked is not None and int(locked) not in eligible_bowlers(bowling_xi, None):
         locked = None
     elif locked is not None and eligible_bowlers(bowling_xi, int(locked)) == eligible_bowlers(bowling_xi, None):
-        locked = None                   # the only possible bowler: the lock would be a dead end
+        locked = None                                                                           
     state.update({"innings_no": innings_no, "batting_user": batting_id, "bowling_user": bowling_id,
                   "bowling_xi": bowling_xi, "batting_xi": batting_xi, "selected_bowler": None,
                   "selected_batters": [], "locked_bowler": locked, "stage": "bowler_select"})
