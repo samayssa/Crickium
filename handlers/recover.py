@@ -50,8 +50,8 @@ async def recover_command(message):
     )
 
     try:
-        # Avoid Kurigram's in_memory=True download path. Large backup files can
-        # otherwise be buffered in RAM and trigger Railway's SIGKILL/OOM limit.
+                                                                               
+                                                                               
         with tempfile.TemporaryDirectory(prefix="crickium-recover-") as temp_dir:
             destination = Path(temp_dir) / "crickium-backup.json.gz"
             downloaded_path = await app.download_media_to_file(

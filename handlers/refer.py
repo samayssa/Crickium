@@ -15,8 +15,8 @@ from services.referrals import (
 def _chat_is_private(message) -> bool:
     chat = message.get("chat") or {}
     value = str(chat.get("type") or "").strip().lower()
-    # Handle strings such as "private", "chattype.private",
-    # and enum-style representations from different Kurigram builds.
+                                                           
+                                                                    
     return value.rsplit(".", 1)[-1] == "private"
 
 
@@ -78,8 +78,8 @@ async def _send_referral_message(chat_id: int, referral_url: str, first_name: st
     except Exception as exc:
         print(f"[refer] HTML referral message failed, retrying with plain text: {exc!r}")
 
-    # Last-resort path. This is deliberately plain text so a Telegram HTML
-    # parser/version difference cannot make the command appear dead.
+                                                                          
+                                                                    
     plain_text = (
         "🎁 REFERRAL REWARDS\n\n"
         "How to earn:\n"
@@ -156,8 +156,8 @@ async def my_referrals_command(message):
     try:
         rows = await get_my_referrals(user_id)
 
-        # Refresh incomplete records so the display reflects a newly finished
-        # debut/claim/game without requiring another referral-link click.
+                                                                             
+                                                                         
         if rows:
             from services.referrals import refresh_referral_progress
             for row in rows:
@@ -178,8 +178,8 @@ async def my_referrals_command(message):
         )
     except Exception as exc:
         print(f"[myreferrals] command failed for user_id={user_id}: {exc!r}")
-        # Never leave the DM silent if the referral table/database is
-        # temporarily unavailable.
+                                                                     
+                                  
         await app.send_message(
             chat_id,
             "⚠️ My Referrals is temporarily unavailable. Please try again in a moment.",

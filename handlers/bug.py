@@ -11,7 +11,7 @@ async def _forward_report(message, command_name: str):
     message_id = int(message.get("message_id") or 0)
     text = str(message.get("text") or "").strip()
 
-    # Require actual text after the command.
+                                            
     parts = text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         await app.send_message(

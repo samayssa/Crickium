@@ -23,8 +23,8 @@ PERIOD_LABELS = {
 
 
 def _refresh_text(dt: datetime) -> str:
-    # Telegram Bot API does not render Discord-style <t:...> timestamp tags.
-    # Show the exact persisted server-local boundary instead.
+                                                                            
+                                                             
     local = dt.astimezone() if getattr(dt, "tzinfo", None) else dt
     tz_name = local.tzname() or "LOCAL"
     return local.strftime(f"%d %b %Y, %I:%M %p {tz_name}")

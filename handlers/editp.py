@@ -110,15 +110,15 @@ async def _resolve_target(identity: str, changes: dict, showcase_name: str | Non
         return "showcase", player, changes
     base_name, embedded_edition = split_player_edition(identity)
     requested_target_edition = embedded_edition
-    # If no edition is embedded, `sp=` can select an existing special edition to edit.
+                                                                                      
     if not requested_target_edition and "edition" in changes:
         requested_target_edition = changes["edition"]
-        # When it points to an existing special, treat sp= as selector unless
-        # the identity itself already names a special edition.
+                                                                             
+                                                              
         special = await get_special_player(base_name, requested_target_edition)
         if special:
             return "special", special, {k: v for k, v in changes.items() if k != "edition"}
-        # A bare global identity cannot silently be converted into a special player.
+                                                                                    
         raise ValueError(f"No special edition player named {base_name} ({requested_target_edition}) exists.")
 
     if requested_target_edition:
@@ -231,8 +231,8 @@ async def editp_command(message):
             if not updated:
                 errors.append(f"{parsed['identity']}: player disappeared before update.")
                 continue
-            # Players are denormalized into purchased squad JSON. Keep every
-            # owned copy in sync with the authoritative player record.
+                                                                            
+                                                                      
             snapshot = {
                 key: updated.get(key)
                 for key in ("name", "edition", "country", "role", "bat_level", "bowl_level", "batting_hand", "bowling_hand", "is_special", "is_showcase", "player_kind", "special_edition_id", "showcase_card_id", "showcase_set_id", "showcase_name", "set_name", "showcase_set_name", "player_id")

@@ -74,7 +74,7 @@ def _h2h_text(one: dict, two: dict, stats: dict) -> str:
                   f"<b>📈 Lead : +{margin} Wins</b>\n<b>🎯 Win Rate : {rate:.1f}%</b>\n<b>⚔️ Win Margin : {margin} Matches</b>")
         battle = f"<b>{winner_mention}</b> has the upper hand in this rivalry.\n\n<b>{total} battles played • {wins} victories secured</b>"
 
-    # The H2H card is deliberately fully bold, per the requested bot message style.
+                                                                                   
     return (
         "<b>╭━━━〔 ⚔️ H2H • RIVALRY 〕━━━╮</b>\n\n"
         f"<b><blockquote>👤 {m1}\n            VS\n👤 {m2}</blockquote></b>\n\n"
@@ -102,8 +102,8 @@ async def _safe_h2h_send(chat_id: int, user_id: int, text: str, *, parse_mode: s
     except ChatWriteForbidden:
         return await _send_h2h_dm_fallback(chat_id, user_id, text, parse_mode=parse_mode)
     except Exception as exc:
-        # The HTTP Bot API adapter may surface the same Telegram condition as
-        # RuntimeError instead of Pyrogram's typed ChatWriteForbidden.
+                                                                             
+                                                                      
         marker = "chat_write_forbidden" in str(exc).lower() or "don't have rights to send" in str(exc).lower()
         if marker:
             return await _send_h2h_dm_fallback(chat_id, user_id, text, parse_mode=parse_mode)

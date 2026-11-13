@@ -133,7 +133,7 @@ async def plstats_command(message):
         else:
             players = await search_player_variants(name, limit=100)
 
-    # PLStats is ownership-aware: only the exact card identities currently held by this user are eligible.
+                                                                                                          
     squad = await get_team_squad(user_id) or []
     players = [p for p in players if any(owned_same_card(dict(owned), p) for owned in squad)]
 
@@ -145,7 +145,7 @@ async def plstats_command(message):
         )
         return
 
-    # Exact full name without multiple same-name variants keeps the original one-card flow.
+                                                                                           
     if len(players) == 1:
         player = players[0]
         stats = await get_player_user_stats(user_id, int(player["player_id"]))
@@ -180,7 +180,7 @@ async def _send_plstats_page(chat_id: int, user_id: int, token: str) -> None:
     keyboard = catalog_page_keyboard(f"plstats_page:{token}", page, len(players))
     try:
         image_bytes, _is_custom = await get_player_card_bytes(player)
-        # Always send the first page as a fresh message; callbacks edit it in place.
+                                                                                    
         if not state.get("message_id"):
             msg = await app.send_photo(chat_id, photo=image_bytes, caption=text, parse_mode="HTML", reply_markup=keyboard)
             state["message_id"] = int(msg.get("message_id") or msg["message_id"]) if isinstance(msg, dict) else int(getattr(msg, "id", 0))
@@ -225,7 +225,7 @@ async def plstats_page_callback(callback_query):
         await app.answer_callback_query(callback_query["id"], "Invalid page.", show_alert=True)
         return
     state["page"] = current
-    # Keep the same message and edit its media/caption in place.
+                                                                
     await _send_plstats_page(callback_query["message"]["chat"]["id"], user_id, token)
     try:
         viewed = players[current]

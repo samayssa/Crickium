@@ -86,8 +86,8 @@ async def cleardata_step2_yes(callback_query):
 
     await app.answer_callback_query(callback_query["id"], "Resetting database...")
 
-    # Back up exactly what's about to be destroyed BEFORE destroying it,
-    # so a mistaken /cleardata is always recoverable via /recover.
+                                                                        
+                                                                  
     backup_bytes = None
     try:
         backup_bytes = await export_tables(CLEARDATA_BACKUP_TABLES, backup_type="cleardata")

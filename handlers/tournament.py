@@ -31,9 +31,9 @@ _TEAM_LISTS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# small helpers
-# ---------------------------------------------------------------------------
+                                                                             
+               
+                                                                             
 def _is_admin(uid: Any) -> bool:
     return int(uid or 0) == int(ADMIN_USER_ID)
 
@@ -104,9 +104,9 @@ async def _need_host(cq: dict, t: dict | None) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# /createtour wizard:  engine -> name -> mode -> teams -> window -> lobby
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                         
+                                                                             
 async def _drop_draft(tid: int) -> None:
     try:
         await tp.refund(tid)
@@ -157,7 +157,7 @@ def _wiz_card(t: dict) -> tuple[str, dict]:
                    "⚠️ You must own the coins, rubies and card. They are locked until the tournament ends and returned if it is cancelled.")
                 + "\nThe pool is divided automatically when the final ends.</blockquote>")
         kb = tx.markup([tx.button("✅ Create tournament" if have else "⏭ Skip prize — create", f"trc:{tid}:z:go", style="success")], [cancel])
-    else:   # window
+    else:           
         text = (f"{off}{_wiz_head(t)}\n\n<b>Step 5/5 — daily match time</b>\n<blockquote>Players may play any time inside this window "
                 "(or earlier with /tplay). One hour before the end the bot tags everyone with a pending match.</blockquote>")
         rows = [[tx.button(tc.fmt_window(a, b), f"trc:{tid}:w:{i}", style="primary")] for i, (a, b) in enumerate(tc.WINDOW_PRESETS)]
@@ -310,9 +310,9 @@ async def handle_non_command_message(message) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# lobby: join / leave
-# ---------------------------------------------------------------------------
+                                                                             
+                     
+                                                                             
 def _franchise_codes(engine: str) -> list[str]:
     import importlib
     mod_name, order = _TEAM_LISTS[engine]
@@ -409,9 +409,9 @@ async def teamname_command(message):
     await _refresh_lobby(int(t["tid"]))
 
 
-# ---------------------------------------------------------------------------
-# host panel
-# ---------------------------------------------------------------------------
+                                                                             
+            
+                                                                             
 def _panel(t: dict, teams: list[dict]) -> tuple[str, dict]:
     tid = int(t["tid"])
     auction = t["mode"] == "auction"
@@ -573,9 +573,9 @@ async def setsteps_command(message):
     await _send(chat_id, "📈 Bid steps saved:\n" + "\n".join(f"• {tx.esc(a)} → +{tx.esc(b)}" for a, b in tc.ladder_rows(ladder)))
 
 
-# ---------------------------------------------------------------------------
-# squad rules: /rules (everyone) and /setroles /setsquad /setoverseas (Custom hosts)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                                    
+                                                                             
 def _rules_view(t: dict) -> str:
     r = tc.tournament_rules(t)
     rr = r["role_rules"]
@@ -701,10 +701,10 @@ async def setoverseas_command(message):
     await _send(chat_id, "✅ Overseas rule saved.\n\n" + _rules_view(t))
 
 
-# ---------------------------------------------------------------------------
-# prize pool:  /prize <coins> <rubies> [card name]
-# ---------------------------------------------------------------------------
-from utils.bounded_dict import BoundedDict  # noqa: E402
+                                                                             
+                                                  
+                                                                             
+from utils.bounded_dict import BoundedDict              
 
 _PRIZE: dict[str, dict] = BoundedDict(100)
 PRIZE_HELP = ("🎁 <b>Prize pool</b>\n<blockquote><code>/prize 50000 20 Virat Kohli</code>\ncoins · rubies · card name (use 0 for a part you skip)\n"
@@ -874,9 +874,9 @@ async def on_prize(cq):
             await _refresh_lobby(st["tid"])
 
 
-# ---------------------------------------------------------------------------
-# assign / remove owners
-# ---------------------------------------------------------------------------
+                                                                             
+                        
+                                                                             
 TEAMOWN_HELP = ("👥 <b>Team owners</b>\n<blockquote>"
                 "<b>Add</b> (3 ways)\n"
                 "1️⃣ Reply to the user's message: <code>/teamown CSK</code>\n"
@@ -975,7 +975,7 @@ async def teamown_command(message):
         await _send(chat_id, TEAMOWN_HELP)
         return
     try:
-        if team_no is None:      # the slot does not exist yet (registration): open it for this owner
+        if team_no is None:                                                                          
             if t["engine"] == "PLAY":
                 short = re.sub(r"[^A-Z]", "", wanted.upper())[:4] or "TEAM"
                 taken = {x["base_code"] for x in teams}
@@ -1002,9 +1002,9 @@ async def teamown_command(message):
     await _refresh_lobby(tid)
 
 
-# ---------------------------------------------------------------------------
-# auction card + bidding + host controls
-# ---------------------------------------------------------------------------
+                                                                             
+                                        
+                                                                             
 @register("auction")
 async def auction_command(message):
     chat_id, _ = _chat(message)
@@ -1030,7 +1030,7 @@ async def bid_command(message):
         return
     tid = await auc.auction_tid_for_chat(chat_id)
     if tid is None:
-        return                                   # nothing is being auctioned here: stay silent
+        return                                                                                 
     try:
         res = await auc.bid(tid, None, u["id"])
     except Exception:
@@ -1079,9 +1079,9 @@ async def on_host_control(cq):
             pass
 
 
-# ---------------------------------------------------------------------------
-# match days: ready / present / /tplay
-# ---------------------------------------------------------------------------
+                                                                             
+                                      
+                                                                             
 @register("tplay")
 async def tplay_command(message):
     chat_id, _ = _chat(message)
@@ -1117,9 +1117,9 @@ async def on_present(cq):
     rt.wake()
 
 
-# ---------------------------------------------------------------------------
-# table, caps, records
-# ---------------------------------------------------------------------------
+                                                                             
+                      
+                                                                             
 def _caps_markup(tid: int, records: bool = False) -> dict:
     rows = [[tx.button("📊 Table", f"trs:{tid}:table"), tx.button("🟠 Orange Cap", f"trs:{tid}:orange"),
              tx.button("🟣 Purple Cap", f"trs:{tid}:purple"), tx.button("⭐ MVP", f"trs:{tid}:mvp")]]
@@ -1178,9 +1178,9 @@ async def on_board(cq):
     await _edit(cq, await _board_text(t, board), _caps_markup(tid, board in tv.RECORD_BOARDS or board in ("orange", "purple", "mvp")))
 
 
-# ---------------------------------------------------------------------------
-# /tsched  (.txt in, current schedule .txt out)
-# ---------------------------------------------------------------------------
+                                                                             
+                                               
+                                                                             
 @register("tsched")
 async def tsched_command(message):
     chat_id, _ = _chat(message)

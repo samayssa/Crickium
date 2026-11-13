@@ -46,6 +46,7 @@ from database.challenges_repo import (
 )
 from database.squads_repo import get_team_squad
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
+from utils.challenge_start_gate import require_started_user
 from engines.innings_engine import create_innings
 from services.match_summary import send_match_summary, snapshot_normal_session, player_details, best_player
 from services.match_analysis import collect_legacy_session, send_report
@@ -89,7 +90,7 @@ def _update_ball_stats(session, batter_name: str, bowler_name: str, outcome: str
         bs["balls"] += 1
     bs["runs"] += runs
     if wicket and session.meta.get("_last_wicket_kind") != "run_out":
-        # A run-out is not credited to the bowler's wickets.
+                                                            
         bs["wickets"] += 1
 
     over_events = session.meta.setdefault("current_over_events", [])
@@ -269,8 +270,8 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
     )
     first_card = session.meta.get("first_innings_card_snapshot")
     second_card = snapshot_normal_session(session)
-    # Preserve the existing text result as the first post-match message. The
-    # image summary follows it immediately.
+                                                                            
+                                           
     await app.send_message(chat_id, text, parse_mode="Markdown")
     try:
         cards = [first_card, second_card] if first_card else [second_card, second_card]
@@ -394,8 +395,8 @@ async def _get_session(chat_id: int, challenge: dict[str, Any]):
             challenge_id=challenge["challenge_id"],
             format_=challenge.get("format") or "T20",
         )
-    # Start the existing shared checkpoint task and save the first legacy
-    # session snapshot, so the Mini App can read match scores during setup/play.
+                                                                         
+                                                                                
     try:
         from services.game_session_recovery import ensure_background_saver, persist_session
         ensure_background_saver()
@@ -667,17 +668,21 @@ async def match_command(message):
             return
 
         opponent_username = username_arg
-        row = await fetchrow("SELECT user_id, first_name FROM users WHERE username = $1;", username_arg)
+        row = await fetchrow("SELECT user_id, first_name, username FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;", username_arg)
         if row:
             opponent_id = row["user_id"]
             opponent_name = row["first_name"]
+            opponent_username = row["username"] or username_arg
             print(f"[match] Opponent resolved via username lookup in DB: id={opponent_id}")
         else:
-            opponent_name = username_arg
-            print(f"[match] Opponent @{username_arg} not found in DB yet - will validate by username at accept time.")
+            await require_started_user(chat_id, None, username_arg, username_arg)
+            return
 
     if opponent_id == challenger_id:
         await app.send_message(chat_id, "🚫 You can't challenge yourself!")
+        return
+
+    if not await require_started_user(chat_id, int(opponent_id), opponent_username, opponent_name):
         return
 
     if opponent_id is not None and not await has_minimum_team(int(opponent_id)):
@@ -724,15 +729,15 @@ async def match_command(message):
     start_timer("challenge", challenge_id, on_reminder, on_timeout, total_seconds=60)
 
 
-# Telegram sometimes delivers two callback queries for what is effectively the
-# same button press (a slow response tempts the player into tapping again, or
-# the client itself retries). Every callback below mutates the shared,
-# in-memory MatchSession for a challenge, and those two updates can get
-# scheduled concurrently by main.py's asyncio.create_task(...) - without any
-# serialization, the second one can read the session before the first one has
-# finished writing to it (e.g. selecting a non-striker, then racing itself and
-# reverting the pick). Wrapping each handler so only one runs at a time per
-# challenge_id fixes that without touching the surrounding game logic.
+                                                                              
+                                                                             
+                                                                      
+                                                                       
+                                                                            
+                                                                             
+                                                                              
+                                                                           
+                                                                      
 _match_locks: dict[int, "asyncio.Lock"] = {}
 
 

@@ -28,15 +28,15 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
     """Resolve a live match, restoring runtime state after a process restart."""
     uid = int(user_id)
 
-    # A Super Over decider takes priority: the tied original match only waits for it (its in-memory session
-    # still exists, and resuming that stale session would replay a finished match).
+                                                                                                           
+                                                                                   
     decider = await get_playso_active_for_user(uid)
     if (decider and str(decider.get("status") or "") != "pending"
             and (decider.get("state") or {}).get("origin_engine")
             and (chat_id is None or int(decider.get("chat_id") or 0) == int(chat_id))):
         return "PLAYSO", dict(decider)
 
-    # Prefer the current chat so /resume in the game group is instantaneous.
+                                                                            
     if chat_id is not None:
         from engines.play_runtime import get_session_in_chat
         from engines.playint_runtime import get_playint_session_in_chat
@@ -75,9 +75,9 @@ async def _get_session_for_user(user_id: int, chat_id: int | None = None):
         if playso_match and str(playso_match.get("status") or "") != "pending" and int(playso_match.get("chat_id") or 0) == int(chat_id):
             return "PLAYSO", dict(playso_match)
 
-    # A user may issue /resume from DM while their match is running in a
-    # group. DB resolves the match, then the live session supplies the exact
-    # point-in-game state.
+                                                                        
+                                                                            
+                          
     play_match = await get_play_active_for_user(uid)
     if play_match:
         match_id = int(play_match["match_id"])
@@ -372,8 +372,8 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
             await send_build_messages(chat_id, match)
             return True
         if status == "lineup" and match.get("challenger_xi_confirmed") and match.get("opponent_xi_confirmed"):
-            # Decision has already been made; restore_or_rebuild() is expected
-            # to have supplied a runtime session for this state.
+                                                                              
+                                                                
             return False
         if status == "pitch_selected":
             if engine == "PLAYINT":
@@ -430,8 +430,8 @@ async def _update_live_message_id(engine: str, session: Any, message_id: int) ->
         else:
             await set_playipl_message_id(int(session.match_id), int(message_id))
     except Exception as exc:
-        # The in-memory session remains authoritative for the running match;
-        # DB message-id persistence is a best-effort recovery aid.
+                                                                            
+                                                                  
         print(f"[resume] Failed to persist new live message id for {engine}: {exc!r}")
 
 
@@ -488,8 +488,8 @@ async def resume_command(message):
         await app.send_message(chat_id, NO_GAME_MESSAGE, parse_mode="HTML")
         return
 
-    # Guard against a stale session that has already completed while the
-    # database row is waiting for final cleanup.
+                                                                        
+                                                
     if getattr(session.innings, "completed", False):
         await app.send_message(chat_id, NO_GAME_MESSAGE, parse_mode="HTML")
         return

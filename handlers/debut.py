@@ -27,8 +27,8 @@ def _line(player: dict, number: int, icon: str, captain: bool = False) -> str:
 
 
 def _render_debut_message(squad: list[dict], first_name: str, user_id: int, is_new: bool) -> str:
-    # The saved debut XI is already a valid 5 batsmen / 3 all-rounders / 3
-    # bowlers structure. One or two batsmen carry is_wicketkeeper=True.
+                                                                          
+                                                                       
     batsmen = [p for p in squad if p.get("role") == "Batsman" and not p.get("is_wicketkeeper")]
     keepers = [p for p in squad if p.get("role") == "Wicketkeeper" or (p.get("role") == "Batsman" and p.get("is_wicketkeeper"))]
     allrounders = [p for p in squad if p.get("role") == "AllRounder"]

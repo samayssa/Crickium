@@ -261,8 +261,8 @@ async def openpack_command(message):
 
 
 async def _start_pack_opening(chat_id: int, user_id: int, key: str):
-    # Generate the immutable result before the visual animation, then consume
-    # exactly one inventory item and grant the pack currency reward atomically.
+                                                                             
+                                                                               
     result = await open_pack(user_id, key)
     if result.get("status") == "empty":
         await app.send_message(chat_id, "<b>❌ You do not have this unopened Pack.</b>", parse_mode="HTML")

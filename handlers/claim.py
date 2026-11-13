@@ -546,12 +546,12 @@ async def claim_command(message):
         )
         return
 
-    # Select the random player before starting the write transaction.
-    # The selection uses fully-consumed read-only queries, while the actual
-    # reservation transaction below starts with a write. This avoids the
-    # CockroachDB pausable-portal incompatibility encountered when
-    # ORDER BY random() was followed immediately by writes on a reused
-    # asyncpg connection.
+                                                                     
+                                                                           
+                                                                        
+                                                                  
+                                                                      
+                         
     player = await _get_random_claim_player_cockroach()
 
     if not player:
@@ -566,17 +566,17 @@ async def claim_command(message):
         return
 
     async def _claim_reservation_tx(conn):
-        # First statement is an atomic conditional UPDATE.
-        #
-        # It preserves the original one-hour cooldown by checking the latest
-        # claim history in the database while also crediting the +1000 reward.
-        #
-        # We intentionally avoid SELECT ... FOR UPDATE here. CockroachDB's
-        # pgwire pausable-portal implementation can reject a write after a
-        # locking SELECT has left a portal active on the same session.
-        #
-        # CockroachDB's serializable retry handling in database.query.transaction()
-        # handles concurrent transactions that contend on the same user row.
+                                                          
+         
+                                                                            
+                                                                              
+         
+                                                                          
+                                                                          
+                                                                      
+         
+                                                                                   
+                                                                            
         updated = await conn.execute(
             """
             UPDATE users
@@ -598,8 +598,8 @@ async def claim_command(message):
                 "kind": "cooldown"
             }
 
-        # Keep the INSERT as the final statement in the transaction so its
-        # RETURNING portal does not need to coexist with another write/query.
+                                                                          
+                                                                             
         claim_row = await conn.fetchrow(
             """
             INSERT INTO player_claims (
@@ -637,8 +637,8 @@ async def claim_command(message):
         isinstance(reservation, dict)
         and reservation.get("kind") == "cooldown"
     ):
-        # This read happens after the write transaction has completed,
-        # so it cannot hold a portal while the reservation transaction writes.
+                                                                      
+                                                                              
         cooldown_row = await fetchrow(
             """
             SELECT EXTRACT(
@@ -672,7 +672,7 @@ async def claim_command(message):
         return
 
     if reservation == "no_player":
-        # Compatibility with older transaction return shapes.
+                                                             
         await _safe_claim_send_message(
             chat_id,
             (
@@ -826,10 +826,10 @@ async def on_claim_retain(callback_query):
     )
 
     async def _retain_tx(conn):
-        # Serialize all clicks on this exact claim.
-        # CockroachDB does not provide PostgreSQL's
-        # pg_advisory_xact_lock(); the claim row itself is the
-        # transactional lock and is locked by FOR UPDATE below.
+                                                   
+                                                   
+                                                              
+                                                               
         claim = await conn.fetchrow(
             """
             SELECT *

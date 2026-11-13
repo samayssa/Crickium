@@ -45,7 +45,7 @@ def _ovr(player: dict) -> int:
 
 
 def _select_best_for_role(players: list[dict], count: int) -> list[dict]:
-    # Stable tie-breaking: higher OVR first, then preserve existing squad order.
+                                                                                
     indexed = list(enumerate(players))
     indexed.sort(key=lambda pair: (-_ovr(pair[1]), pair[0]))
     return [player for _, player in indexed[:count]]
@@ -61,10 +61,10 @@ def _best_xi(squad: list[dict]) -> tuple[list[dict] | None, str | None]:
     best_key = None
     role_ranges = [range(ROLE_LIMITS[r][0], min(ROLE_LIMITS[r][1], len(by_role[r])) + 1) for r in ROLE_ORDER]
     current_ids = []
-    # Prefer the current XI on ties, so BuildXL doesn't shuffle unnecessarily.
+                                                                              
     current_lineup = None
 
-    # Current lineup IDs are loaded by caller and attached later through a module helper.
+                                                                                         
     for counts in itertools.product(*role_ranges):
         if sum(counts) != XI_SIZE:
             continue
@@ -75,7 +75,7 @@ def _best_xi(squad: list[dict]) -> tuple[list[dict] | None, str | None]:
             selected = _select_best_for_role(by_role[role], count)
             chosen.extend(selected)
             total_ovr += sum(_ovr(p) for p in selected)
-        # Final deterministic order is role order, then OVR descending within role.
+                                                                                   
         chosen.sort(key=lambda p: (ROLE_ORDER.index(_role(p)), -_ovr(p)))
         key = (total_ovr, preserved)
         if best is None or key > best_key:
@@ -136,7 +136,7 @@ async def buildxl_command(message):
         return
 
     lineup_ids = [int(p.get("player_id") or 0) for p in xi]
-    # Keep squad display order consistent with the XI and bench after the rebuild.
+                                                                                  
     new_squad = _reorder_squad(squad, xi)
     await save_lineup_ids(user_id, lineup_ids)
     await save_team_squad(user_id, new_squad)
@@ -147,7 +147,7 @@ async def buildxl_command(message):
     except Exception as exc:
         print(f"[buildxl] Quest event failed: {exc!r}")
 
-    # Render after persistence so the message represents the saved state.
+                                                                         
     bench = new_squad[XI_SIZE:]
     display_name = user.get("first_name") or user.get("username") or "Player"
     await app.send_message(chat_id, _render(display_name, xi, bench), parse_mode="HTML")

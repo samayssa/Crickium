@@ -28,9 +28,9 @@ async def _ensure_user_row(user_id, username, first_name):
 
 
 async def _resolve_captain_name(user_id: int, squad: list[dict]) -> str:
-    # /teamcap stores the assigned captain's player_id on the user row - the
-    # profile card must read that same value (like /squad and /pxl already
-    # do), not guess a "best player" from the squad.
+                                                                            
+                                                                          
+                                                    
     captain_id = await get_captain_id(user_id)
     if captain_id is None:
         return "Not assigned"
@@ -98,9 +98,9 @@ async def profile_command(message):
     squad = await get_team_squad(user_id) or []
     captain_name = await _resolve_captain_name(user_id, squad)
 
-    # Tier is derived from the player's current level, so the card image
-    # (and the tier line itself) automatically switches the moment they
-    # level into the next tier - no manual step needed.
+                                                                        
+                                                                       
+                                                       
     tier_emoji, tier_key, tier_title = get_tier(snapshot["level"])
     player_mention = mention_name_only_html(user_id, first_name)
 
@@ -138,8 +138,8 @@ async def profile_command(message):
         )
         await app.send_photo(chat_id, photo=card_bytes, caption=caption, parse_mode="HTML")
     else:
-        # No card image uploaded for this tier yet (via /upload_img <tier>) -
-        # fall back to a text-only profile instead of failing silently.
+                                                                             
+                                                                       
         await app.send_message(chat_id, caption, parse_mode="HTML")
 
     print(f"[profile] Sent profile for user_id={user_id}: tier={tier_key}, level={snapshot['level']}, rank=#{global_rank}")

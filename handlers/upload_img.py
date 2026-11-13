@@ -85,7 +85,7 @@ async def upload_img_command(message):
 
     print(f"[upload_img] invoked by user_id={user_id}")
 
-    # ---- Owner, or a user granted access via /access ----
+                                                           
     if user_id != ADMIN_USER_ID and not await has_upload_access(user_id):
         print(f"[upload_img] REJECTED: user_id={user_id} is not the owner and has no granted access.")
         await app.send_message(
@@ -171,7 +171,7 @@ async def upload_img_command(message):
 
     original_file_id = photo["file_id"]
 
-    # ---- Step 1: upload to the channel (caption filled in once we know the channel's own file_id) ----
+                                                                                                        
     if is_template:
         placeholder_caption = _template_caption(card_type)
     elif is_tier:
@@ -206,7 +206,7 @@ async def upload_img_command(message):
     stored_file_id = channel_photo.get("file_id") or original_file_id
     channel_message_id = sent.get("message_id")
 
-    # ---- Step 2: fill in the real file_id as the caption ----
+                                                               
     if is_template:
         final_caption = _template_caption(card_type, stored_file_id)
     elif is_tier:
@@ -217,7 +217,7 @@ async def upload_img_command(message):
             final_caption = final_caption.replace("🖼 *Player Card Image*", "🖼 *Special Edition Player Card Image*")
     await app.edit_message_caption(PLAYER_IMAGE_CHANNEL_ID, channel_message_id, final_caption, parse_mode="Markdown")
 
-    # ---- Step 3: save the reference in the database ----
+                                                          
     if is_template:
         await save_card_template_image(card_type, stored_file_id, channel_message_id, uploaded_by=user_id)
         label = _CARD_TYPE_LABELS[card_type]

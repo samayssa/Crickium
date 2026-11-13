@@ -66,7 +66,7 @@ async def exitgame_command(message):
 
     print(f"[exitgame_play] /exitgame invoked by user_id={user_id} in chat_id={chat_id}")
 
-    # A Super Over decider is the game that is really being played: the tied original match only waits for it.
+                                                                                                              
     match = await get_playso_match_in_chat(chat_id)
     engine = "playso" if match else None
     if not match:
@@ -160,8 +160,8 @@ async def on_play_exit_yes(callback_query):
     except Exception as exc:
         print(f"[exitgame_play] Failed to update match_id={match_id} status to ended: {exc!r}")
 
-    # XP + stats: the exiter gets nothing for this match, the player who
-    # stayed is treated as the winner (full win XP + a recorded win).
+                                                                        
+                                                                     
     try:
         stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
         await add_match_xp(presser["id"], EXIT_PENALTY_XP)

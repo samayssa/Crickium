@@ -68,7 +68,7 @@ async def tip_command(message):
     from_user = message.get("from") or {}
     sender_id = int(from_user.get("id") or 0)
 
-    # /tip is an owner/Edwin-only administrative command.
+                                                         
     if sender_id != int(ADMIN_USER_ID):
         await app.send_message(
             chat_id,
@@ -91,7 +91,7 @@ async def tip_command(message):
 
     currency = _parse_currency(tokens)
 
-    # Reply target has priority.
+                                
     reply = message.get("reply_to_message") or {}
     reply_user = reply.get("from") or {}
     target_id = int(reply_user.get("id") or 0) or None

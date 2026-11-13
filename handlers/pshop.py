@@ -79,7 +79,7 @@ def _where_clause(kind: str, value, level: int | None):
         conditions.append("GREATEST(COALESCE(bat_level, 0), COALESCE(bowl_level, 0)) = $1")
         params.append(int(level))
     else:
-        # Rarity is derived from OVR, so mirror utils.rarity.py exactly.
+                                                                        
         ranges = {
             "Common": (0, 64),
             "Medium": (65, 74),
@@ -244,7 +244,7 @@ async def pshop_page(callback_query):
         return
     kind, value, level_raw = token_parts
     level = int(level_raw) if level_raw else None
-    # For level filters, value is empty. For role filters, value is the role.
+                                                                             
     players, total = await _fetch_page(kind, value or None, level, page)
     filter_text = str(level) if kind == "level" else (f"{value} {level}" if kind == "role" else str(value))
     chat_id = callback_query["message"]["chat"]["id"]

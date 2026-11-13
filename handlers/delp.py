@@ -164,7 +164,7 @@ def _plain_player_name(line: str) -> str:
     text = re.sub(r"^\s*[•-]\s*", "", text)
     text = re.sub(r"<[^>]+>", "", text)
     text = html.unescape(text)
-    # Team reports use 'Name • Role • BAT x • BOWL y'.
+                                                      
     return text.split(" • ", 1)[0].strip()
 
 
@@ -211,7 +211,7 @@ async def _del_engine_team(message, engine: str, team_code: str, full_name: str)
         await _show_single_confirmation(chat_id, user_id, found[0])
         return True
     if missing:
-        # Keep the same confirmation workflow and simply report the skipped rows.
+                                                                                 
         pass
     await _show_engine_team_confirmation(chat_id, user_id, engine, team_code, full_name, found)
     return True
@@ -233,7 +233,7 @@ async def delp_command(message):
     arg = parts[1].strip() if len(parts) > 1 else ""
     reply_to = message.get("reply_to_message")
 
-    # Existing reply-to-list workflow remains unchanged.
+                                                        
     if reply_to and reply_to.get("text") and not arg:
         found = []
         missing = []
@@ -296,9 +296,9 @@ async def delp_command(message):
         await app.send_message(chat_id, "⚠️ Use /delp <player name> or reply to the player list you want to delete.")
         return
 
-    # Direct workflow: exact player-id lookup, then name / special-edition lookup.
-    # Positive IDs address global players. Negative IDs address special editions
-    # through the existing command-facing namespace.
+                                                                                  
+                                                                                
+                                                    
     try:
         numeric_id = int(arg)
     except (TypeError, ValueError):
@@ -316,7 +316,7 @@ async def delp_command(message):
         await _show_single_confirmation(chat_id, user_id, target)
         return
 
-    # Name workflow: exact special syntax first; otherwise flexible substring matching.
+                                                                                       
     targets = await _delete_candidates_from_name(arg)
     if not targets:
         await app.send_message(

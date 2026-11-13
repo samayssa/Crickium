@@ -265,7 +265,7 @@ async def playso_shot(callback_query):
             await app.answer_callback_query(callback_query["id"],"Invalid shot.",show_alert=True); return
         shot=shots[index]
         bowler=_player(state,"bowling_xi",int(state["selected_bowler"])); batter=_player(state,"batting_xi",int((state.get("selected_batters") or [0])[0]))
-        # The first selected batter is the striker at the start of the over; rotate below.
+                                                                                          
         current_striker_id=int(state.get("current_striker_id") or (state.get("selected_batters") or [0])[0])
         batter=_player(state,"batting_xi",current_striker_id) or batter
         if not bowler or not batter:
@@ -276,7 +276,7 @@ async def playso_shot(callback_query):
         if result.legal: state["legal_balls"]=int(state.get("legal_balls") or 0)+1
         state["ball_no"]=int(state.get("ball_no") or 0)+1
         if result.wicket: state["wickets"]=int(state.get("wickets") or 0)+1
-        # Persistent Super Over ball timeline and commentary. Never clear it between ball prompts.
+                                                                                                  
         over = list(state.get("this_over") or [])
         over.append(_outcome_symbol(result))
         state["this_over"] = over
@@ -299,7 +299,7 @@ async def playso_shot(callback_query):
         if result.legal:
             state["partnership_balls"] = int(state.get("partnership_balls") or 0) + 1
         state["partnership_runs"] = int(state.get("partnership_runs") or 0) + int(result.runs or 0)
-        # stats for summary
+                           
         bst=state.setdefault("batter_stats",{})
         key=str(current_striker_id); bs=bst.setdefault(key,{"name":batter.get("name"),"runs":0,"balls":0,"fours":0,"sixes":0})
         if result.legal: bs["balls"] += 1
@@ -310,7 +310,7 @@ async def playso_shot(callback_query):
         if result.legal: bws["balls"] += 1
         bws["runs"] += result.runs
         if result.wicket: bws["wickets"] += 1
-        # rotation for runs/wicket
+                                  
         sel=[int(x) for x in state.get("selected_batters") or []]
         if result.wicket:
             if len(sel) > 2:
@@ -318,7 +318,7 @@ async def playso_shot(callback_query):
                 remaining=[x for x in sel if x!=dismissed]
                 new_ids=[x for x in sel if x not in remaining]
                 if len(remaining)>=2:
-                    # one-down enters as striker when wicket falls
+                                                                  
                     state["current_striker_id"]=next((x for x in sel if x not in {current_striker_id, int(state.get('current_non_striker_id') or 0)}), remaining[0])
                 else:
                     state["current_striker_id"]=remaining[0] if remaining else current_striker_id
@@ -334,7 +334,7 @@ async def playso_shot(callback_query):
         await asyncio.sleep(1.2)
         try: await app.delete_message(msg["chat"]["id"],msg["message_id"])
         except Exception: pass
-        # End of innings, else next ball.
+                                         
         end = int(state.get("legal_balls") or 0)>=6 or int(state.get("wickets") or 0)>=2
         if state.get("target") is not None and int(state.get("runs") or 0)>=int(state["target"]): end=True
         if end:
@@ -361,7 +361,7 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
         fresh=await get_match(int(match["match_id"]))
         await start_setup(chat_id,dict(fresh),2)
         return
-    # final result
+                  
     history_first=history[0]; second=snap
     first_runs=int(history_first["runs"]); second_runs=int(second["runs"])
     if second_runs==first_runs:
@@ -379,12 +379,12 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
         await app.send_message(chat_id,"<b>⚖️ PLAYSO TIED\n\nBoth sides finished level.\n\n⚡ The second Super Over starts in 5 seconds.</b>",parse_mode="HTML")
         await asyncio.sleep(5)
         fresh=await get_match(int(match["match_id"]))
-        # Keep the teams in the same roles they had in the last innings; next over starts with last innings' batting team.
+                                                                                                                          
         st=dict(fresh.get("state") or {}); st["previous_bowlers"]=state.get("previous_bowlers") or {}; st["innings_history"]=[]; st["ball_no"]=0
         st["next_super_over_batting_user"]=int(second["batting_team_id"]); st["next_super_over_bowling_user"]=int(second["bowling_team_id"])
         await set_state(int(match["match_id"]),st,status="lineup"); await set_basic(int(match["match_id"]),innings_no=1)
         stmatch=await get_match(int(match["match_id"]))
-        # Override setup role users with explicit next-over roles.
+                                                                  
         from .setup import start_setup
         await start_setup(chat_id,dict(stmatch),1)
         return

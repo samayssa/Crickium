@@ -112,9 +112,9 @@ async def start_command(message):
         f"user_id={user_id}, chat_id={chat_id}, raw_chat_type={chat_type!r}"
     )
 
-    # This handler is ONLY for the bot's private DM.
-    # Group/channel /start is intentionally ignored here so another
-    # group-specific handler can be added later without this one interfering.
+                                                    
+                                                                   
+                                                                             
     if not _is_private_chat(chat_type):
         print(
             f"[start_dm] Ignoring /start outside private DM "
@@ -126,9 +126,9 @@ async def start_command(message):
         print("[start_dm] Missing user_id or chat_id; ignoring /start.")
         return
 
-    # Referral eligibility is decided BEFORE inserting/updating the user row.
-    # This is important: once /start saves the user, a later referral link must
-    # not retroactively turn an existing account into a new referral.
+                                                                             
+                                                                               
+                                                                     
     already_known = await fetchval("SELECT 1 FROM users WHERE user_id = $1 LIMIT 1;", int(user_id))
     existing_squad = await fetchval("SELECT 1 FROM team_squads WHERE user_id = $1 LIMIT 1;", int(user_id))
 
@@ -146,6 +146,15 @@ async def start_command(message):
         user_id,
         user.get("username"),
         first_name,
+    )
+
+    await execute(
+        """
+        INSERT INTO bot_started_users(user_id, started_at)
+        VALUES ($1, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET started_at = EXCLUDED.started_at;
+        """,
+        int(user_id),
     )
 
     if referrer_id is not None:
@@ -233,7 +242,7 @@ async def start_command(message):
         print(f"[start_dm] Welcome image sent successfully to user_id={user_id}")
 
     except Exception as exc:
-        # If the image file_id is stale/invalid, /start must still work.
+                                                                        
         print(
             f"[start_dm] send_photo failed ({exc!r}), "
             "falling back to text-only welcome message."

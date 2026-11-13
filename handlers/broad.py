@@ -95,14 +95,14 @@ async def broad_command(message):
         )
         return
 
-    # First use the persistent registry, but do not depend on it.
+                                                                 
     try:
         db_targets = await get_broadcast_targets()
     except Exception as exc:
         print(f"[broad] DB target discovery failed; continuing with live dialogs: {exc!r}")
         db_targets = []
 
-    # Then ask Telegram itself what chats are visible to the bot session.
+                                                                         
     try:
         live_targets = await app.get_dialog_targets()
     except Exception as exc:
@@ -110,16 +110,16 @@ async def broad_command(message):
         live_targets = []
 
     targets = _merge_targets(db_targets, live_targets)
-    # Broadcast only to users and groups. A source chat is not re-forwarded
-    # to itself because the owner is already replying to that message there.
+                                                                           
+                                                                            
     targets = [
         t for t in targets
         if _target_type(t) in {"user", "group"}
         and int(t["chat_id"]) != source_chat_id
     ]
 
-    # Best-effort persistence of live discoveries. Broadcasting itself never
-    # depends on this succeeding.
+                                                                            
+                                 
     for target in live_targets:
         try:
             await upsert_chat({
@@ -182,9 +182,9 @@ async def broad_command(message):
             except Exception as exc:
                 print(f"[broad] Progress dashboard update failed: {exc!r}")
 
-        # Keep enough spacing to reduce Telegram flood-wait risk without making
-        # the broadcast unbearably slow. App.forward_message also retries native
-        # FloodWait exceptions internally.
+                                                                               
+                                                                                
+                                          
         await asyncio.sleep(0.08)
 
     final_body = _dashboard(

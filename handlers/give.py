@@ -41,7 +41,7 @@ def _parse_username(tokens: list[str]) -> str | None:
 
 async def _transfer_funds(sender_id: int, recipient_id: int, amount: int) -> tuple[int, int]:
     async def _tx(conn):
-        # FOR UPDATE serializes concurrent /give from the same sender (no double-spend of one balance).
+                                                                                                       
         sender_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1 FOR UPDATE;", sender_id)
         sender_balance = int(sender_balance or 0)
         if sender_balance < amount:
@@ -122,7 +122,7 @@ async def give_command(message):
         recipient_username = row.get("username")
         recipient_first_name = row.get("first_name")
     else:
-        # Reply-based give can safely ensure the recipient user is in DB.
+                                                                         
         await _ensure_user(recipient_id, recipient_username, recipient_first_name)
 
     if recipient_id == sender_id:

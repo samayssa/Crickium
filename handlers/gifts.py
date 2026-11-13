@@ -601,7 +601,7 @@ async def gift_callback(query: dict) -> None:
     if action == "direct":
         await _edit(campaign, _frame("🚀 Distributing gifts…", "Preparing individual rewards for every registered Crickium user. No Telegram messages will be sent to users."), None)
         async def progress(done: int, total: int) -> None:
-            # Avoid excessive Telegram edits during large distributions.
+                                                                        
             if done == total or done % 1000 == 0:
                 if campaign.get("admin_message_is_photo"):
                     await app.edit_message_caption(chat_id, message_id, _frame("🚀 Distributing gifts…", f"Assigned <b>{done:,}</b> of <b>{total:,}</b> users."), parse_mode="HTML")
@@ -704,7 +704,7 @@ async def handle_distgift_message(payload: dict) -> bool:
             overall = max(int(candidate.get("bat_level") or 0), int(candidate.get("bowl_level") or 0))
             edition = f" · {candidate.get('edition')}" if candidate.get("edition") else ""
             rows_kb.append([_button(f"{candidate['name']} · {overall}{edition}", "pickplayer", gift_id, str(index))])
-        # Store the candidate set in the draft JSON so buttons remain restart-safe.
+                                                                                   
         cfg = gifts_service.json_value(campaign.get("reward_config"), {})
         cfg["_player_choices"] = candidates
         await repo.update_draft(gift_id, reward_config=cfg, step="choose_player")
@@ -712,6 +712,6 @@ async def handle_distgift_message(payload: dict) -> bool:
         await _edit(fresh, _frame("🏏 Choose the player card", f"I found <b>{len(candidates)}</b> matching cards for <b>{html.escape(name)}</b>. Choose the exact edition."), _keyboard(rows_kb + [[_button("↩ Search again", "playeragain", gift_id), _button("✖ Cancel", "cancel", gift_id)]]))
         return True
 
-    # Ignore unrelated messages while the wizard is on a button-driven step.
+                                                                            
     return False
 

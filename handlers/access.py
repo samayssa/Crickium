@@ -24,7 +24,7 @@ async def access_command(message):
 
     print(f"[access] /access invoked by user_id={user_id}")
 
-    # ---- Owner-only check (bot owner, not group admin) ----
+                                                             
     if user_id != ADMIN_USER_ID:
         print(f"[access] REJECTED: user_id={user_id} is not the owner (ADMIN_USER_ID={ADMIN_USER_ID}).")
         await app.send_message(chat_id, "*🚫 This command is restricted to the bot owner only.*", parse_mode="Markdown")

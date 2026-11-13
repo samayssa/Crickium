@@ -43,9 +43,9 @@ from database.query import fetchrow
 
 
 NO_KEYBOARD = {"inline_keyboard": []}
-# The DB fallback in _find_active() must never mistake a dead challenge for
-# a live one - these are every status a match can end up in that no longer
-# occupies the group's one-match slot.
+                                                                           
+                                                                          
+                                      
 _TERMINAL = {"declined", "completed", "ended", "expired"}
 _GROUP_CHAT_TYPES = {"group", "supergroup", "chattype.group", "chattype.supergroup"}
 
@@ -146,13 +146,13 @@ def _game_summary(
 
 
 async def _find_active(chat_id: int):
-    # A Super Over decider (linked to a tied original match) is the game actually being played.
+                                                                                               
     decider = await get_playso_match_in_chat(chat_id)
     if decider:
         return dict(decider), "playso"
-    # Live matches are kept in the in-memory runtime once the game starts.
-    # Prefer that authoritative live state before falling back to the DB
-    # stage/status lookup used for challenge/setup screens.
+                                                                          
+                                                                        
+                                                           
     session = get_play_session_in_chat(chat_id)
     if session is not None:
         return dict(session.match), "play"
@@ -187,18 +187,18 @@ async def _find_active(chat_id: int):
     if match:
         return dict(match), "playso"
 
-    # Last-resort authoritative DB lookup. This catches a live game even
-    # when its runtime session disappeared after a restart/reload or when
-    # the status is a newer non-terminal state not present in the helper's
-    # active-status list.
-    #
-    # NOTE: play_matches and playint_matches do NOT have the same column
-    # set (playint_matches has extra team/XI columns), so `SELECT * ...
-    # UNION ALL SELECT * ...` across them is invalid SQL - Postgres
-    # rejects a UNION whose two sides don't have the same number of
-    # columns, and this raised on every single call that reached it. Two
-    # separate same-shape queries, merged in Python, sidesteps that
-    # entirely instead of trying to force both tables into one shape.
+                                                                        
+                                                                         
+                                                                          
+                         
+     
+                                                                        
+                                                                       
+                                                                   
+                                                                   
+                                                                        
+                                                                   
+                                                                     
     placeholders = ",".join(f"${i + 2}" for i in range(len(_TERMINAL)))
     terminal_list = list(_TERMINAL)
 
@@ -243,8 +243,8 @@ async def _find_active(chat_id: int):
     if playso_row:
         candidates.append((dict(playso_row), "playso"))
     if candidates:
-        # If both somehow have a stray non-terminal row, the more recent
-        # match_id is the one actually occupying the group right now.
+                                                                        
+                                                                     
         candidates.sort(key=lambda pair: int(pair[0].get("match_id") or 0), reverse=True)
         return candidates[0]
 

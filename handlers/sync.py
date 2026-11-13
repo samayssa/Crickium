@@ -30,9 +30,9 @@ async def sync_command(message):
     )
 
     try:
-        # None is intentional: database.backup_repo resolves the full current
-        # table set directly from PostgreSQL, so new tables cannot be silently
-        # forgotten when the schema evolves.
+                                                                             
+                                                                              
+                                            
         backup_bytes = await export_tables(None, backup_type="sync")
     except Exception as exc:
         print(f"[sync] Backup failed: {exc!r}")

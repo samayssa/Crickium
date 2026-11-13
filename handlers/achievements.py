@@ -40,7 +40,7 @@ async def achievements_command(message):
             row.append(f"{mark} {it['icon']} {it['title']}{tail}")
         lines.append("\n".join(row))
     text = "\n".join(lines)
-    # Telegram limit: keep it comfortably below 4096 characters.
+                                                                
     if len(text) > 3900:
         lines = lines[:6]
         for ch in data["chapters"]:

@@ -108,8 +108,8 @@ async def daily_command(message):
 
     try:
         async def _tx(conn):
-            # Lock the user row so two simultaneous /daily clicks cannot both
-            # pay out before either transaction commits.
+                                                                             
+                                                        
             user_row = await conn.fetchrow(
                 "SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE;",
                 user_id,
@@ -140,9 +140,9 @@ async def daily_command(message):
 
             previous_streak = int(daily["streak"] or 0) if daily else 0
 
-            # A daily streak has a 24-hour claim window. After a user becomes
-            # eligible, they get the next 24 hours to claim it. Missing that
-            # window breaks the streak and the next successful claim starts at Day 1.
+                                                                             
+                                                                            
+                                                                                     
             if daily and daily["last_claim_at"] is not None:
                 last_claim = (
                     daily["last_claim_at"].replace(tzinfo=None)

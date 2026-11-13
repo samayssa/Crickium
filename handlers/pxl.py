@@ -280,9 +280,9 @@ def _render_pxl(
         "<blockquote>🏏 Batsmen",
     ]
 
-    # --------------------------------------------------------
-    # BATSMEN
-    # --------------------------------------------------------
+                                                              
+             
+                                                              
 
     for i, player in enumerate(
         batsmen,
@@ -296,14 +296,14 @@ def _render_pxl(
         "</blockquote>"
     )
 
-    # NO BLANK LINE HERE
+                        
     lines.append(
         "<blockquote>🧤 Wicket-Keeper"
     )
 
-    # --------------------------------------------------------
-    # WICKET-KEEPER
-    # --------------------------------------------------------
+                                                              
+                   
+                                                              
 
     for i, player in enumerate(
         keepers,
@@ -328,14 +328,14 @@ def _render_pxl(
         "</blockquote>"
     )
 
-    # NO BLANK LINE HERE
+                        
     lines.append(
         "<blockquote>🔄 All-Rounders"
     )
 
-    # --------------------------------------------------------
-    # ALL-ROUNDERS
-    # --------------------------------------------------------
+                                                              
+                  
+                                                              
 
     start = (
         len(batsmen)
@@ -367,14 +367,14 @@ def _render_pxl(
         "</blockquote>"
     )
 
-    # NO BLANK LINE HERE
+                        
     lines.append(
         "<blockquote>⚡ Bowlers"
     )
 
-    # --------------------------------------------------------
-    # BOWLERS
-    # --------------------------------------------------------
+                                                              
+             
+                                                              
 
     start = (
         len(batsmen)

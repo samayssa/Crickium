@@ -31,8 +31,8 @@ DEFAULT_WARNING = "⚠️ Think carefully — this player will leave your squad 
 CANCEL_NOTICE = "❌ Sale cancelled — this player stays in your squad."
 
 
-# In-memory batch-sale snapshots keep callback data short while preserving the exact
-# numbered players shown to the user until the confirmation/cancellation is pressed.
+                                                                                    
+                                                                                    
 _PENDING_BATCH_SALES: dict[str, dict] = BoundedDict(1000)
 _PENDING_SELL_SEARCH: dict[str, dict] = BoundedDict(1000)
 

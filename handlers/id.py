@@ -22,15 +22,15 @@ def _chat_kind(chat: dict) -> str:
     return str(chat.get("type") or "").lower()
 
 
-# Agar tumhare send_message wrapper me custom emoji alag tag se render hota hai
-# (jaise Pyrogram style <emoji id="...">), to sirf yeh ek line change karna:
-#   "tg-emoji"  -> <tg-emoji emoji-id="ID">X</tg-emoji>   (Bot API style)
-#   "emoji"     -> <emoji id="ID">X</emoji>                (Pyrogram style)
+                                                                               
+                                                                            
+                                                                         
+                                                                           
 EMOJI_TAG_STYLE = "tg-emoji"
 
 
 def _utf16_slice(text: str, offset: int, length: int) -> str:
-    # Telegram entity offset/length UTF-16 units me hote hain, Python str index me nahi.
+                                                                                        
     data = text.encode("utf-16-le")
     return data[offset * 2:(offset + length) * 2].decode("utf-16-le", errors="ignore")
 

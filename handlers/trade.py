@@ -26,7 +26,7 @@ from buttons.social_trade_buttons import (
 
 NO_KEYBOARD = {"inline_keyboard": []}
 ACTIVE_TRADE_STATUSES = {"awaiting_sender", "awaiting_recipient"}
-# TEMPORARY TEST SWITCH: change False to True to restore the one-trade-per-day limit.
+                                                                                     
 DAILY_TRADE_LIMIT_ENABLED = True
 
 
@@ -506,7 +506,7 @@ async def _ensure_creation_guards(sender_id: int, recipient_id: int) -> str | No
         return "Daily trade limit reached. Each user can complete only one trade per day."
     mine = await _pending_trade(sender_id)
     if mine and int(mine["sender_id"]) == sender_id and mine["status"] == "awaiting_sender":
-        # Own unfinished setup screen: replace it instead of blocking the user.
+                                                                               
         await _transition(int(mine["trade_id"]), {"awaiting_sender"}, "cancelled")
         try:
             if mine.get("message_id"):
@@ -552,7 +552,7 @@ async def trade_command(message):
     argument = _command_argument_text(message)
     offered_query, requested_query = _split_for(argument)
 
-    # No player specified: open the full sender squad picker.
+                                                             
     if not offered_query:
         trade_id = await _create_trade(sender_id, recipient_id, chat_id, {"player_id": 0, "name": "Pending Selection", "bat_level": 0, "bowl_level": 0})
         if not await _send_or_cancel(trade_id, chat_id, _choose_sender_text(dict(sender_row), target), squad_player_keyboard(trade_id, sender_squad, "s")):
@@ -564,8 +564,8 @@ async def trade_command(message):
         await app.send_message(chat_id, f"<b>⚠️ I couldn't find {html.escape(offered_query)} in your squad.</b>", parse_mode="HTML")
         return
 
-    # Direct "Player A for Player B" path. Validate BOTH owners before showing
-    # the sender's final confirmation.
+                                                                              
+                                      
     if requested_query:
         requested_matches, _ = await _find_player_matches(recipient_id, requested_query)
         if not requested_matches:
@@ -576,24 +576,24 @@ async def trade_command(message):
             await _update_trade(trade_id, sender_player_json={"pending_query": offered_query})
             if not await _send_or_cancel(trade_id, chat_id, _multiple_sender_text(dict(sender_row), target, offered_query), squad_player_keyboard(trade_id, offered_matches, "s", confirm=True)):
                 return
-            # Requested query is stored inside the placeholder JSON.
+                                                                    
             await _update_trade(trade_id, sender_player_json={"pending_query": offered_query, "selection_pending_confirm": True}, recipient_player_json={"pending_query": requested_query})
             return
         offered = offered_matches[0]
         if len(requested_matches) > 1:
-            # Let recipient choose the ambiguous return card after sender confirms.
+                                                                                   
             requested = None
         else:
             requested = requested_matches[0]
         trade_id = await _create_trade(sender_id, recipient_id, chat_id, offered, requested)
         if not await _send_or_cancel(trade_id, chat_id, _sender_confirm_text(offered, target, requested_query if requested else requested_query), direct_offer_keyboard(trade_id)):
             return
-        # Preserve ambiguous requested query for recipient selection.
+                                                                     
         if requested is None:
             await _update_trade(trade_id, recipient_player_json={"pending_query": requested_query})
         return
 
-    # Player-only path: select sender card first.
+                                                 
     if len(offered_matches) > 1:
         trade_id = await _create_trade(sender_id, recipient_id, chat_id, {"player_id": 0, "name": "Pending Selection", "bat_level": 0, "bowl_level": 0})
         await _update_trade(trade_id, sender_player_json={"pending_query": offered_query, "selection_pending_confirm": True}, recipient_player_json=( {"pending_query": requested_query} if requested_query else None ))
@@ -784,7 +784,7 @@ async def trade_confirm_pick(callback_query):
         await app.answer_callback_query(callback_query["id"], "Player confirmed.")
         return
 
-    # Recipient's Confirm Player is only reached when recipient selected a card.
+                                                                                
     if int(trade["recipient_player_id"] or 0) == 0:
         await app.answer_callback_query(callback_query["id"], "Please select a return player first.", show_alert=True)
         return
@@ -861,7 +861,7 @@ async def trade_sender_yes(callback_query):
         await app.answer_callback_query(callback_query["id"], "Selected player is no longer available.", show_alert=True)
         return
 
-    # Direct requested player, if supplied, has already been validated at command time.
+                                                                                       
     requested = None
     if trade.get("recipient_player_id"):
         requested = _find_exact_identity(await get_team_squad(int(recipient["user_id"])) or [], int(trade["recipient_player_id"]), trade["recipient_player_kind"])
@@ -891,7 +891,7 @@ async def trade_sender_yes(callback_query):
             requested = matches[0]
             await _update_trade(trade_id, recipient_player_id=int(requested["player_id"]), recipient_player_kind=_kind(requested), recipient_player_json=requested)
         else:
-            # Keep the request query so the next screen lists only matching cards.
+                                                                                  
             await _update_trade(trade_id, recipient_player_json={"pending_query": requested_query})
             await _handoff(callback_query, trade_id, _multiple_recipient_text(sender, recipient, offered, requested_query),
                            squad_player_keyboard(trade_id, matches, "r", confirm=True), "Choose the return player.")
@@ -985,9 +985,9 @@ async def trade_recipient_accept(callback_query):
         return
     if not await _guard_active(callback_query, trade, uid, "awaiting_recipient"):
         return
-    # A fixed return card has already been selected. "Accept Trade" still
-    # advances to the recipient's final confirmation step; the actual swap is
-    # performed only by the explicit "Yes, Confirm" action.
+                                                                         
+                                                                             
+                                                           
     if trade.get("recipient_player_id"):
         sender, recipient = await _load_users(trade)
         offered = _find_exact_identity(
@@ -1145,7 +1145,7 @@ async def trade_recipient_yes(callback_query):
     try:
         result = await transaction(_tx)
     except Exception:
-        # The DB transaction wrapper rolls everything back on error.
+                                                                    
         chat_id, message_id = _chat_message(callback_query)
         await app.edit_message_text(chat_id, message_id, _failure_text("The trade could not be completed safely. Please try again."), parse_mode="HTML", reply_markup=NO_KEYBOARD)
         await app.answer_callback_query(callback_query["id"], "Trade failed safely. No cards were exchanged.", show_alert=True)

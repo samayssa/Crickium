@@ -27,7 +27,7 @@ from utils.upgrade_prices import upgrade_price
 from services.player_upgrades import UPGRADES, UPGRADE_BY_KEY, eligible_for_player, role_key
 from services.card_identity import player_kind
 
-STATE_TTL = 300
+STATE_TTL = 1800
 STATE: dict[str, dict[str, Any]] = {}
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -90,7 +90,7 @@ async def _ubuy_category_text(user_id: int, category: str, page: int) -> tuple[s
         owned_tier = await owned_upgrade_tier(user_id, int(dbu["upgrade_id"])) if dbu else None
         price = upgrade_price(1)
         if owned_tier:
-            status = f"Owned • Tier {int(owned_tier)} • Use /ulevelup"
+            status = f"Owned • Tier {int(owned_tier)} • One copy only • /ulevelup"
         else:
             status = f"Tier 1 • 💎 {price:,}"
             rows.append({"upgrade_key": u.key, "name": u.name, "price": price, "tier": 1})
@@ -193,7 +193,7 @@ def _eligible_owned_upgrade_rows(owned: list[dict], player: dict) -> list[dict]:
         u = UPGRADE_BY_KEY.get(str(row["upgrade_key"]))
         if not u or not eligible_for_player(u, role=role, bowling_style=player.get("role"), bowling_hand=player.get("bowling_hand")):
             continue
-        # Do not show more than one row for a key; highest owned tier is the useful loadout.
+                                                                                            
         if any(x["upgrade_key"] == row["upgrade_key"] for x in result):
             continue
         row = dict(row)
@@ -314,7 +314,13 @@ async def ubuy_command(message):
         return
     owned_tier = await owned_upgrade_tier(uid, int(u["upgrade_id"]))
     if owned_tier:
-        await app.send_message(chat_id, f"<b>⚠️ {_esc(u['name'])} is already owned at Tier {int(owned_tier)}.</b>\n\n<b>Use /ulevelup to increase its tier.</b>", parse_mode="HTML")
+        await app.send_message(
+            chat_id,
+            f"<b>⚠️ You already own {_esc(u['name'])} at Tier {int(owned_tier)}.</b>\n\n"
+            "<b>Only one copy of each upgrade is allowed per account. You cannot buy another copy.</b>\n"
+            "Use /ulevelup to increase its tier, or unequip it before moving it to another player.",
+            parse_mode="HTML",
+        )
         return
     tier = 1
     definition = UPGRADE_BY_KEY.get(str(u["upgrade_key"]))
@@ -346,7 +352,7 @@ async def on_ubuy_select(callback_query):
         return
     already_owned = await owned_upgrade_tier(uid, int(row["upgrade_id"]))
     if already_owned:
-        await app.answer_callback_query(callback_query["id"], f"Already owned at Tier {int(already_owned)}. Use /ulevelup.", show_alert=True)
+        await app.answer_callback_query(callback_query["id"], f"Already owned at Tier {int(already_owned)}. One copy per account; use /ulevelup.", show_alert=True)
         return
     token2 = _state_put({"kind": "buy", "user_id": uid, "upgrade_key": key, "upgrade_id": int(row["upgrade_id"]), "tier": 1, "return": state})
     await app.edit_message_text(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"], _upgrade_detail(u, tier, purchase=True), parse_mode="HTML", reply_markup=purchase_keyboard(token2))
@@ -409,7 +415,7 @@ async def on_ubuy_confirm(callback_query):
     elif result == "insufficient":
         await app.answer_callback_query(callback_query["id"], f"You need {upgrade_price(tier):,} Rubies.", show_alert=True)
     elif result == "already_owned":
-        await app.answer_callback_query(callback_query["id"], "That tier is already owned.", show_alert=True)
+        await app.answer_callback_query(callback_query["id"], "You already own this upgrade. Only one copy per account; use /ulevelup.", show_alert=True)
     else:
         await app.answer_callback_query(callback_query["id"], "Purchase failed. No Rubies were deducted.", show_alert=True)
 
@@ -624,6 +630,14 @@ async def equip_command(message):
         return
     owned = await user_owned_upgrades(uid)
     eligible = _eligible_owned_upgrade_rows(owned, player)
+    eligible_before_equipped_filter = list(eligible)
+    all_equipped = await list_equipped(uid)
+    active_upgrade_keys = {
+        str(row.get("batting_key") or "") for row in all_equipped
+    } | {
+        str(row.get("bowling_key") or "") for row in all_equipped
+    }
+    eligible = [row for row in eligible if str(row.get("upgrade_key") or "") not in active_upgrade_keys]
     current = await equipped_for_player(uid, int(player.get("player_id") or 0), _kind(player))
     role = role_key(player.get("role"))
     filtered = []
@@ -639,6 +653,13 @@ async def equip_command(message):
                         (role == "bowler" and current.get("bowling_upgrade_id") is not None) or
                         (role == "allrounder" and current.get("batting_upgrade_id") is not None and current.get("bowling_upgrade_id") is not None)):
             await app.send_message(chat_id, f"<b>⚠️ {_esc(player.get('name'))} already has the eligible upgrade slot occupied. Unequip an upgrade first.</b>", parse_mode="HTML")
+        elif eligible_before_equipped_filter and not eligible:
+            await app.send_message(
+                chat_id,
+                f"<b>⚠️ All eligible upgrades for {_esc(player.get('name'))} are already equipped on your players.</b>\n\n"
+                "<b>Unequip an upgrade first if you want to move it to this player.</b>",
+                parse_mode="HTML",
+            )
         else:
             await app.send_message(chat_id, f"<b>⚠️ No eligible upgrades are owned for {_esc(player.get('name'))}.</b>", parse_mode="HTML")
         return
@@ -693,6 +714,10 @@ async def on_equip_confirm(callback_query):
             print(f"[upgrades] Quest equip event failed: {exc!r}")
     elif result == "slot_occupied":
         await app.answer_callback_query(callback_query["id"], "That upgrade slot is already occupied. Unequip it first.", show_alert=True)
+    elif result == "already_equipped":
+        await app.answer_callback_query(callback_query["id"], "This upgrade is already equipped on one of your players. Unequip it before moving it.", show_alert=True)
+    elif result in {"role_ineligible", "family_ineligible"}:
+        await app.answer_callback_query(callback_query["id"], "This player is not eligible for that upgrade.", show_alert=True)
     else:
         await app.answer_callback_query(callback_query["id"], "Unable to equip this upgrade.", show_alert=True)
 

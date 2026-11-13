@@ -177,8 +177,8 @@ async def _upload_team_line(engine: str, team_code: str, player_line: str, uploa
         player,
         uploaded_by,
     )
-    # PlayIPL intentionally preserves its existing upsert semantics: an
-    # accepted row is reported as saved/updated, not as "already exists".
+                                                                       
+                                                                         
     return bool(ok), False, None
 
 
@@ -239,8 +239,8 @@ async def _process_mixed_source(raw_text: str, uploaded_by: int) -> dict:
             )
             continue
 
-        # No team section is active. Preserve the existing global/special
-        # player behavior exactly.
+                                                                         
+                                  
         player_probe, probe_error = parse_player_line(line)
         if not probe_error:
             _base, edition = split_player_edition(player_probe.get("name", ""))
@@ -395,8 +395,8 @@ async def upload_players_command(message):
     command_parts = (message.get("text") or "").split()
     explicit_target = command_parts[1].strip() if len(command_parts) > 1 else None
 
-    # Read the reply source once. This now supports both normal text replies and
-    # .txt file replies for every upload mode.
+                                                                                
+                                              
     raw_text, source_error = await _read_replied_source(message)
     if source_error:
         await app.send_message(chat_id, source_error, parse_mode="HTML")
@@ -421,8 +421,8 @@ async def upload_players_command(message):
         )
         return
 
-    # Showcase is an explicit upload mode. Its source can contain multiple
-    # SHOWCASE: <name> sections in one Telegram message or .txt file.
+                                                                          
+                                                                     
     if explicit_target and explicit_target.strip().lower() == "showcase":
         sections, parse_errors = _parse_showcase_sections(raw_text)
         if not sections:
@@ -443,10 +443,10 @@ async def upload_players_command(message):
         await app.send_message(chat_id, _render_showcase_upload_report(summary, parse_errors), parse_mode="HTML")
         return
 
-    # A command target such as /upload_pl IPL-RCB, /upload_pl WPL-MI or /upload_pl T20I-IND
-    # remains supported exactly as before. If the source itself contains team
-    # section headers, the embedded headers win and the whole source is routed
-    # through the new multi-team parser.
+                                                                                           
+                                                                             
+                                                                              
+                                        
     target_ipl = normalize_ipl_team_keyword(explicit_target) if explicit_target else None
     target_wpl = normalize_wpl_team_keyword(explicit_target) if explicit_target else None
     target_int = normalize_team_keyword(explicit_target) if explicit_target else None
@@ -561,8 +561,8 @@ async def upload_players_command(message):
         await app.send_message(chat_id, report, parse_mode="HTML")
         return
 
-    # No explicit team target: preserve the existing global + special edition
-    # uploader, while allowing the same source to contain all supported methods.
+                                                                             
+                                                                                
     summary = await _process_mixed_source(raw_text, uploaded_by=user_id)
     await app.send_message(chat_id, _render_upload_report(summary), parse_mode="HTML")
     print("[upload_pl] Done.")

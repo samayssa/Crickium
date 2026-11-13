@@ -50,11 +50,11 @@ def register_callback(action):
 
                 try:
                     from utils.game_inactivity import cancel
-                    # The user has actively touched the game. Stop their timer
-                    # before running any DB/Telegram work so a boundary-second
-                    # race cannot declare them a loser while their callback is
-                    # still being processed. The post-sync below restores or
-                    # advances the timer according to the resulting state.
+                                                                              
+                                                                              
+                                                                              
+                                                                            
+                                                                          
                     cancel(engine, match_id, actor_id)
                 except Exception as exc:
                     print(f"[registry] inactivity pre-signature/cancel failed for {action}: {exc!r}")

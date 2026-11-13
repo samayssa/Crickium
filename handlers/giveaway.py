@@ -38,8 +38,8 @@ from services import giveaway as gw
 from services.card_identity import card_identity_key
 from utils.bounded_dict import BoundedDict
 
-CB_ADMIN = "gwa"   # gwa:<action>:<id-or-token>[:<arg>]
-CB_JOIN = "gwj"    # gwj:<giveaway_id>
+CB_ADMIN = "gwa"                                       
+CB_JOIN = "gwj"                       
 
 START_CHOICES = [("🚀 Start now", 0), ("⏳ In 30 min", 1800), ("⏳ In 1 hour", 3600), ("⏳ In 3 hours", 10800),
                  ("⏳ In 6 hours", 21600), ("⏳ In 12 hours", 43200), ("⏳ In 24 hours", 86400)]
@@ -53,9 +53,9 @@ _WAKE = asyncio.Event()
 _worker_task: asyncio.Task | None = None
 
 
-# ---------------------------------------------------------------------------
-# small helpers
-# ---------------------------------------------------------------------------
+                                                                             
+               
+                                                                             
 def _is_admin(user_id) -> bool:
     return int(user_id or 0) == int(ADMIN_USER_ID)
 
@@ -132,9 +132,9 @@ def _prize_line(g: dict) -> str:
     return f"{i['full_name']} · OVR {i['ovr']}"
 
 
-# ---------------------------------------------------------------------------
-# texts
-# ---------------------------------------------------------------------------
+                                                                             
+       
+                                                                             
 TITLE = "<b>╭━━━〔 🎁 CRICKIUM GIVEAWAY 〕━━━╮</b>"
 FOOT = "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
 
@@ -270,9 +270,9 @@ def _live_row_text(g: dict, entries: int) -> str:
             f"   {state} · {when} · 👥 {entries}")
 
 
-# ---------------------------------------------------------------------------
-# keyboards
-# ---------------------------------------------------------------------------
+                                                                             
+           
+                                                                             
 def _confirm_kb(gid: int) -> dict:
     return _kb([[
         _btn("✅ Yes, start giveaway", f"{CB_ADMIN}:yes:{gid}", style="success"),
@@ -312,9 +312,9 @@ async def _public_markup(g: dict) -> dict:
     return _kb(rows)
 
 
-# ---------------------------------------------------------------------------
-# /giveaway
-# ---------------------------------------------------------------------------
+                                                                             
+           
+                                                                             
 async def _find_cards(name: str) -> list[dict]:
     from database.showcase_players_repo import get_showcase_player_by_identity, parse_showcase_image_target
     from database.special_players_repo import get_special_player, search_player_variants, split_player_edition
@@ -443,9 +443,9 @@ async def _send_preview(chat_id: int, card: dict) -> None:
     await repo.set_setup_message(gid, chat_id, int(sent.get("message_id") or 0), is_photo)
 
 
-# ---------------------------------------------------------------------------
-# admin callbacks
-# ---------------------------------------------------------------------------
+                                                                             
+                 
+                                                                             
 async def _show_step(g: dict, step: str) -> None:
     text, markup = {
         "start": (_start_text(g), _start_kb(int(g["giveaway_id"]))),
@@ -511,7 +511,7 @@ async def on_admin_callback(cq):
     chat_id = int((msg.get("chat") or {}).get("id") or 0)
     message_id = int(msg.get("message_id") or 0)
 
-    # --- candidate picker (no draft yet) -----------------------------------
+                                                                             
     if action in {"pk", "pkx"}:
         pick = _PICKS.get(ref)
         if action == "pkx":
@@ -533,12 +533,12 @@ async def on_admin_callback(cq):
         await _send_preview(chat_id, card)
         return
 
-    # --- manager actions (work on live giveaways) ---------------------------
+                                                                              
     if action in {"mg", "end", "endy", "can", "cany"}:
         await _manager_action(cq, action, ref, chat_id, message_id)
         return
 
-    # --- setup flow (draft) --------------------------------------------------
+                                                                               
     try:
         gid = int(ref)
     except ValueError:
@@ -550,7 +550,7 @@ async def on_admin_callback(cq):
         await _safe_delete(chat_id, message_id)
         return
     if int(g.get("setup_message_id") or 0) != message_id:
-        # an old message of the same draft - refresh the real one instead of acting on stale buttons
+                                                                                                    
         await _answer(cq, "Use the latest setup message.", True)
         return
 
@@ -575,14 +575,14 @@ async def on_admin_callback(cq):
             await _show_step(row, step)
         return
 
-    if action == "bks":      # back from custom start prompt -> start step
+    if action == "bks":                                                   
         row = await repo.set_step(gid, "start")
         await _answer(cq)
         if row:
             await _show_step(row, "start")
         return
 
-    if action == "bk":       # back from duration / custom duration -> start step
+    if action == "bk":                                                           
         row = await repo.set_step(gid, "start", 0)
         await _answer(cq)
         if row:
@@ -730,9 +730,9 @@ async def _manager_action(cq: dict, action: str, ref: str, chat_id: int, message
         _spawn(_announce(row))
 
 
-# ---------------------------------------------------------------------------
-# joining (public Participate button)
-# ---------------------------------------------------------------------------
+                                                                             
+                                     
+                                                                             
 @register_callback(CB_JOIN)
 async def on_join_callback(cq):
     parts = str(cq.get("data") or "").split(":")
@@ -767,9 +767,9 @@ async def on_join_callback(cq):
     await _answer(cq, text[:195], True)
 
 
-# ---------------------------------------------------------------------------
-# broadcast
-# ---------------------------------------------------------------------------
+                                                                             
+           
+                                                                             
 _PERMANENT = ("blocked", "deactivated", "chat not found", "forbidden", "kicked", "not enough rights",
               "have no rights", "peer_id_invalid", "user_is_blocked", "input_user_deactivated",
               "chat_write_forbidden", "channel_private", "bot was", "can't initiate")
@@ -821,10 +821,10 @@ async def _broadcast(g: dict) -> None:
         caption = _public_caption(g)
         markup = await _public_markup(g)
         image = await _card_image(g["player"])
-        photo_ref = image                      # bytes until Telegram gives us a reusable file_id
+        photo_ref = image                                                                        
         index = 0
 
-        # 1) upload the image once (first chat that accepts it), then reuse the file_id everywhere
+                                                                                                  
         while index < len(todo) and photo_ref is not None and not isinstance(photo_ref, str):
             target = todo[index]
             index += 1
@@ -839,7 +839,7 @@ async def _broadcast(g: dict) -> None:
                 await repo.save_deliveries(gid, [(target["chat_id"], None, "photo", False, str(exc))])
                 failed_total += 1
 
-        # 2) everyone else, a few at a time
+                                           
         while index < len(todo):
             if not await _is_still_active(gid):
                 print(f"[giveaway] broadcast #{gid} stopped: giveaway is no longer active")
@@ -882,9 +882,9 @@ async def _broadcast(g: dict) -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
-# finishing, announcing, closing
-# ---------------------------------------------------------------------------
+                                                                             
+                                
+                                                                             
 async def _finish(g: dict) -> None:
     gid = int(g["giveaway_id"])
     try:
@@ -910,9 +910,9 @@ async def _announce(g: dict) -> None:
             await _announce_winner(g)
         elif g["status"] == "ended":
             await _announce_no_winner(g)
-        else:  # cancelled
-            # A giveaway cancelled before its start time was never shown to anybody
-            # (broadcast_state is still 'pending'), so there is nothing to retract in public.
+        else:             
+                                                                                   
+                                                                                             
             if str(g.get("broadcast_state") or "pending") != "pending":
                 try:
                     await app.send_message(
@@ -1017,9 +1017,9 @@ async def _close_deliveries(g: dict) -> None:
         traceback.print_exc()
 
 
-# ---------------------------------------------------------------------------
-# worker
-# ---------------------------------------------------------------------------
+                                                                             
+        
+                                                                             
 async def _startup_recovery() -> None:
     await repo.reset_after_restart()
     for g in await repo.unannounced():
