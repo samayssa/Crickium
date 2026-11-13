@@ -47,7 +47,7 @@ def keepalive_loop() -> None:
     except ValueError:
         every = 600
     print(f"[keepalive] Pinging {url} every {every}s", flush=True)
-    time.sleep(30)  # let the web server come up first
+    time.sleep(30)                                    
     while not STOP_REQUESTED:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "crickium-keepalive"})

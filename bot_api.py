@@ -36,11 +36,11 @@ def _call_sync(method: str, params: dict | None = None, timeout_seconds: int = S
     return body["result"]
 
 
-# getUpdates is already retried by the outer long-poll loop in main.py, so we
-# don't want to retry it here too (that would stack two retry loops on top of
-# each other). Everything else (sendMessage, editMessageText, etc.) is a quick
-# call that's worth retrying a couple of times on flaky mobile connections
-# before we give up and let the caller see an error.
+                                                                             
+                                                                             
+                                                                              
+                                                                          
+                                                    
 RETRYABLE_NETWORK_ERRORS = (TimeoutError, socket.timeout, urllib.error.URLError, ConnectionResetError)
 MAX_CALL_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 0.75
@@ -63,8 +63,8 @@ async def call(method: str, params: dict | None = None) -> dict:
         try:
             return await asyncio.to_thread(_call_sync, method, params, timeout_seconds)
         except urllib.error.HTTPError as e:
-            # Telegram sometimes returns 400 for stale callback queries or already-answered callbacks.
-            # For callback answers we do not want the whole match flow to die.
+                                                                                                      
+                                                                              
             if method == "answerCallbackQuery":
                 print(f"[bot_api] Ignoring non-fatal HTTPError from answerCallbackQuery: {e!r}")
                 return {}

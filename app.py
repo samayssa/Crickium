@@ -18,19 +18,19 @@ from config import API_HASH, API_ID, BOT_TOKEN
 
 print("[app.py] Pyrogram adapter loaded.")
 
-# Some button fields (style, icon_custom_emoji_id - Bot API 9.4) only
-# exist on maintained pyrogram forks like kurigram (see requirements.txt).
-# Mainline pyrogram raises TypeError if you pass them. Check once at
-# import time so this adapter keeps working either way.
+                                                                     
+                                                                          
+                                                                    
+                                                       
 _BUTTON_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
 
-# kurigram (MTProto) accepts "style" on InlineKeyboardButton without
-# error, but doesn't actually forward it to Telegram over MTProto - the
-# button comes back uncolored. The real HTTP Bot API DOES render it
-# correctly (confirmed by testing a raw sendMessage call), so any
-# reply_markup containing a "style" field gets routed through the plain
-# HTTP Bot API instead of the pyrogram/kurigram client. Everything
-# without a style keeps using the normal MTProto client, unchanged.
+                                                                    
+                                                                       
+                                                                   
+                                                                 
+                                                                       
+                                                                  
+                                                                   
 BOT_API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
@@ -139,7 +139,7 @@ def _strip_html_markup(text: str | None) -> str | None:
     if text is None:
         return None
     cleaned = re.sub(r"<[^>]+>", "", str(text))
-    # Keep common Telegram HTML entities readable in the fallback path.
+                                                                       
     import html as _html
     return _html.unescape(cleaned)
 
@@ -516,7 +516,7 @@ class App:
         return targets
 
     async def get_updates(self, offset=None, timeout=25, allowed_updates=None):
-        # Pyrogram is event-driven. This method stays only for backward compatibility.
+                                                                                      
         return []
 
     async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None, disable_web_page_preview=False):
@@ -538,8 +538,8 @@ class App:
                     lambda: self._call_bot_api("sendMessage", json_payload=payload), label="send_message(http)",
                 )
             except Exception as exc:
-                # If a configured custom-emoji ID has expired/been revoked,
-                # preserve the button styles and retry without only that icon.
+                                                                           
+                                                                              
                 if _is_custom_emoji_api_error(exc) and _contains_custom_emoji_icons(markup_json):
                     print(f"[app.py] Invalid button custom emoji; retrying without icon IDs: {exc!r}")
                     payload["reply_markup"] = _strip_custom_emoji_icons(markup_json)
@@ -549,10 +549,10 @@ class App:
                             label="send_message(icon-fallback)",
                         )
                     except Exception as retry_exc:
-                        # Some deployments expose a Bot API layer that also
-                        # rejects the newer button style field. As a final
-                        # keyboard-only fallback, keep the same buttons/data
-                        # but remove style/icon metadata.
+                                                                           
+                                                                          
+                                                                            
+                                                         
                         if markup_json:
                             print(f"[app.py] Advanced button fields rejected; retrying basic keyboard: {retry_exc!r}")
                             payload["reply_markup"] = _strip_advanced_button_fields(markup_json)
@@ -861,8 +861,8 @@ class App:
             )
             return _wrap_http_message(result)
         except Exception as exc:
-            # Custom emoji in a caption can fail when an ID was revoked. Keep
-            # the media delivery alive with the Unicode-only caption.
+                                                                             
+                                                                     
             if _contains_custom_emoji_markup(caption):
                 payload["caption"] = _strip_custom_emoji_markup(caption)
                 result = await _resilient(

@@ -12,7 +12,7 @@ from pyrogram.handlers import CallbackQueryHandler, ChatMemberUpdatedHandler, Me
 
 from config import API_HASH, API_ID, BOT_TOKEN
 from app import app
-import handlers  # noqa: F401 - import side effects register commands/callbacks
+import handlers                                                                
 from handlers.registry import COMMANDS, CALLBACKS
 from handlers.tournament import handle_non_command_message
 from config import ADMIN_USER_ID, NOTIFICATION_GROUP_ID
@@ -171,14 +171,14 @@ def _pyro_callback_to_dict(callback_query: Any) -> dict:
     return payload
 
 
-# In-process guard so the SAME physical "bot added to group" event never
-# fires the thank-you/notification twice, even though Telegram can report
-# it to us through two different update types at once - a regular message
-# with new_chat_members (which some groups suppress entirely via their
-# "hide service messages" setting), and the my_chat_member status update
-# (which Telegram guarantees fires regardless of that setting - the
-# ChatMemberUpdatedHandler below is the reliable one; new_chat_members is
-# kept only as a fallback for older Pyrogram/Telegram edge cases).
+                                                                        
+                                                                         
+                                                                         
+                                                                      
+                                                                        
+                                                                   
+                                                                         
+                                                                  
 _RECENTLY_HANDLED_GROUP_ADDS: dict[int, float] = {}
 _DEDUP_WINDOW_SECONDS = 15.0
 
@@ -197,9 +197,9 @@ async def _notify_admin_of_failure(context: str, exc: Exception) -> None:
             parse_mode="HTML",
         )
     except Exception as inner_exc:
-        # If even the admin DM fails, the admin has never started the
-        # bot's DM, or ADMIN_USER_ID itself is wrong - print is all
-        # that's left.
+                                                                     
+                                                                   
+                      
         print(f"[main.py] Could ALSO not reach admin DM to report the above failure: {inner_exc!r}")
 
 
@@ -256,15 +256,15 @@ async def handle_my_chat_member(_, chat_member_updated):
         was_member_before = str(old_status).lower() in {"member", "administrator", "owner", "chatmemberstatus.member", "chatmemberstatus.administrator", "chatmemberstatus.owner"}
 
         if was_member_before or ("member" not in status_text and "administrator" not in status_text and "owner" not in status_text):
-            return  # Not a "bot freshly added" transition (e.g. it's a promotion, or the bot left/was kicked).
+            return                                                                                             
 
         chat = getattr(chat_member_updated, "chat", None)
         if chat is None or str(getattr(chat, "type", "")).lower() not in {"chattype.group", "chattype.supergroup", "group", "supergroup"}:
             return
 
-        # ChatMemberUpdated is emitted for ordinary user joins/promotions too.
-        # Only handle the event when the member whose status changed is the
-        # actual Crickium bot account.
+                                                                              
+                                                                           
+                                      
         changed_member = getattr(chat_member_updated, "new_chat_member", None)
         changed_user = getattr(changed_member, "user", None)
         me = await app.get_me()
@@ -289,10 +289,10 @@ async def handle_message(_, message):
 
     print(f"[main.py] Message from chat_id={chat.get('id')} type={chat.get('type')} text={text!r}")
 
-    # Fallback path: some Telegram/Pyrogram versions still deliver "bot
-    # added" as a regular message with new_chat_members. The dedup guard
-    # in _handle_bot_added_to_group makes it safe for this to run
-    # alongside handle_my_chat_member above without double-sending.
+                                                                       
+                                                                        
+                                                                 
+                                                                   
     new_members = payload.get("new_chat_members") or []
     if new_members and chat.get("type") in {"group", "supergroup"}:
         try:
@@ -315,8 +315,8 @@ async def handle_message(_, message):
 
     command = parse_command(text)
     if command is None:
-        # The /distgift wizard accepts owner-uploaded festival banners and
-        # player names as ordinary private-chat messages (no reply command).
+                                                                          
+                                                                            
         try:
             from handlers.gifts import handle_distgift_message
             if await handle_distgift_message(payload):
@@ -324,12 +324,12 @@ async def handle_message(_, message):
         except Exception:
             print("[main.py] My Gifts message dispatch failed:")
             traceback.print_exc()
-        # The tournament reply dispatcher performs its own exact prompt-ID and
-        # host checks. Do not require Telegram/Pyrogram to expose reply_from as
-        # a bot here, because different update paths can omit that nested user.
+                                                                              
+                                                                               
+                                                                               
         reply = payload.get("reply_to_message") or {}
         if reply:
-            # Owner replying to a /giveaway "custom time" prompt.
+                                                                 
             try:
                 from handlers.giveaway import handle_setup_reply
                 if await handle_setup_reply(payload):
@@ -348,8 +348,8 @@ async def handle_message(_, message):
         print("[main.py] Not a command, ignoring.")
         return
 
-    # Only consume commands explicitly addressed to this bot. A command such
-    # as /start@another_bot is another bot's command and must be ignored.
+                                                                            
+                                                                         
     first_word = str(text).split()[0] if str(text).split() else ""
     if "@" in first_word:
         target_username = first_word.split("@", 1)[1].strip().lower()
@@ -366,9 +366,9 @@ async def handle_message(_, message):
 
     handler = COMMANDS.get(command)
     if handler is None:
-        # Unknown commands, a bare slash, and commands belonging to another
-        # bot are intentionally silent. This bot should answer only its own
-        # registered commands.
+                                                                           
+                                                                           
+                              
         print(f"[main.py] No handler registered for '/{command}', ignoring.")
         return
 
@@ -437,9 +437,9 @@ async def _build_client(session_string: str | None = None) -> Client:
     kwargs = {
         "api_id": API_ID,
         "api_hash": API_HASH,
-        # Every handler runs on one of these update workers and a worker is busy until its handler returns. The
-        # Pyrogram default (cpu count + 4) is tiny on a small host, so a few slow commands (card render, DB) made
-        # EVERY other command and /bid wait in the queue. Workers are cheap asyncio tasks: give each update its own.
+                                                                                                               
+                                                                                                                 
+                                                                                                                    
         "workers": int(os.getenv("TG_UPDATE_WORKERS", "64")),
     }
     if session_string:
@@ -458,8 +458,8 @@ async def _start_client_with_persistent_session() -> Client:
     except Exception as exc:
         print(f"[main.py] Could not read persisted Telegram session; falling back to bot-token authorization: {exc!r}")
 
-    # Prefer the persisted session. If it is invalid/revoked, remove it once
-    # and fall back to a fresh bot-token authorization.
+                                                                            
+                                                       
     if stored_session:
         client = await _build_client(stored_session)
         try:
@@ -489,9 +489,9 @@ async def _start_client_with_persistent_session() -> Client:
             else:
                 raise
 
-    # Fresh authorization. Telegram may temporarily rate-limit repeated bot
-    # authorizations with FLOOD_WAIT.  Wait for Telegram's exact server value
-    # instead of crashing Railway into a restart loop.
+                                                                           
+                                                                             
+                                                      
     while True:
         client = await _build_client(None)
         try:
@@ -507,8 +507,8 @@ async def _start_client_with_persistent_session() -> Client:
                 pass
             await asyncio.sleep(wait_for + 1)
 
-    # Export and persist the session so later Railway restarts/deployments do
-    # not trigger another Telegram bot authorization attempt.
+                                                                             
+                                                             
     try:
         exporter = getattr(client, "export_session_string", None)
         if exporter is not None:
@@ -575,12 +575,12 @@ async def main():
     me = await app.get_me()
     print(f"[main.py] Logged in as: id={me['id']} username=@{me.get('username')} is_bot={me.get('is_bot')}")
 
-    # Pyrogram (unlike the raw Bot API) can only address a chat by a bare
-    # numeric ID if it already knows that chat's access_hash. For a channel
-    # where the bot was added as admin but has never received a message/
-    # update from it, ID-based sends can fail. This warm-up is intentionally
-    # skipped here because it can create an unnecessary network burst on
-    # startup; normal event traffic populates peers as they are encountered.
+                                                                         
+                                                                           
+                                                                        
+                                                                            
+                                                                        
+                                                                            
     print("[main.py] Skipping get_dialogs() peer cache warm-up.")
 
     print(f"[main.py] Registered commands: {list(COMMANDS.keys())}")

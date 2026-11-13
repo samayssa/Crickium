@@ -17,7 +17,7 @@ HOST = os.environ.get("MINIAPP_HOST", "127.0.0.1")
 LOCAL_URL = os.environ.get("MINIAPP_LOCAL_URL", f"http://{HOST}:{PORT}")
 URL_FILE = os.environ.get("MINIAPP_URL_FILE", "miniapp_url.txt")
 
-# Do NOT accept api.trycloudflare.com as a public URL.
+                                                      
 URL_RE = re.compile(r"https://(?!api\.)[a-zA-Z0-9-]+\.trycloudflare\.com")
 
 STOP_EVENT = threading.Event()
@@ -133,8 +133,8 @@ def start_tunnel_process(
     """
     global TUNNEL_PROC
 
-    # Keep the child environment as close as possible to the successful
-    # direct shell invocation you already tested.
+                                                                       
+                                                 
     env = os.environ.copy()
     env.pop("GODEBUG", None)
 
@@ -188,8 +188,8 @@ def tunnel_worker(project_root: Path, stop_event: threading.Event) -> None:
     cloudflared = pick_cloudflared()
     url_file = str(project_root / URL_FILE)
 
-    # Start with the exact default mode that worked in your direct shell test.
-    # Fallbacks are only tried if needed.
+                                                                              
+                                         
     attempt_sets: list[list[str]] = [
         [],
         ["--edge-ip-version", "4"],
