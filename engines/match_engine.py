@@ -5991,7 +5991,7 @@ class MatchEngine:
         session.meta["_last_wicket_kind"] = None
         session.meta["_last_dismissal"] = None
         if is_wicket:
-            # How the wicket fell (scorecard detail only; run-outs are not a bowler wicket).
+                                                                                            
             from engines.tactics_engine import pick_wicket_kind, build_dismissal
             _bowler = dict(session.current_bowler or {})
             _xi = list(session.meta.get("bowling_squad") or session.bowling_order or [])[:11]

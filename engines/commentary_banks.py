@@ -11,8 +11,8 @@ Slots: {B}/{b} batter full/surname, {W}/{w} bowler full/surname, {F}/{f} fielder
 """
 from __future__ import annotations
 
-# ------------------------------------------------------------------ ZONES ---
-# zone -> (ground direction text, normal fielder position, deep fielder position)
+                                                                              
+                                                                                 
 ZONES: dict[str, tuple[str, str, str]] = {
     "tm": ("third man", "third man", "third man"),
     "pt": ("point", "point", "deep point"),
@@ -28,7 +28,7 @@ ZONE_W_FOUR = {"tm": 6, "pt": 9, "cv": 15, "mo": 8, "st": 10, "mn": 8, "mw": 14,
 ZONE_W_SIX = {"cv": 8, "mo": 9, "st": 22, "mn": 12, "mw": 24, "sq": 10, "fl": 3, "pt": 2}
 ZONE_W_RUN = {"tm": 4, "pt": 9, "cv": 12, "mo": 10, "st": 4, "mn": 10, "mw": 13, "sq": 10, "fl": 7}
 ZONE_W_CATCH = {"tm": 5, "pt": 8, "cv": 11, "mo": 9, "st": 14, "mn": 10, "mw": 14, "sq": 9, "fl": 6}
-# delivery tilt: tactic -> {zone: multiplier}
+                                             
 ZONE_TILT = {
     "swinging": {"cv": 1.3, "pt": 1.2, "tm": 1.5, "mo": 1.1},
     "back_of_length": {"mw": 1.4, "sq": 1.3, "fl": 1.3, "st": 0.8},
@@ -38,7 +38,7 @@ ZONE_TILT = {
     "spin": {"mw": 1.35, "sq": 1.25, "mn": 1.15, "tm": 0.5, "fl": 0.7},
 }
 
-# --------------------------------------------------------------- DELIVERIES ---
+                                                                                
 DELIVERY_PACE = {
     "defensive": ["Good length outside off from {w}", "{w} tucks it in on a good length", "Full and straight from {w}",
                   "{w} hits a good length on off stump", "Tight line from {w}, on a good length", "{w} keeps it in the channel"],
@@ -66,7 +66,7 @@ DELIVERY_SPIN = {
 DELIVERY_GENERIC = {"p": ["{w} runs in and delivers", "{w} bowls it on a good length", "{w} hits the pitch hard"],
                     "s": ["{w} tosses it up", "{w} flights it on off stump", "{w} bowls a turning delivery"]}
 
-# -------------------------------------------------------------------- SHOTS ---
+                                                                                
 SHOT_FOUR = {
     "tm": ["steers it past the slips down to third man", "guides it fine, all the way to the third man fence", "opens the face and glides it to third man",
            "edges it, and it races through the slip cordon"],
@@ -96,7 +96,7 @@ SHOT_SIX = {
     "sq": ["pulls it over square leg", "sweeps it high over deep square leg", "hits it into the crowd beyond square leg"],
     "fl": ["ramps it over the fine leg boundary", "scoops it over fine leg"],
 }
-SHOT_SOFT = {   # for 1/2/3 runs
+SHOT_SOFT = {                   
     "tm": ["taps it fine to third man", "dabs it down to third man", "guides it to the third man area"],
     "pt": ["dabs it to point", "cuts it square to point", "steers it behind point", "slides it into the gap at point"],
     "cv": ["places it into the gap at cover", "punches it to cover", "drives it firmly to cover", "pushes it into the cover gap"],
@@ -123,7 +123,7 @@ DOT_PAD = ["is hit on the pad, and the umpire is unmoved", "gets struck on the p
            "takes it on the body, and there is no run"]
 DOT_EDGE = ["gets a thick edge that falls short of the slip", "inside edges it onto the pads", "gets a bottom-edge that rolls to the keeper", "squirts it off the edge, just short"]
 
-# ------------------------------------------------------------------ OPENERS ---
+                                                                                
 OPEN_DOT = {"calm": ["Dot ball.", "No run.", "Nothing there.", "Good ball.", "Tight.", "", "", "", "Dot.", "Defended."],
             "tense": ["Pressure.", "Dot ball.", "Another dot.", "No run.", "Tight bowling.", "Nothing doing.", "", ""],
             "thriller": ["DOT!", "No run!", "Nothing!", "A precious dot!", "Squeezed!", "Tight!", "Dot ball!", "Not a run!"]}
@@ -147,7 +147,7 @@ OPEN_FH_SIX = ["FREE HIT, and it is SIX!", "SIX off the free hit!", "FREE HIT! M
 OPEN_FH_DOT = ["FREE HIT, and no run.", "Dot ball on the free hit.", "No run off the free hit."]
 OPEN_FH_RUN = ["FREE HIT.", "Free hit.", "Off the free hit,"]
 
-# --------------------------------------------------------------- RESULT TAILS ---
+                                                                                  
 TAIL_FOUR = ["It races away to the rope.", "No chance for the fielder.", "Pierces the gap and runs away.", "Pure timing.", "All the way to the fence.",
              "The ball just beats the fielder.", "It sped to the boundary.", "Not even close to stopping it."]
 TAIL_SIX = ["It lands well into the stands.", "That has cleared the rope by a distance.", "The crowd is on its feet.", "What a strike.", "Gone, right out of the middle of the bat.",
@@ -162,7 +162,7 @@ TAIL_THRILLER = {"single": ["Every run counts now!", "They scamper through, hear
                  "four": ["That could be the turning point!", "The crowd erupts!", "The equation changes in a flash!"],
                  "six": ["Unbelievable scenes!", "The dugout is up on its feet!", "That could change everything!"]}
 
-# --------------------------------------------------------------------- CAMEOS ---
+                                                                                  
 CAMEO_FOUR = ["{f} gives chase from {pos}, but it is hopeless.", "{f} dives at {pos} but only gets a fingertip to it.", "{f} at {pos} has no chance.",
               "{f} is left chasing shadows at {pos}.", "No chance for {f} at {pos}, it races away."]
 CAMEO_SIX = ["{f} at {pos} can only watch it sail over.", "{f} turns and watches it fly over {pos}.", "It lands well beyond {f} at {pos}.",
@@ -172,7 +172,7 @@ CAMEO_SINGLE = ["{f} fields at {pos}, and they take one.", "{f} fires it in from
 CAMEO_DOUBLE = ["{f} chases it down at {pos}, but they get two.", "A good throw from {f} at {pos}, but they get back for two.",
                 "{f} slides at {pos} to save the boundary, and they settle for two.", "{f} at {pos} saves the boundary, and it is two."]
 
-# --------------------------------------------------------------------- EXTRAS ---
+                                                                                  
 WIDE = ["WIDE! {W} strays down the leg side, and the umpire signals it.", "Wide called. {W} loses the line outside off.", "That is a wide from {W}, well outside the tramlines.",
         "{W} sprays it, and the umpire stretches the arms out. Wide.", "Too wide from {W}, and the keeper {k} has to move for it.", "Wide ball! {W} is struggling for the right line."]
 WIDE_FH = ["Wide on the free hit! {W} cannot find the line.", "A wide, and the free hit stays alive. {W} is wayward.", "Wide again! {W} is struggling here."]
@@ -183,7 +183,7 @@ BYE = ["BYE! The ball beats {b} and the keeper {k}, and they steal a bye.", "Bye
 LEG_BYE = ["Leg bye! The ball hits {b} on the pad and rolls away, and they take a leg bye.", "Leg bye! It deflects off the body and they sneak a run.",
            "A leg bye as the ball clips {b} on the thigh pad and runs away."]
 
-# -------------------------------------------------------------------- WICKETS ---
+                                                                                  
 OPEN_WICKET = {"calm": ["WICKET!", "OUT!", "GONE!", "That's out!", "A big wicket!", "And that's the end!", "Got him!", "Breakthrough!"],
                "tense": ["WICKET!", "OUT!", "BIG WICKET!", "GONE!", "That's a huge wicket!", "A crucial breakthrough!"],
                "thriller": ["OH, THAT'S OUT!", "WHAT A WICKET!", "A HUGE BREAKTHROUGH!", "GONE!!", "THE GAME TURNS!", "BIG, BIG WICKET!", "DISASTER!", "OUT! UNBELIEVABLE!"]}
@@ -225,7 +225,7 @@ HAT_TRICK_BALL = ["HAT-TRICK BALL! {W} has two in two!", "{W} is on a hat-trick!
 HAT_TRICK = ["HAT-TRICK! {W} has taken three in three!", "A HAT-TRICK for {W}! Incredible!"]
 ALL_OUT = ["That's the end of the innings, all out for {score}!", "ALL OUT! The innings ends on {score}."]
 
-# ---------------------------------------------------------------- SITUATION ---
+                                                                                
 SIT_CHASE = ["{needw} needed from {ballsw}.", "{need} off {balls}.", "Need {need} from {balls}.", "{needw} to win from {ballsw}.", "It is {need} off {balls} now.",
              "The equation: {need} off {balls}.", "{ballsw} left, {need} to get.", "The required rate is {rrr}.", "{need} off {balls}, and the required rate is {rrr}.",
              "{need} to win, {ballsw} to go, {wihw} in hand.", "{wihw} in hand, {need} needed from {balls}.", "Still {need} to get from {ballsw}.",
@@ -243,7 +243,7 @@ SIT_FIRST_TENSE = ["{score}/{wkts} after {legal} balls.", "The score is {score}/
 SIT_SO = ["{needw} needed from {ballsw}.", "{need} off {balls}, and {wihw} in hand.", "{need} to win, {ballsw} left.", "The target is {target}, and {need} more are needed."]
 SIT_SO_FIRST = ["{score}/{wkts} after {legal} balls, with {ballsw} to go.", "{score} for {wkts}, {ballsw} left in the Super Over.", "{wihw} left, {ballsw} to go, {score} on the board."]
 
-# ---------------------------------------------------------- MILESTONES/STREAKS ---
+                                                                                   
 MILE_FIFTY = ["FIFTY for {B}! {runs} off {balls} balls.", "{B} brings up a fine half-century off {balls} balls.", "A half-century for {B}, who raises the bat to the dressing room.",
               "That's fifty for {B}, and it has come off just {balls} balls.", "{B} goes to a wonderful fifty, and the crowd gives a standing ovation."]
 MILE_HUNDRED = ["HUNDRED! {B} reaches a magnificent century, {runs} off {balls} balls!", "A CENTURY for {B}! What an innings!", "{B} raises the bat to the heavens, a hundred off {balls} balls!",

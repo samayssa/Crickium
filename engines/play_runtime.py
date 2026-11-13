@@ -169,7 +169,7 @@ def upgrade_context_for(session: PlaySession, user_id: int, player_id: int, slot
     return dict(context) if context else None
 
 
-# Standard T20 rule: no bowler may bowl more than a fifth of the innings.
+                                                                         
 MAX_OVERS_PER_BOWLER = 4
 
 
@@ -185,15 +185,15 @@ def bowler_overs_left(session: PlaySession, player_id: int) -> int:
 def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]]:
     candidates = bowling_candidates(session.bowling_squad)
 
-    # A bowler who has already bowled their full quota this innings is
-    # gone for good - never offered again, regardless of who bowled last.
+                                                                      
+                                                                         
     eligible = [
         p for p in candidates
         if bowler_overs_bowled(session, int(p.get("player_id") or 0)) < MAX_OVERS_PER_BOWLER
     ]
 
-    # No bowler may bowl two overs in a row - exclude whoever bowled the
-    # over that just finished, as long as someone else is still eligible.
+                                                                        
+                                                                         
     if session.selected_bowler_id is not None and len(eligible) > 1:
         without_last = [
             p for p in eligible
@@ -202,9 +202,9 @@ def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]
         if without_last:
             eligible = without_last
 
-    # Emergency bowling fallback: only when every natural bowler/all-rounder
-    # has exhausted the four-over quota, allow the bowling user's own batting
-    # players to bowl. The normal bowling pool always takes precedence.
+                                                                            
+                                                                             
+                                                                       
     if not eligible:
         fallback_ids = {int(p.get("player_id") or 0) for p in candidates}
         eligible = [
@@ -214,9 +214,9 @@ def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]
             and bowler_overs_bowled(session, int(p.get("player_id") or 0)) < MAX_OVERS_PER_BOWLER
         ]
 
-        # If the fallback includes the previous bowler (unlikely but possible
-        # with unusual squad data), keep the same no-consecutive-over rule when
-        # at least one other batter is available.
+                                                                             
+                                                                               
+                                                 
         if session.selected_bowler_id is not None and len(eligible) > 1:
             without_last = [
                 p for p in eligible
@@ -264,14 +264,14 @@ def _render_commentary(commentary_lines: list[str]) -> str:
         f"Ball {index}: {_escape_commentary(line)}"
         for index, line in enumerate(commentary_lines, start=1)
     )
-    # Exact requested layout: title outside the expandable blockquote.
+                                                                      
     return f"<b>🗣️ Commentary</b>\n\n<blockquote expandable>{quoted}</blockquote>"
 
 
 def _render_over_timeline(session: PlaySession, *, bowler_prompt: bool) -> list[str]:
-    # Keep the completed over visible through bowler, bowling-tactic and
-    # batting-strategy selection. It is replaced only when the next
-    # simulation actually produces the first new-ball result.
+                                                                        
+                                                                   
+                                                             
     if session.this_over:
         return session.this_over
     if session.last_over:
@@ -506,7 +506,7 @@ def _update_bowler_stats(session: PlaySession, outcome: BallOutcome) -> None:
         bs["balls"] += 1
     bs["runs"] += int(outcome.bowler_runs or 0)
     if outcome.wicket and getattr(outcome, "wicket_kind", None) != "run_out":
-        # A run-out is not credited to the bowler's wickets (balls/runs still count).
+                                                                                     
         bs["wickets"] += 1
 
 
@@ -538,7 +538,7 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     context = _ball_context(session, strategy)
     outcome = resolve_strategy(strategy, context)
     if outcome.wicket:
-        # How the wicket fell (caught/bowled/lbw/stumped/rare run-out) - scorecard detail only.
+                                                                                               
         from engines.tactics_engine import assign_dismissal
         assign_dismissal(session, outcome)
     try:
@@ -556,10 +556,10 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
             striker_before.boundary_streak = streak_before + 1
         elif outcome.outcome in ("dot", "single", "double", "triple"):
             striker_before.boundary_streak = 0
-        # wide/no_ball/bye/leg_bye leave the streak untouched - no legal
-        # batted shot happened to either extend or break it.
-    # A no-ball creates exactly one immediate free-hit delivery. If that
-    # re-ball is itself a no-ball, the flag naturally carries forward.
+                                                                        
+                                                            
+                                                                        
+                                                                      
     session.free_hit_next_ball = outcome.outcome == "no_ball"
     partnership_id_before_ball = int(session.innings.score.wickets or 0) + 1
     partnership_players_before_ball = (
@@ -589,8 +589,8 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     except Exception as exc:
         print(f"[quest] live-ball hook unavailable: {exc!r}")
 
-    # Milestones are informational and asynchronous. A Telegram failure must
-    # never interrupt scoring or the active game simulation.
+                                                                            
+                                                            
     schedule_milestone_notifications(session, outcome, striker_before, partnership_id=partnership_id_before_ball, partnership_players=partnership_players_before_ball)
 
     try:
@@ -608,8 +608,8 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     if outcome.wicket:
         consume_planned_batsman_after_wicket(session)
         apply_entry_role_after_wicket(session)
-        # A new pair is now at the crease - their partnership starts
-        # fresh at 0/0, not carried over from the whole innings.
+                                                                    
+                                                                
         session.partnership_runs = 0
         session.partnership_balls = 0
     if len(session.this_over) > 12:
@@ -749,7 +749,7 @@ def start_second_innings(session: PlaySession, target: int) -> None:
     session.bowler_stats = {}
     session.partnership_runs = 0
     session.partnership_balls = 0
-    # Auto plans are innings-local. Preserve Impact Player usage state on IPL/Play.
+                                                                                   
     if hasattr(session, "auto_bowler_queue"):
         session.auto_bowler_enabled = False
         session.auto_bowler_queue.clear()

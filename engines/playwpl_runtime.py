@@ -76,7 +76,7 @@ class PlaySession:
     auto_batsman_queue: list[int] = field(default_factory=list)
     pending_batsman_order: list[int] = field(default_factory=list)
     impact_state: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Separate post-innings Impact Player messages, one per participant.
+                                                                        
     impact_message_ids: dict[int, int] = field(default_factory=dict)
 
 
@@ -144,7 +144,7 @@ def clear_playwpl_session(match_id: int) -> None:
     _PLAYWPL_SESSIONS.pop(int(match_id), None)
 
 
-# Standard T20 rule: no bowler may bowl more than a fifth of the innings.
+                                                                         
 MAX_OVERS_PER_BOWLER = 4
 
 
@@ -160,15 +160,15 @@ def bowler_overs_left(session: PlaySession, player_id: int) -> int:
 def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]]:
     candidates = bowling_candidates(session.bowling_squad)
 
-    # A bowler who has already bowled their full quota this innings is
-    # gone for good - never offered again, regardless of who bowled last.
+                                                                      
+                                                                         
     eligible = [
         p for p in candidates
         if bowler_overs_bowled(session, int(p.get("player_id") or 0)) < MAX_OVERS_PER_BOWLER
     ]
 
-    # No bowler may bowl two overs in a row - exclude whoever bowled the
-    # over that just finished, as long as someone else is still eligible.
+                                                                        
+                                                                         
     if session.selected_bowler_id is not None and len(eligible) > 1:
         without_last = [
             p for p in eligible
@@ -177,9 +177,9 @@ def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]
         if without_last:
             eligible = without_last
 
-    # Emergency bowling fallback: only when every natural bowler/all-rounder
-    # has exhausted the four-over quota, allow the bowling user's own batting
-    # players to bowl. The normal bowling pool always takes precedence.
+                                                                            
+                                                                             
+                                                                       
     if not eligible:
         fallback_ids = {int(p.get("player_id") or 0) for p in candidates}
         eligible = [
@@ -189,9 +189,9 @@ def bowler_candidates_for_next_over(session: PlaySession) -> list[dict[str, Any]
             and bowler_overs_bowled(session, int(p.get("player_id") or 0)) < MAX_OVERS_PER_BOWLER
         ]
 
-        # If the fallback includes the previous bowler (unlikely but possible
-        # with unusual squad data), keep the same no-consecutive-over rule when
-        # at least one other batter is available.
+                                                                             
+                                                                               
+                                                 
         if session.selected_bowler_id is not None and len(eligible) > 1:
             without_last = [
                 p for p in eligible
@@ -448,7 +448,7 @@ def _update_bowler_stats(session: PlaySession, outcome: BallOutcome) -> None:
         bs["balls"] += 1
     bs["runs"] += int(outcome.bowler_runs or 0)
     if outcome.wicket and getattr(outcome, "wicket_kind", None) != "run_out":
-        # A run-out is not credited to the bowler's wickets (balls/runs still count).
+                                                                                     
         bs["wickets"] += 1
 
 
@@ -480,7 +480,7 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     context = _ball_context(session, strategy)
     outcome = resolve_strategy(strategy, context)
     if outcome.wicket:
-        # How the wicket fell (caught/bowled/lbw/stumped/rare run-out) - scorecard detail only.
+                                                                                               
         from engines.tactics_engine import assign_dismissal
         assign_dismissal(session, outcome)
     try:
@@ -498,10 +498,10 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
             striker_before.boundary_streak = streak_before + 1
         elif outcome.outcome in ("dot", "single", "double", "triple"):
             striker_before.boundary_streak = 0
-        # wide/no_ball/bye/leg_bye leave the streak untouched - no legal
-        # batted shot happened to either extend or break it.
-    # A no-ball creates exactly one immediate free-hit delivery. If that
-    # re-ball is itself a no-ball, the flag naturally carries forward.
+                                                                        
+                                                            
+                                                                        
+                                                                      
     session.free_hit_next_ball = outcome.outcome == "no_ball"
     partnership_id_before_ball = int(session.innings.score.wickets or 0) + 1
     partnership_players_before_ball = (
@@ -534,8 +534,8 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     except Exception as exc:
         print(f"[quest] live-ball hook unavailable: {exc!r}")
 
-    # Milestones are informational and asynchronous. A Telegram failure must
-    # never interrupt scoring or the active game simulation.
+                                                                            
+                                                            
     schedule_milestone_notifications(session, outcome, striker_before, partnership_id=partnership_id_before_ball, partnership_players=partnership_players_before_ball)
 
     try:
@@ -551,8 +551,8 @@ def simulate_ball(session: PlaySession, strategy: str) -> OverEvent:
     session.this_over.append(outcome.symbol)
     session.over_commentary.append(commentary)
     if outcome.wicket:
-        # A new pair is now at the crease - their partnership starts
-        # fresh at 0/0, not carried over from the whole innings.
+                                                                    
+                                                                
         session.partnership_runs = 0
         session.partnership_balls = 0
     if len(session.this_over) > 12:
@@ -663,16 +663,16 @@ def start_second_innings(session: PlaySession, target: int) -> None:
     roster = full_map.get(code_for_id) or new_batting_squad
     by_id = {int(p.get('player_id') or 0): p for p in roster}
     batting_xi = [dict(by_id[pid]) for pid in selected_ids if pid in by_id]
-    # The session's current squads are kept up to date by every Impact Player
-    # replacement / batting-order change, so they are authoritative. The
-    # selected-XI map is only a fallback (it can be stale or keyed differently).
+                                                                             
+                                                                        
+                                                                                
     if len(new_batting_squad) >= 11:
         batting_xi = [dict(p) for p in new_batting_squad]
     elif len(batting_xi) != 11:
         batting_xi = playing_xi(new_batting_squad)
 
-    # The second-innings bowling side must use its current XI too, so an
-    # impact player who is a bowler/all-rounder is immediately eligible.
+                                                                        
+                                                                        
     bowling_code = (
         session.match.get('challenger_team_code')
         if int(new_bowling_team_id) == int(session.match.get('challenger_id') or 0)
@@ -722,7 +722,7 @@ def start_second_innings(session: PlaySession, target: int) -> None:
     session.bowler_stats = {}
     session.partnership_runs = 0
     session.partnership_balls = 0
-    # Auto plans are innings-local. Preserve Impact Player usage state on WPL/Play.
+                                                                                   
     if hasattr(session, "auto_bowler_queue"):
         session.auto_bowler_enabled = False
         session.auto_bowler_queue.clear()

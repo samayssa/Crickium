@@ -28,9 +28,9 @@ from database.probability_profiles_repo import PROBABILITY_KEYS, load_probabilit
 
 OUTCOMES = ["dot", "single", "boundary", "six", "out", "mishit"]
 
-# ---------------------------------------------------------------------
-# Base probability models
-# ---------------------------------------------------------------------
+                                                                       
+                         
+                                                                       
 
 BASE_PROBS: dict[tuple[str, str], dict[str, float]] = {
     ("Ground Shot", "Defensive"): {
@@ -114,8 +114,8 @@ STROKE_INTENTS = ["Defensive", "Neutral", "Attacking"]
 
 SKIP_LENGTH_FOR = {"Yorker Ball", "Bouncer Ball"}
 
-# Some canonical shot names. We keep them as readable text because the
-# UI shows them directly.
+                                                                      
+                         
 SHOT_LIBRARY: dict[str, dict[str, dict[str, list[str]]]] = {
     "Front Foot": {
         "Ground Shot": {
@@ -213,7 +213,7 @@ SHOT_LIBRARY: dict[str, dict[str, dict[str, list[str]]]] = {
     },
 }
 
-# Shot families for match quality inference
+                                           
 SHOT_KEYWORDS = {
     "defence": "defence",
     "defense": "defence",
@@ -261,9 +261,9 @@ SHOT_PROFILE_MODIFIERS: dict[str, dict[str, float]] = {
     "backfoot": {"dot": +0.02, "single": +0.03, "boundary": +0.04, "out": -0.01},
 }
 
-# ---------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------
+                                                                       
+             
+                                                                       
 
 @dataclass(slots=True)
 class BallContext:
@@ -285,9 +285,9 @@ class BallContext:
     approach: str | None = None
 
 
-# ---------------------------------------------------------------------
-# Uploaded probability profile cache
-# ---------------------------------------------------------------------
+                                                                       
+                                    
+                                                                       
 
 PROFILE_OUTCOME_KEY_MAP = {
     "DOT": "dot",
@@ -485,9 +485,9 @@ def _profile_probability_weights(context: BallContext) -> dict[str, float] | Non
     return {k: v / total for k, v in weights.items()}
 
 
-# ---------------------------------------------------------------------
-# Normalization and mapping helpers
-# ---------------------------------------------------------------------
+                                                                       
+                                   
+                                                                       
 
 def _normalize_text(value: str | None) -> str:
     return " ".join(str(value or "").strip().lower().split())
@@ -518,10 +518,10 @@ def _canonical_bowler_type(bowler_is_pace_or_spin: str | None, delivery_type: st
     if text in {"spin"}:
         return "Spin"
 
-    # Infer from delivery if not explicitly supplied.
+                                                     
     d = _normalize_text(delivery_type)
     if any(x in d for x in ["inswing", "outswing", "reverse swing", "knuckle", "bouncer", "fast", "slower", "yorker"]):
-        # Most cricket game engines treat these as pace-family deliveries.
+                                                                          
         return "Pace"
     return "Spin"
 
@@ -597,9 +597,9 @@ def get_available_shots(foot_movement: str, stroke_type: str, bowler_type: str) 
     return list(SHOT_LIBRARY.get(foot, {}).get(stype, {}).get(btype, []))
 
 
-# ---------------------------------------------------------------------
-# Match-quality inference
-# ---------------------------------------------------------------------
+                                                                       
+                         
+                                                                       
 
 def _shot_family_from_name(specific_shot: str | None) -> str | None:
     text = _normalize_text(specific_shot)
@@ -636,7 +636,7 @@ def infer_match_quality(
 
     score = 0
 
-    # Delivery family effects
+                             
     if d in {"yorker ball", "yorker"}:
         score -= 3
         if foot == "advance":
@@ -675,7 +675,7 @@ def infer_match_quality(
         if stype == "Ground Shot" and foot in {"front foot", "back foot"}:
             score += 1
 
-    # Length effects
+                    
     back_foot_only_families = {"pull", "hook", "upper_cut", "cut"}
 
     if ln in {"short length", "short"}:
@@ -723,7 +723,7 @@ def infer_match_quality(
         if stype == "Lofted Shot":
             score -= 2
 
-    # Line effects
+                  
     if l in {"wide of off stump", "off stump", "wide off stump"}:
         if shot_family in {"drive", "cut"}:
             score += 2
@@ -742,13 +742,13 @@ def infer_match_quality(
         if shot_family in {"drive", "cut"}:
             score -= 1
 
-    # Bowler type match-ups
+                           
     if bowler_type == "Spin":
         if shot_family in {"sweep", "drive", "flick"}:
             score += 1
         if shot_family in {"pull", "hook"}:
             score -= 1
-    else:  # Pace
+    else:        
         if shot_family in {"pull", "hook", "cut", "drive"}:
             score += 1
         if shot_family in {"sweep", "reverse sweep"}:
@@ -765,9 +765,9 @@ def infer_match_quality(
     return "terrible"
 
 
-# ---------------------------------------------------------------------
-# Probability application
-# ---------------------------------------------------------------------
+                                                                       
+                         
+                                                                       
 
 def _apply_delta(probs: dict[str, float], deltas: dict[str, float]) -> dict[str, float]:
     result = dict(probs)
@@ -858,7 +858,7 @@ def calculate_outcome_probabilities(
     probs = _apply_delta(probs, INTENT_MODIFIERS[canonical_intent])
     probs = _apply_delta(probs, skill_diff_modifier(bowler_level, batsman_level))
 
-    # If the caller provided richer context, infer match quality from the context.
+                                                                                  
     inferred_quality = shot_match_quality
     if any(v is not None for v in [delivery_type, line, length, foot_movement, specific_shot, bowler_is_pace_or_spin]):
         inferred_quality = infer_match_quality(
@@ -881,12 +881,12 @@ def calculate_outcome_probabilities(
         probs["dot"] = probs.get("dot", 0.0) + suppressed_amount * 0.2
     probs = _apply_delta(probs, {"out": match_mod.get("out", 0.0)})
 
-    # Specific-shot profile to reflect the named batting shot.
+                                                              
     family = _shot_family_from_name(specific_shot)
     if family and family in SHOT_PROFILE_MODIFIERS:
         probs = _apply_delta(probs, SHOT_PROFILE_MODIFIERS[family])
 
-    # Clamp and normalize
+                         
     probs = _normalize(probs)
 
     hard_caps = {
@@ -903,7 +903,7 @@ def calculate_outcome_probabilities(
                 probs["mishit"] = probs.get("mishit", 0.0) + excess * 0.4
         probs = _normalize(probs)
 
-    # Optional tiny noise for live feel
+                                       
     if random_variation:
         probs = _apply_random_variation(probs)
 
@@ -1014,9 +1014,9 @@ def ball_result_from_context(context: BallContext) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------
-# Small validation helpers for future engines
-# ---------------------------------------------------------------------
+                                                                       
+                                             
+                                                                       
 
 def validate_delivery_type(delivery_type: str | None) -> bool:
     return _normalize_text(delivery_type) in {_normalize_text(x) for x in DELIVERY_TYPES}

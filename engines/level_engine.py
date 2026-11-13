@@ -18,15 +18,15 @@ from __future__ import annotations
 
 MAX_LEVEL = 30
 
-# --- Match XP rewards ---
+                          
 WIN_XP = 50
 LOSS_XP = 20
 TIE_XP = 35
-EXIT_PENALTY_XP = 0  # the player who exits early gets no XP for that match
+EXIT_PENALTY_XP = 0                                                        
 
-# --- Tiers: 5 levels each, 6 tiers, covering levels 1-30 ---
-# (min_level, max_level, emoji, short_name (also the /upload_img keyword,
-# lowercased), full_title)
+                                                             
+                                                                         
+                          
 TIERS = [
     (1, 5, "🥉", "bronze", "Gully Cricketer"),
     (6, 10, "🥈", "silver", "Club Player"),
@@ -36,8 +36,8 @@ TIERS = [
     (26, 30, "🏆", "legend", "Cricket Icon"),
 ]
 
-# Ordered tier keys, exactly matching the coordinate-file folder names and
-# the /upload_img <tier> keyword.
+                                                                          
+                                 
 TIER_KEYS = [t[3] for t in TIERS]
 
 

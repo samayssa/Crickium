@@ -185,9 +185,9 @@ def register_ball(
         on_over_end(state)
 
     if wicket:
-        # The dismissed striker must be replaced immediately, but the end-of-
-        # over swap still applies. If the wicket fell on the sixth legal ball,
-        # the incoming batter reaches the non-striker's end for the next over.
+                                                                             
+                                                                              
+                                                                              
         replacement = _get_next_batter(state)
         if over_ended:
             state.non_striker = replacement

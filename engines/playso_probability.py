@@ -69,7 +69,7 @@ def shots_for(foot: str, intent: str) -> list[str]:
 def _renorm(vals: Dict[str, float]) -> Dict[str, float]:
     total = sum(max(0.0, v) for v in vals.values()) or 1.0
     out = {k: max(0.0, v) * 100.0 / total for k, v in vals.items()}
-    # force exact 100.00 within floating point display without distorting choices
+                                                                                 
     last = next(reversed(out))
     out[last] += 100.0 - sum(out.values())
     return out
@@ -83,7 +83,7 @@ def probability_distribution(*, pitch: str, family: str, delivery: str, line: st
     base = list(BASE.get(key, BASE[("full", "front", "grounded")]))
     vals = {k: float(v) for k, v in zip(["0", "1", "2", "3", "4", "6", "OUT"], base)}
 
-    # Match quality: deliberate but bounded; strong human matchup remains the main lever.
+                                                                                         
     shot_low = shot.lower()
     match = 0.0
     if length == "full" and foot in {"front", "advance"}:
@@ -107,7 +107,7 @@ def probability_distribution(*, pitch: str, family: str, delivery: str, line: st
     if delivery in {"Yorker", "Bouncer"} and foot == "front":
         match -= 2
 
-    # Pitch effect is modest and never zeroes out an outcome.
+                                                             
     if pitch in {"green", "bouncy"} and family == "pace":
         match += 2
         vals["OUT"] += 0.8
@@ -119,11 +119,11 @@ def probability_distribution(*, pitch: str, family: str, delivery: str, line: st
         vals["6"] += 1.0
         vals["OUT"] -= 0.5
 
-    # Level-vs-level: dedicated PLAYSO layer, bounded and independent from tactics_engine.
+                                                                                          
     level_edge = max(-18.0, min(18.0, (int(batter_level) - int(bowler_level)) * 0.35))
     match += level_edge * 0.15
 
-    # Match quality shifts boundary mass while keeping rare 3/5 and extras alive.
+                                                                                 
     if match > 0:
         vals["4"] *= 1.0 + min(0.18, match * 0.018)
         vals["6"] *= 1.0 + min(0.20, match * 0.020)
@@ -135,7 +135,7 @@ def probability_distribution(*, pitch: str, family: str, delivery: str, line: st
         vals["OUT"] *= 1.0 + penalty * 0.45
         vals["0"] *= 1.0 + penalty * 0.55
 
-    # Wide/No-ball/Bye/Leg-bye are separate low-mass possibilities.
+                                                                   
     extras = {"WIDE": 1.0, "NO_BALL": 0.65, "LEG_BYE": 0.45, "BYE": 0.35}
     if line in {"wide_off", "leg"}:
         extras["WIDE"] += 0.55
@@ -146,7 +146,7 @@ def probability_distribution(*, pitch: str, family: str, delivery: str, line: st
 
     main_total = sum(vals.values())
     extra_mass = sum(extras.values())
-    # Reserve at most 4% for extras, distributed according to line/delivery.
+                                                                            
     reserved = min(4.0, extra_mass)
     factor = reserved / extra_mass if extra_mass else 0
     dist = {k: v * (100.0 - reserved) / main_total for k, v in vals.items()}

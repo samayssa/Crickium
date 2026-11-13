@@ -96,11 +96,11 @@ def update_score_from_ball(
     is_extra = bool(extra_type) or outcome in {"wide", "no_ball", "leg_bye", "bye", "penalty"}
 
     if is_extra:
-        # Extras are scored ONCE here. They must never also fall through
-        # to the normal-runs block below - that was double-counting every
-        # wide/no-ball/bye/leg-bye onto the total (e.g. a single wide
-        # added 2 runs instead of 1), which is what was throwing off the
-        # score/over math whenever extras came up.
+                                                                        
+                                                                         
+                                                                     
+                                                                        
+                                                  
         register_extra(state, extra_type or outcome, runs=max(1, runs))
     elif wicket or outcome == "out":
         register_wicket(state, batter_name=batter_name, wicket_type=wicket_type, fielder_name=fielder_name,

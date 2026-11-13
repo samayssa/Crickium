@@ -16,16 +16,16 @@ from typing import Any
 
 from engines import commentary_banks as B
 
-MAX_LEN = 300                 # a ball line is trimmed (optional pieces first) to fit this
+MAX_LEN = 300                                                                             
 STORE_MAX = 80
-THRILLER_RRR = 10.5           # required rate at/above which the chase is a thriller
+THRILLER_RRR = 10.5                                                                 
 TENSE_RRR = 8.5
-THRILLER_WIH = 3              # wickets in hand at/below which it is a thriller, whatever the run rate
+THRILLER_WIH = 3                                                                                      
 TENSE_WIH_CHASE = 5
 TENSE_WIH_FIRST = 4
 
 
-# ----------------------------------------------------------------- helpers --
+                                                                              
 def surname(name: str) -> str:
     parts = [p for p in re.split(r"\s+", str(name or "").strip()) if p]
     if not parts:
@@ -82,29 +82,29 @@ def _wchoice(rnd: random.Random, weights: dict[str, float]) -> str:
     return rnd.choices(keys, weights=[max(0.01, weights[k]) for k in keys], k=1)[0]
 
 
-# ------------------------------------------------------------------ context --
+                                                                               
 class Ctx:
     def __init__(self, **kw: Any) -> None:
         self.mode = "play"
         self.gender = "m"
         self.kind = "dot"
-        self.runs = 0                 # runs the ball added to the total
+        self.runs = 0                                                   
         self.free_hit = False
         self.batter = ""
         self.non_striker = ""
         self.bowler = ""
         self.fielder = ""
-        self.keeper = ""              # relay run-outs: the keeper who broke the stumps
-        self.keepers: list[str] = []  # wicketkeepers in the fielding XI
+        self.keeper = ""                                                               
+        self.keepers: list[str] = []                                    
         self.roster: list[str] = []
         self.wk_kind = ""
         self.wk_mode = ""
-        self.bat_runs = 0             # batter's score AFTER the ball
+        self.bat_runs = 0                                            
         self.bat_balls = 0
         self.bat_runs_ball = 0
         self.score = 0
         self.wkts = 0
-        self.legal = 0                # legal balls bowled in the innings AFTER the ball
+        self.legal = 0                                                                  
         self.legal_ball = True
         self.target: int | None = None
         self.max_balls = 120
@@ -121,15 +121,15 @@ class Ctx:
         self.opp = ""
         self.innings_over = False
         self.zone_hint = ""
-        self.bowler_wkts: int | None = None   # Mini App: bowler's wickets (hat-trick / 3 / 5 lines are shown by the engine itself)
+        self.bowler_wkts: int | None = None                                                                                        
         self.no_ending = False
-        self.stats_known = True               # False when the batter's score is not available (normal match)
+        self.stats_known = True                                                                              
         self.key: Any = None
         for k, v in kw.items():
             setattr(self, k, v)
 
 
-# ---------------------------------------------------------------- situation --
+                                                                               
 def situation(c: Ctx) -> dict[str, Any]:
     wih = max(0, c.max_wkts - c.wkts)
     balls_left = max(0, c.max_balls - c.legal)
@@ -180,7 +180,7 @@ def _sit_text(c: Ctx, s: dict[str, Any], tone: str, rnd: random.Random, mem: _Me
     return re.sub(r"\{(\w+)\}", lambda m: slots.get(m.group(1), m.group(0)), t)
 
 
-# -------------------------------------------------------------------- slots --
+                                                                               
 def _pron(g: str) -> dict[str, str]:
     return ({"he": "she", "He": "She", "his": "her", "His": "Her", "him": "her"} if g == "f"
             else {"he": "he", "He": "He", "his": "his", "His": "His", "him": "him"})
@@ -200,7 +200,7 @@ def _fill(t: str, sl: dict[str, str]) -> str:
     return re.sub(r"\{(\w+)\}", lambda m: sl.get(m.group(1), m.group(0)), t)
 
 
-# ------------------------------------------------------------------ pieces --
+                                                                              
 def _delivery(c: Ctx, rnd: random.Random, mem: _Mem) -> str:
     if c.family == "s":
         bank = B.DELIVERY_SPIN.get(c.tactic) or B.DELIVERY_GENERIC["s"]
@@ -219,7 +219,7 @@ def _zone(c: Ctx, base: dict[str, float], rnd: random.Random, mem: _Mem) -> str:
     for z, m in tilt.items():
         if z in w:
             w[z] *= m
-    for z in mem.zones:                       # avoid the same direction over and over
+    for z in mem.zones:                                                               
         if z in w:
             w[z] *= 0.45
     z = _wchoice(rnd, w)
@@ -260,7 +260,7 @@ def _main_runs(c: Ctx, tone: str, rnd: random.Random, mem: _Mem, opener: str = "
         shot = _pick(f"ss_{zone}", B.SHOT_SOFT[zone], rnd, mem)
         bank = {"single": B.RUN_1, "double": B.RUN_2, "triple": B.RUN_3, "five": B.RUN_3}.get(k, B.RUN_1)
         low = opener.lower()
-        bad = [w for w in ("single", "one", "couple", "two", "three") if w in low]   # do not say it twice
+        bad = [w for w in ("single", "one", "couple", "two", "three") if w in low]                        
         bank = [x for x in bank if not any(re.search(rf"\b{w}\b", x) for w in bad)] or bank
         run = _pick(f"r_{k}", bank, rnd, mem)
         body = f"{c.batter} {shot} {run}."
@@ -349,7 +349,7 @@ def _wicket_extras(c: Ctx, wtype: str, tone: str, rnd: random.Random, mem: _Mem)
         n = c.bowler_wkts if wtype != "run_out" else 0
     if n in B.WK_BOWLER and (c.bowler_wkts is None or n == 2) and rnd.random() < 0.85:
         out.append(_pick(f"wkb{n}", B.WK_BOWLER[n], rnd, mem))
-    if wtype != "run_out" and len(c.fallen) >= 3:           # hat-trick check: same bowler, last three balls
+    if wtype != "run_out" and len(c.fallen) >= 3:                                                           
         def idx(w):
             o, _, b = str(w.get("over") or "0.0").partition(".")
             return int(o or 0) * 6 + int(b or 0)
@@ -362,14 +362,14 @@ def _wicket_extras(c: Ctx, wtype: str, tone: str, rnd: random.Random, mem: _Mem)
     return out
 
 
-# --------------------------------------------------------------------- core --
+                                                                               
 def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
     rnd = rnd or random.Random()
     mem = _mem_for(c.key)
     s = situation(c)
     tone = pick_tone(c, s)
-    sl_parts: list[str] = []     # mandatory
-    opt: list[str] = []          # optional, dropped from the end when too long
+    sl_parts: list[str] = []                
+    opt: list[str] = []                                                        
     k = c.kind
     opener = _opener(c, tone, rnd, mem) if k not in ("wide", "no_ball", "bye", "leg_bye") else ""
     info: dict[str, Any] = {}
@@ -397,14 +397,14 @@ def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
             tails = B.TAIL_THRILLER[k]
         if rnd.random() < {"single": 0.3, "double": 0.3, "triple": 0.5, "five": 0.5, "four": 0.5, "six": 0.5}[k] or (tone == "thriller" and rnd.random() < 0.3):
             opt.append(_pick(f"t_{k}_{tone}", tails, rnd, mem))
-        # fielder cameo (ground direction + who fielded) on boundaries and runs
+                                                                               
         zone = info.get("zone")
         if zone and rnd.random() < {"four": 0.28, "six": 0.18, "single": 0.1, "double": 0.12}.get(k, 0.0):
             f = _fielder_for(c, rnd)
             pos = B.ZONES[zone][2] if k in ("four", "six") else B.ZONES[zone][1]
             bank = {"four": B.CAMEO_FOUR, "six": B.CAMEO_SIX, "single": B.CAMEO_SINGLE, "double": B.CAMEO_DOUBLE}[k]
             opt.append(_fill(_pick(f"cam_{k}", bank, rnd, mem), {"f": surname(f), "pos": pos, "his": _pron(c.gender)["his"]}))
-    # ---- context add-ons (streaks, milestones) -----------------------------
+                                                                              
     over_syms = list(c.this_over or [])
     dots = 0
     for sym in reversed(over_syms):
@@ -428,7 +428,7 @@ def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
             sl_parts.append(_fill(_pick("m50", B.MILE_FIFTY, rnd, mem), _slots(c)))
         elif c.bat_runs >= 90 > r0 and tone != "calm":
             opt.append(_fill(_pick("m90", B.MILE_NINETIES, rnd, mem), _slots(c)))
-    # ---- over summary on the last legal ball of the over ------------------------
+                                                                                   
     if c.legal_ball and c.ball_in_over == 6 and not c.innings_over and c.mode != "so" and (len(over_syms) + 1) >= 6:
         syms = over_syms + [{"dot": "0", "single": "1", "double": "2", "triple": "3", "four": "4", "six": "6", "wicket": "W"}.get(k, "x")]
         if all(x in ("0", "1", "2", "3", "4", "6", "W") for x in syms):
@@ -447,7 +447,7 @@ def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
                 opt.append(_fill(_pick("oex", B.OVER_EXPENSIVE, rnd, mem), sl))
             elif orun <= 4:
                 opt.append(_fill(_pick("oti", B.OVER_TIGHT, rnd, mem), sl))
-    # ---- phase / pitch notes (calm moments only) --------------------------------
+                                                                                   
     if tone == "calm" and c.legal_ball and c.ball_in_over == 1 and c.mode not in ("so",):
         ph = {1: B.PHASE_PP, 7: B.PHASE_MID, 16: B.PHASE_DEATH}.get(c.over_no)
         if ph and ("ph", c.over_no) not in mem.phase_done and rnd.random() < 0.6:
@@ -457,7 +457,7 @@ def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
             notes = B.PITCH_NOTES.get(str(c.pitch).lower())
             if notes:
                 opt.append(_pick("pn", notes, rnd, mem))
-    # ---- live equation ------------------------------------------------------------
+                                                                                     
     use_sit = False
     if tone == "thriller":
         use_sit = rnd.random() < (0.9 if (s["balls_left"] <= 12 or k == "wicket") else 0.75 if mem.since_sit >= 1 else 0.25)
@@ -465,7 +465,7 @@ def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
         use_sit = rnd.random() < (0.75 if mem.since_sit >= 3 else 0.1)
     mem.since_sit = 0 if use_sit else mem.since_sit + 1
     sit = _sit_text(c, s, tone, rnd, mem) if use_sit else ""
-    # ---- innings / match end -----------------------------------------------------
+                                                                                    
     ending = ""
     if c.no_ending:
         pass
@@ -476,12 +476,12 @@ def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
         ending = (f"The chase ends {short} runs short, and {c.opp} win it." if short else f"It is a tie at {c.score}!") if c.opp else ""
     elif c.innings_over and k == "wicket" and c.wkts >= c.max_wkts - 0 and c.mode != "so":
         opt.append(_fill(_pick("ao", B.ALL_OUT, rnd, mem), {"score": str(c.score)}))
-    # ---- assemble, keep within MAX_LEN ----------------------------------------------
+                                                                                       
     mand = [x for x in sl_parts if x]
     pieces = mand + opt + ([sit] if sit else []) + ([ending] if ending else [])
     text = _join(pieces)
     while len(text) > MAX_LEN and len(pieces) > len(mand):
-        # drop the last optional piece (never the ending)
+                                                         
         for i in range(len(pieces) - 1, len(mand) - 1, -1):
             if pieces[i] != ending:
                 del pieces[i]
@@ -540,7 +540,7 @@ def trim_to(text: str, limit: int) -> str:
     return cut[: m + 1] if m > limit * 0.5 else cut.rstrip() + "…"
 
 
-# ------------------------------------------------------ adapters per mode ---
+                                                                              
 def _is_keeper(p: dict) -> bool:
     return "wicket" in str(p.get("role") or "").lower() or "keeper" in str(p.get("role") or "").lower()
 
@@ -607,7 +607,7 @@ def _count(v: Any) -> int:
     return 0
 
 
-# ----------------------------------------------------------- Super Over -----
+                                                                              
 _SHOT_ZONES = (("scoop", "fl"), ("ramp", "fl"), ("glance", "fl"), ("flick", "sq"), ("sweep", "sq"), ("pull", "mw"), ("hook", "sq"),
                ("slog", "mw"), ("on drive", "mn"), ("on-drive", "mn"), ("off drive", "mo"), ("off-drive", "mo"), ("cover", "cv"),
                ("square cut", "pt"), ("cut", "pt"), ("late", "tm"), ("steer", "tm"), ("loft", "st"), ("straight", "st"), ("lofted", "st"),
@@ -629,7 +629,7 @@ def so_ball_commentary(state: dict, result: Any, batter: dict, bowler: dict, non
     xi = [p for p in (state.get("bowling_xi") or []) if isinstance(p, dict)]
     bs = (state.get("batter_stats") or {}).get(str(batter.get("player_id"))) or {}
     runs_ball = int(getattr(result, "runs", 0) or 0) if kind in ("single", "double", "triple", "four", "six", "five") else 0
-    syms = ["0" if x in ("•", "·", ".") else str(x) for x in (state.get("this_over") or [])][:-1]      # before this ball
+    syms = ["0" if x in ("•", "·", ".") else str(x) for x in (state.get("this_over") or [])][:-1]                        
     d = dismissal or {}
     legal = int(state.get("legal_balls") or 0)
     c = Ctx(
@@ -648,7 +648,7 @@ def so_ball_commentary(state: dict, result: Any, batter: dict, bowler: dict, non
     return render_ball(c, rng)
 
 
-# ------------------------------------------------------------- Mini App -----
+                                                                              
 _SPIN_TACTICS = {"off_break", "doosra", "arm_ball", "carrom_ball", "top_spin", "leg_breaker", "top_spinner", "slider", "flipper", "googly_ball"}
 _MA_KIND = {0: "dot", 1: "single", 2: "double", 3: "triple", 4: "four", 6: "six", "W": "wicket", "WD": "wide", "NB": "no_ball", "BY": "bye", "LB": "leg_bye"}
 
@@ -691,11 +691,11 @@ def miniapp_ball_commentary(g: dict, inn: dict, striker: dict, bowl_p: dict, out
     c.bowler_wkts = int((bstat or {}).get("wkts") or 0)
     c.no_ending = True
     c.innings_over = bool(c.legal >= c.max_balls or c.wkts >= 10)
-    # over summaries are for 5+ over games only (a 2 over game is too short for streak remarks)
+                                                                                               
     return render_ball(c, rng)
 
 
-# -------------------------------------------------- generic / match-level ----
+                                                                               
 _STAGE = {
     "challenge": ["A challenge is on the table.", "A new match has been invited, and the stage is set."],
     "toss": ["The coin is in the air.", "Toss time, and the match is balanced on a coin edge."],

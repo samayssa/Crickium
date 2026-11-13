@@ -31,9 +31,9 @@ TACTIC_LABELS = {
     "googly_ball": "GOOGLY BALL",
 }
 
-# Outcome codes from tactics_engine -> the rest of the project's
-# outcome vocabulary (used by engines/innings_engine.py and
-# engines/score_engine.py).
+                                                                
+                                                           
+                           
 _CODE_TO_OUTCOME = {
     0: "dot", 1: "single", 2: "double", 3: "triple", 4: "four", 6: "six",
     "W": "wicket", "WD": "wide", "NB": "no_ball", "LB": "leg_bye", "BY": "bye",
