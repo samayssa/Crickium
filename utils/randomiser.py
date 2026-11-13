@@ -10,9 +10,9 @@ from typing import Any
 
 from database.query import fetch
 
-# Debut: ten explicitly controlled players + one bonus player from the same
-# overall debut band.  The controlled slots are exactly what the design calls
-# for: 3 low, 4 mid, 3 high, with the 11th slot drawn from 55-85.
+                                                                           
+                                                                             
+                                                                 
 DEBUT_LEVEL_TABLE = (
     {"name": "LOW", "min": 55, "max": 65, "count": 3, "weight": 0.30},
     {"name": "MID", "min": 66, "max": 77, "count": 4, "weight": 0.40},
@@ -22,16 +22,16 @@ DEBUT_LEVEL_TABLE = (
 DEBUT_BONUS_MIN_LEVEL = 55
 DEBUT_BONUS_MAX_LEVEL = 85
 
-# A debut Playing XI uses five database Batsman rows, three AllRounders and
-# three Bowlers.  One or two of the five batsmen are marked as wicket-keepers,
-# producing 3-4 batsmen + 1-2 wicket-keepers in the displayed XI.
+                                                                           
+                                                                              
+                                                                 
 DEBUT_ROLE_TABLE = {
     "Batsman": 5,
     "AllRounder": 3,
     "Bowler": 3,
 }
 
-# Claim distribution.  The weights sum to exactly 100%.
+                                                       
 CLAIM_LEVEL_TABLE = (
     {"name": "55-65", "min": 55, "max": 65, "weight": 35.0},
     {"name": "66-75", "min": 66, "max": 75, "weight": 30.0},
@@ -70,8 +70,8 @@ async def _players_in_level_band(role: str, min_level: int, max_level: int) -> l
     elif role == "Bowler":
         level_expr = "bowl_level"
     else:
-        # All-rounders and wicket-keepers can have either a strong batting or
-        # bowling level. Debut level is the player's stronger skill.
+                                                                             
+                                                                    
         level_expr = "GREATEST(COALESCE(bat_level, 0), COALESCE(bowl_level, 0))"
 
     rows = await fetch(
@@ -88,12 +88,12 @@ async def _players_in_level_band(role: str, min_level: int, max_level: int) -> l
     return [dict(row) for row in rows]
 
 
-# Every valid 11-player composition satisfies the requested ranges:
-#   Batsmen: 3-4
-#   Wicketkeepers: 1-2
-#   All-rounders: 3-4
-#   Bowlers: 3-4
-# and totals exactly 11 players.
+                                                                   
+                
+                      
+                     
+                
+                                
 VALID_DEBUT_ROLE_COMPOSITIONS = (
     (4, 1, 3, 3),
     (3, 2, 3, 3),
@@ -119,8 +119,8 @@ async def generate_debut_xi() -> list[dict[str, Any]]:
     Batsman rows, which was the source of the debut-generation failure after
     wicketkeepers were added to the player roster.
     """
-    # A few attempts handle uneven real-world rosters where one exact
-    # role/band combination may be sparse.
+                                                                     
+                                          
     for _attempt in range(80):
         composition = random.choice(VALID_DEBUT_ROLE_COMPOSITIONS)
         role_counts = dict(zip(DEBUT_ROLES, composition))
@@ -147,7 +147,7 @@ async def generate_debut_xi() -> list[dict[str, Any]]:
         if failed:
             continue
 
-        # Pick from the most constrained pools first to avoid collisions.
+                                                                         
         selected_by_slot: dict[int, dict[str, Any]] = {}
         used_ids: set[int] = set()
         for idx in sorted(range(len(pools)), key=lambda i: len(pools[i])):
@@ -166,8 +166,8 @@ async def generate_debut_xi() -> list[dict[str, Any]]:
             continue
 
         selected = [selected_by_slot[i] for i in range(11)]
-        # Stable display/game order: batsmen, wicketkeepers, all-rounders,
-        # bowlers. This makes /debut and /pxl deterministic after generation.
+                                                                          
+                                                                             
         order = {"Batsman": 0, "Wicketkeeper": 1, "AllRounder": 2, "Bowler": 3}
         selected.sort(key=lambda p: order.get(str(p.get("role") or ""), 9))
         return selected

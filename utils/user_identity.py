@@ -38,8 +38,8 @@ async def get_user_identity(user_id: int, default_name: str | None = None) -> di
     if logo_type == "custom_emoji" and logo_id:
         logo = custom_emoji_html(logo_id, logo_fallback)
     elif logo_type == "sticker" and logo_id:
-        # Telegram stickers cannot be embedded inline inside ordinary text.
-        # Persist/use the sticker's own emoji as the inline visual fallback.
+                                                                           
+                                                                            
         logo = logo_fallback or "🏷️"
     else:
         logo = ""

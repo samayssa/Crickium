@@ -74,8 +74,8 @@ async def _finish_timeout(engine: str, match_id: int, timed_out_user_id: int, ca
         if not winner_id:
             return
 
-        # Atomic terminal-state claim prevents two simultaneous timers from
-        # awarding the same match twice.
+                                                                           
+                                        
         claimed = await fetchrow(
             _status_claim_sql(engine),
             match_id,
@@ -213,13 +213,13 @@ async def _expected_users(engine: str, match: Any) -> list[int]:
         if status == "toss_done": return [int(m.get("toss_winner_id") or 0)] if m.get("toss_winner_id") else []
         return []
 
-    # A pending (not yet accepted) or declined challenge has no one "on the
-    # clock" - team selection, pitch, toss etc. only begin once the
-    # opponent accepts, so no inactivity timer should exist before then.
-    # (The PLAY branch above already gates on status the same way; this
-    # mirrors it for PLAYINT/PLAYIPL instead of falling straight into the
-    # team-code checks below regardless of whether the challenge was ever
-    # accepted.)
+                                                                           
+                                                                   
+                                                                        
+                                                                       
+                                                                         
+                                                                         
+                
     status = str(m.get("status") or "")
     if status in {"", "pending", "declined", "expired"}:
         return []
@@ -364,9 +364,9 @@ async def _default_timeout_callback(match: dict, timed_out: dict, winner: dict) 
     from services.match_rewards import award_timeout_rewards, build_timeout_message
     try:
         await award_timeout_rewards(int(winner["id"]), int(timed_out["id"]))
-    except Exception as exc:   # a reward failure must never leave the timed-out match half closed
+    except Exception as exc:                                                                      
         print(f"[inactivity] timeout rewards failed for {engine}:{match.get('match_id')}: {exc!r}")
-    # Build/send the report before runtime cleanup so complete telemetry survives.
+                                                                                  
     try:
         payload = None
         if engine == "PLAY":
@@ -393,7 +393,7 @@ async def _default_timeout_callback(match: dict, timed_out: dict, winner: dict) 
     except Exception as exc:
         print(f"[match_analysis] timeout report failed: {exc!r}")
     if engine == "PLAYSO":
-        try:   # a timed-out Super Over also ends the tied original match
+        try:                                                             
             from services.super_over_bridge import force_close_origin
             await force_close_origin(_state_dict(match.get("state")), "timed_out")
         except Exception as exc:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# Fixed Ruby -> Coin exchange packages. Only these exact Ruby amounts are valid.
+                                                                                
 COIN_EXCHANGE_CHART: dict[int, int] = {
     100: 35_000,
     250: 100_000,

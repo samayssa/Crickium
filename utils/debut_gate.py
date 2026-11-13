@@ -9,10 +9,10 @@ from utils.bounded_dict import BoundedDict
 MIN_PLAYERS_FOR_GAME = 11
 
 
-# Only POSITIVE results are cached: once a squad row exists the user has debuted until an
-# admin wipes data (/cleardata or /recover, which call invalidate_debut_cache()). Negative
-# results are never cached, so a new debut is picked up immediately. This removes one
-# SELECT from almost every command.
+                                                                                         
+                                                                                          
+                                                                                     
+                                   
 _DEBUT_CACHE_TTL_SECONDS = 600.0
 _DEBUT_OK: BoundedDict = BoundedDict(5000)
 
@@ -57,8 +57,8 @@ def validate_playing_xi(xi: list[dict]) -> tuple[bool, str]:
     raw_batsmen = [p for p in xi if p.get("role") == "Batsman"]
     direct_keepers = [p for p in xi if str(p.get("role") or "") == "Wicketkeeper"]
     flagged_keepers = direct_keepers + [p for p in raw_batsmen if p.get("is_wicketkeeper")]
-    # Backward compatibility for squads created before wicket-keeper metadata
-    # was introduced: the fifth Batsman row is the historical keeper slot.
+                                                                             
+                                                                          
     if not flagged_keepers and len(raw_batsmen) == 5:
         raw_batsmen[-1]["is_wicketkeeper"] = True
         flagged_keepers = [raw_batsmen[-1]]

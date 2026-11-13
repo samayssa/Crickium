@@ -17,7 +17,7 @@ def match_scoring_keyboard(engine: str, match_id: int) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
         username = "CrickiumBot"
     start_param = f"score_{normalized}_{numeric_id}"
-    # The startapp value uses Telegram's allowed [A-Za-z0-9_-] alphabet.
+                                                                        
     url = f"https://t.me/{username}?startapp={start_param}&mode=fullscreen"
     return {"inline_keyboard": [[{
         "text": "Open Mini App for Live Scoring",

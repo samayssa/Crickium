@@ -7,7 +7,7 @@ provided. The helpers always fall back to ordinary Unicode team markers.
 
 from __future__ import annotations
 
-# Fill these with real Telegram custom_emoji_id values when supplied.
+                                                                     
 WPL_TEAM_EMOJIS: dict[str, str | None] = {
     "DC": "6158976462444566786",
     "GG": "6158853428811404166",

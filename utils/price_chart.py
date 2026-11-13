@@ -10,7 +10,7 @@ Used wherever a player's price needs to be shown: /player lookups,
 
 from __future__ import annotations
 
-# level -> (buy_price, sell_price)
+                                  
 PRICE_CHART: dict[int, tuple[int, int]] = {
     55: (100, 45),
     56: (130, 58),

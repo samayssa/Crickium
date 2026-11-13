@@ -16,7 +16,7 @@ Only shown in the /player lookup response - not in /claim.
 
 from __future__ import annotations
 
-# (min_level, max_level, rarity_name) - checked in order.
+                                                         
 RARITY_TIERS: list[tuple[int, int, str]] = [
     (55, 64, "Common"),
     (65, 74, "Medium"),

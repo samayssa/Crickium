@@ -8,15 +8,15 @@ from __future__ import annotations
 
 OVR_EMOJI_ID = "5370784581341422520"
 
-# Wicket/out custom emoji used in the live simulation timelines.  The
-# alternative text inside Telegram's <tg-emoji> tag must be a valid Unicode
-# emoji, not the literal letter ``W``, otherwise Telegram ignores the custom
-# emoji entity and leaves plain text behind.
+                                                                     
+                                                                           
+                                                                            
+                                            
 WICKET_OUT_EMOJI_ID = "5431667456454175520"
 WICKET_OUT_EMOJI_FALLBACK = "🏏"
 
-# Impact Player custom emojis. These IDs are reserved exclusively for
-# Impact Player IN/OUT names and must not alter any existing emoji registry.
+                                                                     
+                                                                            
 IMPACT_IN_EMOJI_ID = "5449683594425410231"
 IMPACT_IN_EMOJI_FALLBACK = "⚡"
 IMPACT_OUT_EMOJI_ID = "5447183459602669338"
@@ -98,10 +98,10 @@ def wicket_out_emoji_html() -> str:
     """Return the live wicket/out custom emoji as valid Telegram HTML."""
     return f'<tg-emoji emoji-id="{WICKET_OUT_EMOJI_ID}">{WICKET_OUT_EMOJI_FALLBACK}</tg-emoji>'
 
-# Milestone notification custom-emoji slots. Keep these as ``None`` until
-# Telegram custom-emoji IDs are supplied. The milestone renderer always falls
-# back to the Unicode value while they are None, and automatically gives the
-# custom emoji first priority once a valid ID is added here.
+                                                                         
+                                                                             
+                                                                            
+                                                            
 MILESTONE_LINE_EMOJIS: dict[str, str | None] = {
     "title": None,
     "player": None,
@@ -111,9 +111,9 @@ MILESTONE_LINE_EMOJIS: dict[str, str | None] = {
     "stat": None,
 }
 
-# Optional media for milestone alerts. Replace ``file_id`` with a Telegram
-# animation/GIF or video file_id later. ``None`` means send the normal text
-# alert only for now.
+                                                                          
+                                                                           
+                     
 MILESTONE_MEDIA: dict[str, dict[str, str | None]] = {
     "BAT_50": {"type": "animation", "file_id": None},
     "BAT_100": {"type": "animation", "file_id": None},
@@ -140,11 +140,11 @@ def milestone_emoji_html(category: str, fallback: str) -> str:
         return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
     return fallback
 
-# ---------------------------------------------------------------------------
-# Crickium Quest + Pack currency/UX slots
-# ---------------------------------------------------------------------------
-# Keep every value None until a real Telegram custom-emoji ID is supplied.
-# Helpers below always return the Unicode fallback while a slot is None.
+                                                                             
+                                         
+                                                                             
+                                                                          
+                                                                        
 DAILY_QUEST_EMOJI_ID: str | None = None
 WEEKLY_QUEST_EMOJI_ID: str | None = None
 MONTHLY_QUEST_EMOJI_ID: str | None = None
@@ -198,7 +198,7 @@ def rubies_emoji_html() -> str:
     return custom_emoji_html(RUBIES_EMOJI_ID, CURRENCY_FALLBACKS["rubies"])
 
 
-# Pack-specific custom emoji slots. Replace None with actual custom emoji IDs.
+                                                                              
 PACK_EMOJI_IDS: dict[str, str | None] = {
     "bronze": None,
     "silver": None,
@@ -214,8 +214,8 @@ PACK_EMOJI_FALLBACKS: dict[str, str] = {
     "platinum": "🏆",
 }
 
-# Telegram Pack media file_id slots. Fill these later with real Telegram
-# file_ids. None means the handler safely falls back to text-only UI.
+                                                                        
+                                                                     
 PACK_IMAGE_FILE_IDS: dict[str, str | None] = {
     "bronze": None,
     "silver": None,

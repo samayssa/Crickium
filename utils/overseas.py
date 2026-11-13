@@ -13,8 +13,8 @@ from typing import Any, Iterable
 
 MAX_OVERSEAS_PLAYERS = 4
 
-# Keep common country/code spellings accepted by existing uploads while still
-# making the rule intentionally narrow: only India is non-overseas.
+                                                                             
+                                                                   
 _INDIA_ALIASES = {
     "india",
     "indian",

@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-_LOCKS: dict[int, list] = {}  # user_id -> [asyncio.Lock, active_refs]
+_LOCKS: dict[int, list] = {}                                          
 
 
 @asynccontextmanager

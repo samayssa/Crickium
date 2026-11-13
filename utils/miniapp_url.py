@@ -78,7 +78,7 @@ def resolve_miniapp_url() -> str:
             return value
 
     try:
-        from config import MINIAPP_URL as CONFIG_MINIAPP_URL  # type: ignore
+        from config import MINIAPP_URL as CONFIG_MINIAPP_URL                
     except Exception:
         CONFIG_MINIAPP_URL = ""
     config_url = _clean_url(CONFIG_MINIAPP_URL)

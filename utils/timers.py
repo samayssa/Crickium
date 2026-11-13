@@ -14,8 +14,8 @@ timer for that specific stage early.
 
 import asyncio
 
-DEFAULT_STAGE_TIMEOUT = 90          # seconds, for interactive game-choice stages
-REMINDER_CHECKPOINTS = [60, 30]     # "seconds remaining" marks to ping at
+DEFAULT_STAGE_TIMEOUT = 90                                                       
+REMINDER_CHECKPOINTS = [60, 30]                                           
 
 _active_timers: dict[str, asyncio.Task] = {}
 
