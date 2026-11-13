@@ -1318,7 +1318,8 @@ def _apply_requested_probability_tuning(
     • Flat-pitch wicket exposure now uses the dedicated 5% final guardrail.
     • Boundary conversion receives a final 5% tuning layer without replacing
       the existing pitch/tactic/phase/confidence logic.
-    • A no-ball's immediate free-hit is enforced with 0% wicket chance.
+    • A no-ball's immediate free hit allows no ordinary dismissal (the odds
+      are rebuilt in _free_hit_weights: only a rare run-out remains).
     """
     balls = max(0, int(batsman_balls_faced or 0))
     if mindset in {"neutral", "aggressive", "ultra_aggressive"} and balls > 5:
@@ -1329,6 +1330,98 @@ def _apply_requested_probability_tuning(
 
     if free_hit_next_ball:
         _redistribute_excess(weights, "W", 0.0, (0, 1, 2, 3, 4, 6, "WD", "NB", "LB", "BY"))
+
+
+# ---------------------------------------------------------------------------
+# EXTRAS MODULE - wides, no-balls and the free hit that follows a no-ball
+#
+# Wides and no-balls used to turn up more often than a real T20 innings does
+# (and every no-ball also brings a free hit, so each one is noticed).  The
+# extras module therefore:
+#   * scales WD / NB down against the stack's own values - the tactic, pitch,
+#     phase (death overs leak more) and bowler-level gradients stay intact -
+#     and hands the freed mass back to every other outcome in proportion, so
+#     what happens on a LEGAL ball (dot / single / boundary / wicket) keeps
+#     exactly the odds it had;
+#   * lets a struggling bowler spill a few more no-balls and a spinner (who
+#     rarely overstep) a few less;
+#   * shapes the free-hit ball (see _free_hit_weights): no ordinary dismissal
+#     is possible, only a (rare) run-out, and the batter swings freely, so
+#     boundaries are clearly more likely and a second no-ball very unlikely.
+# Real T20 for reference: ~4-5 wides and ~0.3-0.5 no-balls per innings.
+# ---------------------------------------------------------------------------
+EXTRAS_REALISM_ENABLED = True
+WIDE_SCALE = 0.72                 # ~2.9 -> ~2.1 wides per innings
+NO_BALL_SCALE = 0.50              # ~0.9 -> ~0.45 no-balls per innings
+NO_BALL_LEVEL_SLOPE = 0.008       # per bowler-level point away from 70
+NO_BALL_LEVEL_BOUNDS = (0.80, 1.30)
+NO_BALL_SPIN_FACTOR = 0.80        # spinners overstep less
+
+FREE_HIT_RUNOUT_P = 0.010         # the ONLY way out on a free hit: a rare run-out
+FREE_HIT_FOUR_BOOST = 1.40
+FREE_HIT_SIX_BOOST = 1.60
+FREE_HIT_NO_BALL_SCALE = 0.25     # a bowler concentrates on staying behind the line
+FREE_HIT_BOUNDARY_CEILING = 0.46  # 4 + 6 never exceed this share of a free hit
+
+
+def _apply_extras_realism(weights: dict, *, bowler_level: int,
+                          bowler_style: str | None, bowler_role: str | None) -> None:
+    """Scale wides / no-balls down and give the freed mass back, pro rata, to
+    every other outcome (so the legal-ball odds do not move)."""
+    if not EXTRAS_REALISM_ENABLED:
+        return
+    wd = max(0.0, float(weights.get("WD", 0.0)))
+    nb = max(0.0, float(weights.get("NB", 0.0)))
+    if wd <= 0.0 and nb <= 0.0:
+        return
+    lo, hi = NO_BALL_LEVEL_BOUNDS
+    nb_scale = NO_BALL_SCALE * max(lo, min(hi, 1.0 + (70 - int(bowler_level or 0)) * NO_BALL_LEVEL_SLOPE))
+    if bowler_family(bowler_style, bowler_role) == "spin":
+        nb_scale *= NO_BALL_SPIN_FACTOR
+    new_wd = wd * WIDE_SCALE
+    new_nb = nb * nb_scale
+    released = (wd - new_wd) + (nb - new_nb)
+    weights["WD"], weights["NB"] = new_wd, new_nb
+    others = [k for k in weights if k not in ("WD", "NB")]
+    base = sum(max(0.0, float(weights[k])) for k in others)
+    if base > 0.0 and released:
+        factor = 1.0 + released / base
+        for k in others:
+            weights[k] = max(0.0, float(weights[k])) * factor
+
+
+def _free_hit_weights(base: dict) -> dict:
+    """The odds for the ball after a no-ball, built from what the SAME ball
+    would have been without the free hit (`base`).
+
+    * wicket  -> only a rare run-out (FREE_HIT_RUNOUT_P); the callers force the
+                 dismissal kind to run-out
+    * 4 / 6   -> boosted (the batter can take any risk)
+    * no-ball -> much less likely again
+    * dots / singles / twos / threes / wides / byes keep their relative odds.
+    """
+    total = sum(max(0.0, float(v)) for v in base.values())
+    if total <= 0.0:
+        return dict(base)
+    p = {k: max(0.0, float(base.get(k, 0.0))) / total for k in OUTCOMES}
+    out = dict(p)
+    out["W"] = FREE_HIT_RUNOUT_P
+    out["NB"] = p["NB"] * FREE_HIT_NO_BALL_SCALE
+    b4 = p[4] * FREE_HIT_FOUR_BOOST
+    b6 = p[6] * FREE_HIT_SIX_BOOST
+    if b4 + b6 > FREE_HIT_BOUNDARY_CEILING:
+        squeeze = FREE_HIT_BOUNDARY_CEILING / (b4 + b6)
+        b4, b6 = b4 * squeeze, b6 * squeeze
+    out[4], out[6] = b4, b6
+    pinned = ("W", "NB", 4, 6)
+    rest = [k for k in OUTCOMES if k not in pinned]
+    rest_mass = sum(p[k] for k in rest)
+    room = 1.0 - sum(out[k] for k in pinned)
+    if rest_mass > 0.0 and room > 0.0:
+        scale = room / rest_mass
+        for k in rest:
+            out[k] = p[k] * scale
+    return {k: out[k] * total for k in OUTCOMES}
 
 
 def _set_probability_floor(weights: dict, target_key, target_probability: float) -> None:
@@ -1519,6 +1612,12 @@ MINDSET_W_RISK = {
     "defensive": 1.00, "rotate": 1.00, "neutral": 1.00,
     "aggressive": 1.10, "ultra_aggressive": 1.10,
 }
+# Final, very small GLOBAL trim of a ball's wicket chance (player-poll
+# feedback: "a few too many wickets").  It multiplies the finished wicket
+# chance only, so every relative rule keeps its shape - pitch character, phase,
+# over profile, intent, tail-enders, over-cluster rarity, level gap - and the
+# flat pitch's standing 5% floor still holds afterwards.  1.0 switches it off.
+WICKET_FINE_TUNE = 0.93
 # How far the 2s may grow when boundaries are trimmed (the fielder saves the
 # boundary, the batters run two) - the rest of the trimmed mass stays in 4/6/3.
 TWOS_ABSORB_MAX = 1.6
@@ -1883,7 +1982,7 @@ def _apply_realism_layer(
         floor = (WICKET_FLOOR_BY_MINDSET.get(mindset, 0.034)
                  * PITCH_WICKET_FLOOR_SCALE.get(pitch_name, 1.0)
                  * PHASE_WICKET_FLOOR_SCALE.get(phase, 1.0) * level_scale * cluster)
-        new["W"] = min(max(wk, floor), tail_w_cap)
+        new["W"] = min(max(wk, floor), tail_w_cap) * WICKET_FINE_TUNE
         if tail_floor4 or tail_floor6:
             # the slog keeps its boundaries: the wicket chance gives way, not them
             room_w = (mass - (new["WD"] + new["NB"] + new["LB"] + new["BY"])
@@ -1968,6 +2067,13 @@ def resolve_weights(
 ) -> dict:
     """Runs the full 6-layer algorithm and returns final weights, ready
     for a weighted-random pick."""
+    if free_hit_next_ball:
+        # The ball after a no-ball: take the odds of the very same ball
+        # WITHOUT the free hit and re-shape them (see _free_hit_weights).
+        call_args = dict(locals())
+        call_args["free_hit_next_ball"] = False
+        return _free_hit_weights(resolve_weights(**call_args))
+
     mindset = batter_mindset if batter_mindset in BASE_WEIGHTS_BY_MINDSET else "neutral"
     tactic = bowler_tactic if bowler_tactic in BOWLER_TACTICS else "swinging"
     tactic_profile = _tactic_archetype(tactic)
@@ -2048,6 +2154,11 @@ def resolve_weights(
         pitch=pitch,
         batsman_balls_faced=batsman_balls_faced,
         free_hit_next_ball=free_hit_next_ball,
+    )
+    # Extras module: fewer wides / no-balls, legal-ball odds untouched.
+    _apply_extras_realism(
+        weights, bowler_level=bowler_level,
+        bowler_style=bowler_style, bowler_role=bowler_role,
     )
 
     # Player upgrades are a final, isolated relative-probability layer.
@@ -2216,6 +2327,7 @@ WICKET_KIND_WEIGHTS_PACE = {"caught": 58.0, "bowled": 26.0, "lbw": 16.0}
 RUN_OUT_CHANCE = 0.015           # share of wickets that turn out to be run-outs
 MAX_RUN_OUTS_PER_INNINGS = 1
 CAUGHT_AND_BOWLED_CHANCE = 0.08  # of caught dismissals, the bowler takes it himself
+RUN_OUT_RELAY_CHANCE = 0.45      # of run-outs, the fielder relays to the keeper (else a direct hit)
 
 # How a wicket falls follows the conditions: the surface, the phase, the
 # batting intent and the delivery that was bowled.  These are small relative
@@ -2320,6 +2432,7 @@ def build_dismissal(kind: str, bowler: dict | None, fielding_xi: list | None) ->
     keepers = [p for p in others if _is_keeper(p)]
 
     fielder = None
+    mode = assist = None
     if kind == "stumped" and not keepers:
         kind = "caught"
     if kind == "caught":
@@ -2334,12 +2447,23 @@ def build_dismissal(kind: str, bowler: dict | None, fielding_xi: list | None) ->
     elif kind == "lbw":
         text = f"lbw b {bowler_name}"
     elif kind == "run_out":
-        pool = others or xi
-        fielder = _player_label(random.choice(pool)) if pool else None
-        text = f"run out ({fielder})" if fielder else "run out"
+        # Either a direct hit by the fielder, or he collects and relays to the
+        # wicketkeeper who breaks the stumps ("run out (Jadeja/Dhoni)").
+        throwers = [p for p in others if not _is_keeper(p)] or others or xi
+        fielder = _player_label(random.choice(throwers)) if throwers else None
+        if fielder and keepers and random.random() < RUN_OUT_RELAY_CHANCE:
+            keeper_label = _player_label(keepers[0])
+            if keeper_label and keeper_label != fielder:
+                mode, assist = "relay", keeper_label
+        if assist:
+            text = f"run out ({fielder}/{assist})"
+        else:
+            mode = "direct"
+            text = f"run out ({fielder})" if fielder else "run out"
     else:  # bowled
         kind, text = "bowled", f"b {bowler_name}"
-    return {"kind": kind, "fielder": fielder, "text": text, "bowler_credit": wicket_kind_credits_bowler(kind)}
+    return {"kind": kind, "fielder": fielder, "text": text, "mode": mode, "assist": assist,
+            "bowler_credit": wicket_kind_credits_bowler(kind)}
 
 
 def assign_dismissal(session: Any, outcome: Any) -> dict | None:
@@ -2355,7 +2479,11 @@ def assign_dismissal(session: Any, outcome: Any) -> dict | None:
     fallen = getattr(getattr(getattr(session, "innings", None), "score", None), "wickets_fallen", []) or []
     run_outs = sum(1 for w in fallen if isinstance(w, dict) and w.get("type") == "run_out")
     kind = getattr(outcome, "wicket_kind", None)
-    if not kind or (kind == "run_out" and run_outs >= MAX_RUN_OUTS_PER_INNINGS):
+    if bool(getattr(session, "free_hit_next_ball", False)):
+        # The ball being resolved is a free hit: a run-out is the only way out.
+        # (The runtime flips the flag for the NEXT ball only after this call.)
+        kind = "run_out"
+    elif not kind or (kind == "run_out" and run_outs >= MAX_RUN_OUTS_PER_INNINGS):
         score = getattr(getattr(session, "innings", None), "score", None)
         try:
             over_now = int(getattr(score, "overs", 0) or 0) + 1
@@ -2370,6 +2498,8 @@ def assign_dismissal(session: Any, outcome: Any) -> dict | None:
         outcome.wicket_kind = info["kind"]
         outcome.fielder = info["fielder"]
         outcome.dismissal_text = info["text"]
+        outcome.dismissal_mode = info.get("mode")
+        outcome.assist = info.get("assist")
     except Exception:
         pass
     return info
