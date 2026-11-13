@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import asyncio
 from handlers.registry import register_callback
+from engines.commentary_studio import so_ball_commentary, simple_ball_line
 from services.match_summary import send_match_summary
 from app import app
 from buttons.playso_buttons import length_keyboard, delivery_keyboard, line_keyboard, foot_keyboard, intent_keyboard, shot_keyboard
@@ -258,6 +259,15 @@ async def playso_shot(callback_query):
         if result.legal: state["legal_balls"]=int(state.get("legal_balls") or 0)+1
         state["ball_no"]=int(state.get("ball_no") or 0)+1
         if result.wicket: state["wickets"]=int(state.get("wickets") or 0)+1
+        # Real-commentator line for the ball (names, ground direction, fielder / keeper, thriller tone).
+        _so_map={"WIDE":"wide","NO_BALL":"no_ball","LEG_BYE":"leg_bye","BYE":"bye","0":"dot","1":"single","2":"double","3":"triple","4":"four","6":"six"}
+        _so_kind="wicket" if result.wicket else _so_map.get(str(result.outcome).upper(),"dot")
+        try:
+            commentary=so_ball_commentary(state,result,batter,bowler,non_striker,dismissal,str(shot or ""),_so_kind)
+        except Exception as exc:
+            print(f"[commentary] SO studio failed, simple line used: {exc!r}")
+            commentary=simple_ball_line(_so_kind,str(batter.get("name") or ""),str(bowler.get("name") or ""),int(result.runs or 0))
+        state["commentary"]=(list(state.get("commentary") or [])+[commentary])[-12:]
         # stats for summary
         bst=state.setdefault("batter_stats",{})
         key=str(current_striker_id); bs=bst.setdefault(key,{"name":batter.get("name"),"runs":0,"balls":0,"fours":0,"sixes":0})
@@ -297,6 +307,7 @@ async def playso_shot(callback_query):
             f"<b>👣 {str(state.get('foot')).upper()} • 🔥 {str(state.get('intent')).upper()}</b>",
             f"<b>🏏 {html.escape(str(shot))}</b>",
             "",f"<b>💥 RESULT ➤ {('WICKET' if result.wicket else result.outcome.replace('_',' '))}</b>",
+            f"<i>🎙 {html.escape(commentary)}</i>",
         ])
         await app.edit_message_text(msg["chat"]["id"],msg["message_id"],text,parse_mode="HTML",reply_markup=NO_KEYBOARD)
         await asyncio.sleep(1.2)
