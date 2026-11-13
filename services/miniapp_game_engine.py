@@ -722,7 +722,9 @@ def deliver_one(g: dict, mindset: str, tactic: str, rng: random.Random) -> dict:
         inn["pp_runs"] = inn["runs"]
 
     text = com.ball_line(outcome, bat=striker["name"], bowl=bowl_p["name"], runs=runs,
-                         wicket_kind=(dismissal or {}).get("kind"), free_hit=free_hit, rng=rng)
+                         wicket_kind=(dismissal or {}).get("kind"), free_hit=free_hit, rng=rng,
+                         ctx={"g": g, "inn": inn, "striker": striker, "bowl_p": bowl_p, "dismissal": dismissal,
+                              "tactic": tactic, "fielders": _fielders(g, bowl_side), "bstat": bstat})
     event = {
         "k": "ball", "inn": inn["idx"], "ov": label, "over_no": inn["over"]["no"],
         "bat": striker["name"], "bat_slot": striker["slot"], "bowl": bowl_p["name"], "bowl_slot": bowl_slot,
