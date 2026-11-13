@@ -60,11 +60,11 @@ from utils.game_inactivity import sync_after_change
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
-# Minimum gap between edits to the SAME live-scorecard message during
-# ball-by-ball simulation. Telegram throttles rapid edits to one
-# message (~1/sec in practice, stricter under load); app.py already
-# retries on FloodWait, but keeping a safe pace here means we hit that
-# limit far less often in the first place.
+                                                                     
+                                                                
+                                                                   
+                                                                      
+                                          
 BALL_EDIT_DELAY = 1.6
 
 
@@ -377,8 +377,8 @@ def _impact_team_code(session: Any, team_id: int) -> str | None:
 
 
 def _team_owner(session: Any, code: str) -> tuple[int, bool]:
-    # Impact callbacks carry the Telegram user ID. Team-code callbacks can
-    # still use WPL codes. Post-innings Impact screens are separate messages.
+                                                                          
+                                                                             
     raw = str(code)
     if raw.isdigit():
         uid = int(raw)
@@ -575,9 +575,9 @@ async def _start_impact_flow(session, innings_1_snapshot: dict[str, Any]) -> Non
         await _continue_after_impact_break(session)
         return
 
-    # From the innings break onward, each participant who still has an
-    # unused Impact Player gets a separate Impact message. Teams that already
-    # used their Impact Player in innings one are skipped completely.
+                                                                      
+                                                                             
+                                                                     
     for uid in unused:
         markup = _impact_markup(
             session,
@@ -706,9 +706,9 @@ async def on_playwpl_impact_out(callback_query):
     if pid not in {int(p.get('player_id') or 0) for p in impact_out_candidates(session, owner)}:
         await app.answer_callback_query(callback_query['id'], 'That player is no longer available.', show_alert=True)
         return
-    # During live runtime, do not remove the active striker/non-striker. The
-    # full XI is displayed as requested, but replacing the current pair would
-    # leave the innings state ambiguous between deliveries.
+                                                                            
+                                                                             
+                                                           
     if st.get('context') == 'runtime':
         active_ids = {
             int(p.player_id) for p in (session.innings.striker, session.innings.non_striker)
@@ -854,10 +854,10 @@ async def on_playwpl_impact_confirm_in(callback_query):
         and int(session.current_bowler.get('player_id') or 0) == int(st['out_id'])
     )
 
-    # The four-overseas rule also applies to Impact Player replacements.
-    # Validate the projected XI before mutating runtime state so a fifth
-    # overseas player can never enter the team, while a 4->4 replacement
-    # (overseas for overseas) remains valid.
+                                                                        
+                                                                        
+                                                                        
+                                            
     current_xi_players = current_xi(session, owner)
     out_player_preview = next(
         (p for p in current_xi_players if int(p.get('player_id') or 0) == int(st['out_id'])),
@@ -881,11 +881,11 @@ async def on_playwpl_impact_confirm_in(callback_query):
     context = st.get('context') or 'runtime'
 
     try:
-        # At the first-innings break there is no active bowling contest anymore.
-        # The previous innings' last bowler must not restrict the incoming
-        # player's role because this replacement is also preparing the batting
-        # XI for innings two. During live runtime, preserve the existing
-        # current-bowler safety rule.
+                                                                                
+                                                                          
+                                                                              
+                                                                        
+                                     
         out_player, in_player = apply_impact_replacement(
             session,
             owner,
@@ -897,10 +897,10 @@ async def on_playwpl_impact_confirm_in(callback_query):
         await app.answer_callback_query(callback_query['id'], str(exc), show_alert=True)
         return
     new_ids = [int(p.get('player_id') or 0) for p in current_xi(session, owner)]
-    # Impact callbacks carry the Telegram user id in ``code``; the selected-XI
-    # map used when innings two is built is keyed by TEAM code. Writing it under
-    # the user id left the old XI in place, so the Impact IN player was missing
-    # (and the OUT player still present) in the second-innings Playing XI.
+                                                                              
+                                                                                
+                                                                               
+                                                                          
     team_code = _impact_team_code(session, owner) or code
     selected_map = session.match.setdefault('_selected_xis', {})
     selected_map.pop(str(code), None) if str(code).isdigit() else None
@@ -910,13 +910,13 @@ async def on_playwpl_impact_confirm_in(callback_query):
     context = st.get('context') or 'runtime'
     await app.answer_callback_query(callback_query['id'], 'Impact Player confirmed!')
 
-    # At an innings break, only the team that will bat in innings two gets a
-    # batting-order selector. Runtime uses the same rule: batting-side now, or
-    # bowling-side only during innings one because it bats next.
+                                                                            
+                                                                              
+                                                                
     if context == 'innings_break':
-        # At the innings break, only the team that will BAT in innings two may
-        # receive the batting-position selector. The other team is the bowling
-        # side for innings two and confirms its Impact Player directly.
+                                                                              
+                                                                              
+                                                                       
         will_bat_second = owner == int(session.bowling_team_id)
         if will_bat_second and impact_batting_position_allowed(session, owner):
             st['stage'] = 'batpos'
@@ -1136,8 +1136,8 @@ async def on_playwpl_start_auto_bowler(callback_query):
         await app.answer_callback_query(callback_query['id'], 'Schedule at least one next bowler first.', show_alert=True); return
     session.auto_bowler_enabled=True
     await app.answer_callback_query(callback_query['id'], 'Auto bowler enabled for the scheduled overs!')
-    # Keep the current over intact. The queued bowler is consumed only when
-    # the next over actually begins.
+                                                                           
+                                    
     await app.edit_message_text(session.chat_id, session.live_message_id, render_live_scorecard(session, bowler_prompt=False), parse_mode='HTML', reply_markup=bowler_tactic_keyboard(session.match_id, session.current_bowler, session.auto_bowler_enabled, not ensure_impact_state(session, int(session.bowling_team_id)).get('used')))
 
 
@@ -1252,7 +1252,7 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
 
     try:
         if winner_id is None:
-            # Tied match: both players get the tie XP, no win/loss recorded.
+                                                                            
             await add_match_xp(challenger_id, TIE_XP)
             await add_match_xp(opponent_id, TIE_XP)
             await record_match_result(challenger_id, won=None)
@@ -1263,8 +1263,8 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
     except Exception as exc:
         print(f"[playwpl] Failed to award match XP/stats for match_id={session.match_id}: {exc!r}")
 
-    # H2H persistence is independent from rewards/stats. A reward failure must
-    # never prevent a finished match from appearing in head-to-head history.
+                                                                              
+                                                                            
     try:
         await record_h2h_result(
             int(session.match_id),
@@ -1277,9 +1277,9 @@ async def _award_match_xp_and_stats(session, innings_1: dict, innings_2: dict) -
 
 
 async def _finish_over_and_prompt_next(session) -> None:
-    # The live scorecard message itself becomes the short over summary.
-    # Keep it visible for exactly a brief moment, then remove it and create
-    # the fresh live scorecard with the next bowler choices.
+                                                                       
+                                                                           
+                                                            
     summary = over_complete_text(session)
     try:
         await app.edit_message_text(
@@ -1309,7 +1309,7 @@ async def _finish_over_and_prompt_next(session) -> None:
             await _start_impact_flow(session, innings_1_snapshot)
             return
 
-        # Second (or later) innings just finished - the match is over.
+                                                                      
         innings_2_snapshot = snapshot_innings(session)
         innings_1_snapshot = session.innings_history[0] if session.innings_history else innings_2_snapshot
         winner_id, margin = match_winner(innings_1_snapshot, innings_2_snapshot)
@@ -1402,7 +1402,7 @@ async def _finish_over_and_prompt_next(session) -> None:
     session.this_over = []
     session.over_commentary = []
 
-    # Auto-bowler consumes the next pre-planned bowler without asking again.
+                                                                            
     if session.auto_bowler_enabled and session.auto_bowler_queue:
         player = consume_next_scheduled_bowler(session)
         if player and assign_bowler(session, player):
@@ -1462,8 +1462,8 @@ async def on_playwpl_strategy(callback_query):
     session.stage = "over_in_progress"
     await app.answer_callback_query(callback_query["id"], f"{strategy.upper()} selected!")
 
-    # Remove the approach buttons immediately, then simulate the whole over
-    # internally. No ball-by-ball scorecard edits are shown to the users.
+                                                                           
+                                                                         
     await _safe_edit_scorecard(session)
 
     legal_balls_before = session.innings.score.legal_balls
