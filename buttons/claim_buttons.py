@@ -2,17 +2,17 @@ import inspect
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-# style="success"/"danger" (green/red buttons) is a Bot API 9.4 field.
-# Mainline pyrogram's InlineKeyboardButton doesn't know this parameter
-# and raises TypeError if you pass it directly - that's exactly the
-# crash this file used to cause. "kurigram" (see requirements.txt) is a
-# maintained drop-in fork that DOES support it, under the exact same
-# `pyrogram` import name, so installing it is all that's needed to get
-# real green/red buttons - no code change required.
-#
-# Until/unless kurigram is installed, this file detects that at import
-# time and falls back to plain buttons (with a colored-circle emoji
-# hint instead) so /claim keeps working either way.
+                                                                      
+                                                                      
+                                                                   
+                                                                       
+                                                                    
+                                                                      
+                                                   
+ 
+                                                                      
+                                                                   
+                                                   
 _BUTTON_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
 SUPPORTS_BUTTON_STYLE = "style" in _BUTTON_PARAMS
 

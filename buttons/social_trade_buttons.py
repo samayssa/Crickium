@@ -9,9 +9,9 @@ _FALLBACK = {"success": "🟢", "danger": "🔴", "primary": "🔵"}
 
 
 def _b(text: str, data: str, style: str = "primary") -> InlineKeyboardButton:
-    # Pyrogram/Telegram versions differ on native button-style support.  Keep
-    # callback_data identical in both paths so the trade callback dispatcher
-    # can never depend on a visual-only feature.
+                                                                             
+                                                                            
+                                                
     if SUPPORTS_BUTTON_STYLE:
         try:
             return InlineKeyboardButton(text, callback_data=data, style=style)

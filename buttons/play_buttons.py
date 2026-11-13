@@ -5,12 +5,12 @@ import inspect
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from services.card_identity import display_card_name
 
-# Same colored-button mechanism as buttons/claim_buttons.py,
-# buttons/buy_buttons.py and buttons/sell_buttons.py - see
-# claim_buttons.py for the full explanation. Kept identical here on
-# purpose so all of them stay in sync if the styling approach changes.
-# Bot API 9.4 styles used across this file: "success" (green),
-# "danger" (red), "primary" (blue).
+                                                            
+                                                          
+                                                                   
+                                                                      
+                                                              
+                                   
 _BUTTON_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
 SUPPORTS_BUTTON_STYLE = "style" in _BUTTON_PARAMS
 SUPPORTS_BUTTON_ICON = "icon_custom_emoji_id" in _BUTTON_PARAMS
@@ -216,10 +216,10 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
         name = display_card_name(player)
         selected = selected_id is not None and pid == int(selected_id)
         label = f"{index}. {name}"
-        # Telegram inline keyboard labels are not parsed as message HTML.
-        # Passing <tg-emoji> here makes the raw emoji ID appear in the button.
-        # Kurigram/Telegram support native button icons through
-        # icon_custom_emoji_id, so use the real button icon instead.
+                                                                         
+                                                                              
+                                                               
+                                                                    
         if selected and SUPPORTS_BUTTON_ICON:
             button = _styled_button(
                 label,

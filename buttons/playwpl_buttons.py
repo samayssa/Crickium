@@ -52,10 +52,10 @@ def challenge_keyboard(match_id):
 def team_keyboard(match_id):
     from database.playwpl_teams_repo import TEAM_ORDER, team_button_label
 
-    # Five WPL franchises: two compact buttons per row, no pagination.
-    # Prefer the configured Telegram custom-emoji logo for each team.
-    # If the installed client does not expose icon_custom_emoji_id, the
-    # original Unicode team emoji remains the exact fallback.
+                                                                      
+                                                                     
+                                                                       
+                                                             
     rows = []
     for i in range(0, len(TEAM_ORDER), 2):
         row = []
@@ -215,8 +215,8 @@ def impact_player_keyboard(prefix, match_id, team_id, players, selected_id=None,
         name = str(player.get('name', 'Player'))
         selected = selected_id is not None and pid == int(selected_id)
         label = f'{index}. {name}'
-        # Inline keyboard labels are not parsed as Telegram HTML.
-        # Native button icon support prevents the custom emoji ID from being shown.
+                                                                 
+                                                                                   
         button = _b(
             label,
             f'{prefix}_{action}:{match_id}:{int(team_id)}:{pid}',

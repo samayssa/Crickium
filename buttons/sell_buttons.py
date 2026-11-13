@@ -2,10 +2,10 @@ import inspect
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-# Same colored-button mechanism as buttons/claim_buttons.py and
-# buttons/buy_buttons.py - see claim_buttons.py for the full
-# explanation. Kept identical here on purpose so all three stay in
-# sync if the button-styling approach ever changes.
+                                                               
+                                                            
+                                                                  
+                                                   
 _BUTTON_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters)
 SUPPORTS_BUTTON_STYLE = "style" in _BUTTON_PARAMS
 
