@@ -1,462 +1,397 @@
+"""Self-contained HTML match analysis (works offline, mobile first)."""
 from __future__ import annotations
 
 import html
-import re
 from pathlib import Path
 from typing import Any
 
-def _safe_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
-
+from services.match_analysis.insights import bat_runs, build_report, is_noball, is_wide
 
 ROOT = Path(__file__).resolve().parent
 THEME_PATH = ROOT / "theme.css"
 TEMPLATE_PATH = ROOT / "template.html"
+COL = ["#2fe6c0", "#ff7aa0"]
 
 
-def esc(value: Any) -> str:
-    return html.escape(str(value if value is not None else ""), quote=True)
+def esc(v: Any) -> str:
+    return html.escape(str(v if v is not None else ""), quote=True)
 
 
-def num(value: Any, digits: int = 0) -> str:
+def _i(v: Any) -> int:
     try:
-        x = float(value or 0)
+        return int(v or 0)
+    except Exception:
+        return 0
+
+
+def num(v: Any, d: int = 0) -> str:
+    try:
+        x = float(v or 0)
     except Exception:
         x = 0.0
-    return f"{x:.{digits}f}" if digits else f"{int(round(x)):,}"
+    return f"{x:,.{d}f}" if d else f"{int(round(x)):,}"
 
 
-def overs(balls: int) -> str:
-    balls = int(balls or 0)
+def ov(balls: int) -> str:
+    balls = _i(balls)
     return f"{balls // 6}.{balls % 6}"
 
 
-def score_text(snap: dict[str, Any]) -> str:
-    return f"{num(snap.get('runs'))}/{num(snap.get('wickets'))}"
+def _status(v: Any) -> str:
+    return str(v or "completed").replace("_", " ").title()
 
 
-def _status_label(value: str) -> str:
-    return str(value or "completed").replace("_", " ").title()
+def _empty(msg: str) -> str:
+    return f"<div class='note'>{esc(msg)}</div>"
 
 
-def _team_colors(index: int) -> str:
-    return "a" if index == 0 else "b"
+def _table(head: list[tuple[str, bool]], rows: list[list[str]], cls: str = "") -> str:
+    th = "".join(f"<th{' class=num' if n else ''}>{esc(h)}</th>" for h, n in head)
+    body = "".join("<tr>" + "".join(f"<td{' class=num' if head[k][1] else ''}>{c}</td>" for k, c in enumerate(r)) + "</tr>" for r in rows)
+    return f"<div class='scroll'><table class='{cls}'><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>"
 
 
-def _phase_rows(payload: dict[str, Any]) -> str:
-    by_key = {}
-    for row in payload.get("analytics", {}).get("phase_rows") or []:
-        key = (row.get("innings_number"), row.get("team"), row.get("phase"))
-        by_key[key] = row
-    rows = []
-    for row in by_key.values():
-        rows.append(
-            "<tr>"
-            f"<td>{esc(row.get('team'))}</td><td><span class='badge'>{esc(row.get('phase'))}</span></td>"
-            f"<td class='num'>{num(row.get('runs'))}</td><td class='num'>{num(row.get('wickets'))}</td>"
-            f"<td class='num'>{overs(row.get('legal_balls'))}</td><td class='num'>{num(row.get('rpo'),2)}</td>"
-            "</tr>"
-        )
-    return "".join(rows) or "<tr><td colspan='6' class='muted'>No completed phase data recorded.</td></tr>"
+def _legend(items: list[tuple[str, str]]) -> str:
+    return "<div class='legend'>" + "".join(f"<span><i style='background:{c}'></i>{esc(t)}</span>" for t, c in items) + "</div>"
 
 
-def _bar_chart(payload: dict[str, Any]) -> str:
-    innings = payload.get("innings") or []
-    over_map: dict[int, dict[int, dict[str, int]]] = {}
-    max_over = 0
-    for idx, snap in enumerate(innings[:2]):
-        for row in snap.get("analysis_overs") or []:
-            over = int(row.get("over") or 0)
-            if over <= 0:
-                continue
-            max_over = max(max_over, over)
-            over_map.setdefault(over, {})[idx] = {
-                "runs": int(row.get("runs") or 0),
-                "wickets": int(row.get("wickets") or 0),
-            }
-    if not over_map:
-        return "<div class='note'>No over-by-over telemetry was recorded for this match.</div>"
-    cap = max(6, max((int(v.get("runs") or 0) for d in over_map.values() for v in d.values()), default=6))
-
-    def wicket_stack(count: int, css_class: str, over: int, innings_label: str) -> str:
-        count = max(0, int(count or 0))
-        if not count:
-            return ""
-        dots = "".join(
-            f"<span class='wicket-dot {css_class}' title='{esc(innings_label)} wicket {i} in over {over}'></span>"
-            for i in range(1, count + 1)
-        )
-        plural = "s" if count != 1 else ""
-        return f"<span class='wicket-stack' aria-label='{esc(innings_label)}: {count} wicket{plural} in over {over}'>{dots}</span>"
-
-    cols = []
-    for over in range(1, max_over + 1):
-        d = over_map.get(over, {})
-        a = d.get(0, {})
-        b = d.get(1, {})
-        runs_a, runs_b = int(a.get("runs") or 0), int(b.get("runs") or 0)
-        wickets_a, wickets_b = int(a.get("wickets") or 0), int(b.get("wickets") or 0)
-        ha = round((runs_a / cap) * 100)
-        hb = round((runs_b / cap) * 100)
-        wa = "s" if wickets_a != 1 else ""
-        wb = "s" if wickets_b != 1 else ""
-        cols.append(
-            f"<div class='bar-col'><span class='bar a' style='height:{ha}%;' title='Innings 1 over {over}: {runs_a} runs, {wickets_a} wicket{wa}'>"
-            + wicket_stack(wickets_a, "a", over, "Innings 1")
-            + "</span>"
-            f"<span class='bar b' style='height:{hb}%;' title='Innings 2 over {over}: {runs_b} runs, {wickets_b} wicket{wb}'>"
-            + wicket_stack(wickets_b, "b", over, "Innings 2")
-            + "</span>"
-            f"<span class='bar-label'>{over}</span></div>"
-        )
-    return "<div class='bar-chart' role='img' aria-label='Runs by over with wicket dots above the relevant innings bars'>" + "".join(cols) + "</div>"
+# ---------------------------------------------------------------- charts
+def _axes(w, h, l, r, t, b, ymax, ticks=4, fmt=lambda v: f"{v:.0f}"):
+    out = []
+    for k in range(ticks + 1):
+        v = ymax * k / ticks
+        y = t + (1 - k / ticks) * (h - t - b)
+        out.append(f"<line class='gl' x1='{l}' x2='{w - r}' y1='{y:.1f}' y2='{y:.1f}'/><text class='ax' x='{l - 6}' y='{y + 4:.1f}' text-anchor='end'>{fmt(v)}</text>")
+    return "".join(out)
 
 
-def _worm_wicket_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    events = []
-    for idx, snap in enumerate(payload.get("innings") or [], start=1):
-        innings_number = _safe_int(snap.get("innings_number") or idx)
-        team = snap.get("batting_team_display") or f"Innings {idx}"
-        inning_events = []
-        for ball in snap.get("analysis_balls") or []:
-            if not ball.get("wicket"):
-                continue
-            over = _safe_int(ball.get("over"))
-            ball_no = _safe_int(ball.get("ball"))
-            if over <= 0:
-                continue
-            inning_events.append({
-                "innings_number": innings_number,
-                "team": team,
-                "over": over,
-                "ball": max(1, min(6, ball_no or 1)),
-                "batter": ball.get("batter") or "Batter",
-            })
-
-                                                                            
-                                                                              
-                                                             
-        if not inning_events:
-            for wicket in snap.get("wickets_fallen") or []:
-                over_text = str(wicket.get("over") or "")
-                match = re.match(r"^(\d+)\.(\d+)$", over_text.strip())
-                if not match:
-                    continue
-                over = int(match.group(1)) or 1
-                ball_no = max(1, min(6, int(match.group(2))))
-                inning_events.append({
-                    "innings_number": innings_number,
-                    "team": team,
-                    "over": over,
-                    "ball": ball_no,
-                    "batter": wicket.get("batter") or "Batter",
-                })
-        events.extend(inning_events)
-    return events
+def _worm(rep: dict[str, Any]) -> str:
+    inns = [i for i in rep["innings"] if i["worm"]]
+    if not inns:
+        return _empty("No ball-by-ball telemetry was recorded, so the worm is unavailable.")
+    W, H, L, R, T, B = 760, 280, 44, 16, 16, 30
+    total = rep["total_overs"]
+    xmax = max(1.0, float(total), max(w["x"] for i in inns for w in i["worm"]))
+    ymax = max(10, max(w["runs"] for i in inns for w in i["worm"]))
+    ymax = int((ymax // 20 + 1) * 20)
+    X = lambda x: L + x / xmax * (W - L - R)
+    Y = lambda y: T + (1 - y / ymax) * (H - T - B)
+    out = [_axes(W, H, L, R, T, B, ymax)]
+    step = 1 if xmax <= 10 else (2 if xmax <= 20 else 5)
+    for o in range(0, int(xmax) + 1, step):
+        out.append(f"<text class='ax' x='{X(o):.1f}' y='{H - 8}' text-anchor='middle'>{o}</text>")
+    for k, inn in enumerate(inns):
+        pts = [(0, 0)] + [(w["x"], w["runs"]) for w in inn["worm"]]
+        out.append(f"<polyline fill='none' stroke='{COL[k % 2]}' stroke-width='2.8' stroke-linejoin='round' stroke-linecap='round' points='" + " ".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in pts) + "'/>")
+        for w in inn["worm"]:
+            if w["wicket"]:
+                out.append(f"<circle cx='{X(w['x']):.1f}' cy='{Y(w['runs']):.1f}' r='4.6' fill='{COL[k % 2]}' stroke='#070b14' stroke-width='2'><title>{esc(inn['team'])}: wicket at {w['runs']}/{w['wkts']}</title></circle>")
+    # target line
+    if len(inns) > 1:
+        tgt = inns[0]["runs"] + 1
+        if tgt <= ymax:
+            out.append(f"<line x1='{L}' x2='{W - R}' y1='{Y(tgt):.1f}' y2='{Y(tgt):.1f}' stroke='#ffc857' stroke-dasharray='5 5' stroke-width='1.4'/><text class='ax' x='{W - R}' y='{Y(tgt) - 5:.1f}' text-anchor='end' fill='#ffc857'>Target {tgt}</text>")
+    svg = f"<svg class='chart' viewBox='0 0 {W} {H}' role='img' aria-label='Run progression'>{''.join(out)}</svg>"
+    return svg + _legend([(i["team"], COL[k % 2]) for k, i in enumerate(inns)] + [("● wicket", "#8aa0bf")])
 
 
-def _line_svg(series: list[dict[str, Any]], *, value_key: str, y_min: float, y_max: float, team_mode: bool = True, wicket_events: list[dict[str, Any]] | None = None) -> str:
-    if not series:
-        return "<div class='note'>No chart data available.</div>"
-    width, height, left, right, top, bottom = 760, 250, 48, 22, 18, 28
-    plot_w, plot_h = width - left - right, height - top - bottom
-    max_x = max(int(x.get("over") or 1) for x in series)
-
-    def x_pos(over_position: float) -> float:
-        return left + ((over_position - 1) / max(1, max_x - 1)) * plot_w if max_x > 1 else left + plot_w / 2
-
-    def y_pos(value: float) -> float:
-        ratio = (value - y_min) / max(1e-9, y_max - y_min)
-        return top + (1 - ratio) * plot_h
-
-    by_team: dict[str, list[dict[str, Any]]] = {}
-    by_innings: dict[int, list[dict[str, Any]]] = {}
-    for row in series:
-        by_team.setdefault(str(row.get("team") or "Series"), []).append(row)
-        by_innings.setdefault(_safe_int(row.get("innings_number")) or 1, []).append(row)
-    for rows in by_team.values():
-        rows.sort(key=lambda r: _safe_int(r.get("over")))
-    for rows in by_innings.values():
-        rows.sort(key=lambda r: _safe_int(r.get("over")))
-
-    paths = []
-    colors = ["line-a", "line-b"]
-    for idx, (team, rows) in enumerate(list(by_team.items())[:2]):
-        pts = " ".join(f"{x_pos(float(_safe_int(r.get('over') or 1))):.1f},{y_pos(float(r.get(value_key) or 0)):.1f}" for r in rows)
-        paths.append(f"<polyline class='{colors[idx]}' points='{pts}'><title>{esc(team)}</title></polyline>")
-
-    markers = []
-    for event in wicket_events or []:
-        innings_number = _safe_int(event.get("innings_number")) or 1
-        rows = by_innings.get(innings_number) or []
-        if not rows:
-            continue
-        over = _safe_int(event.get("over"))
-        ball_no = max(1, min(6, _safe_int(event.get("ball")) or 1))
-        current = next((r for r in rows if _safe_int(r.get("over")) == over), None)
-        if current is None:
-            continue
-        previous = None
-        for row in rows:
-            if _safe_int(row.get("over")) < over:
-                previous = row
-            else:
-                break
-        start_value = float(previous.get(value_key) or 0) if previous else y_min
-        end_value = float(current.get(value_key) or 0)
-        fraction = ball_no / 6.0
-        marker_value = start_value + (end_value - start_value) * fraction
-        x = x_pos((over - 1) + fraction)
-        y = y_pos(marker_value)
-        css_class = "wicket-point-a" if innings_number == 1 else "wicket-point-b"
-        label = f"{event.get('batter') or 'Batter'} out • over {over}.{ball_no}"
-        markers.append(f"<circle class='{css_class}' cx='{x:.1f}' cy='{y:.1f}' r='4'><title>{esc(label)}</title></circle>")
-
-    grid = []
-    for i in range(5):
-        val = y_min + (y_max - y_min) * i / 4
-        y = y_pos(val)
-        grid.append(f"<line class='gridline' x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}'/><text class='axis' x='{left-8}' y='{y+4:.1f}' text-anchor='end'>{esc(num(val,1))}</text>")
-    return f"<svg class='chart' viewBox='0 0 {width} {height}' role='img' aria-label='Cumulative score path with wicket markers'>{''.join(grid)}{''.join(paths)}{''.join(markers)}</svg>"
-
-def _prob_svg(series: list[dict[str, Any]]) -> str:
-    return _single_svg(series, key="probability", y_min=0, y_max=100, line_class="line-b", title="Chasing-side report model win probability")
+def _win_chart(rep: dict[str, Any]) -> str:
+    win = rep["win"]; ch = win.get("chase") or []
+    if len(ch) < 2:
+        return _empty("Win probability needs a completed chase with ball telemetry.")
+    W, H, L, R, T, B = 760, 250, 44, 16, 16, 28
+    xmax = max(1, ch[-1]["legal"])
+    X = lambda x: L + x / xmax * (W - L - R)
+    Y = lambda p: T + (1 - p / 100.0) * (H - T - B)
+    pts = [(0, 50.0)] + [(c["legal"], c["p"]) for c in ch]
+    line = " ".join(f"{X(x):.1f},{Y(p):.1f}" for x, p in pts)
+    area = f"{X(0):.1f},{Y(50):.1f} " + line + f" {X(pts[-1][0]):.1f},{Y(50):.1f}"
+    out = [_axes(W, H, L, R, T, B, 100, 4, lambda v: f"{v:.0f}%")]
+    out.append(f"<line x1='{L}' x2='{W - R}' y1='{Y(50):.1f}' y2='{Y(50):.1f}' stroke='#8aa0bf' stroke-width='1.2'/>")
+    out.append(f"<polygon points='{area}' fill='{COL[1]}' opacity='.12'/>")
+    out.append(f"<polyline fill='none' stroke='{COL[1]}' stroke-width='2.8' stroke-linejoin='round' points='{line}'/>")
+    for c in ch:
+        if c["wicket"]:
+            out.append(f"<circle cx='{X(c['legal']):.1f}' cy='{Y(c['p']):.1f}' r='3.8' fill='#fff' stroke='{COL[1]}' stroke-width='2'><title>Wicket at {c['runs']}/{c['wkts']} → {c['p']:.0f}%</title></circle>")
+    for o in range(0, xmax // 6 + 1, 2 if xmax > 60 else 1):
+        out.append(f"<text class='ax' x='{X(o * 6):.1f}' y='{H - 8}' text-anchor='middle'>{o}</text>")
+    note = f"<p class='note'>Line = {esc(win['chasing'])} win chance after every ball of the chase (above 50% favours the chasing side). White dots are wickets. Estimated from runs needed, balls and wickets left — not the engine's own probability.</p>"
+    return f"<svg class='chart' viewBox='0 0 {W} {H}' role='img' aria-label='Win probability'>{''.join(out)}</svg>" + note
 
 
-def _single_svg(series: list[dict[str, Any]], *, key: str, y_min: float, y_max: float, line_class: str, title: str) -> str:
-    if not series:
-        return "<div class='note'>No chart data available.</div>"
-    width, height, left, right, top, bottom = 760, 250, 48, 22, 18, 28
-    plot_w, plot_h = width - left - right, height - top - bottom
-    max_x = max(int(x.get("over") or 1) for x in series)
-    def xp(over: int) -> float:
-        return left + ((over - 1) / max(1, max_x - 1)) * plot_w if max_x > 1 else left + plot_w / 2
-    def yp(v: float) -> float:
-        return top + (1 - ((v - y_min) / max(1e-9, y_max-y_min))) * plot_h
-    pts = " ".join(f"{xp(int(r.get('over') or 1)):.1f},{yp(float(r.get(key) or 0)):.1f}" for r in series)
-    grid=[]
-    for i in range(5):
-        value = y_min + (y_max-y_min)*i/4
-        y=yp(value)
-        grid.append(f"<line class='gridline' x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}'/><text class='axis' x='{left-8}' y='{y+4:.1f}' text-anchor='end'>{esc(num(value,1) if y_max <= 10 else num(value))}</text>")
-    return f"<svg class='chart' viewBox='0 0 {width} {height}' role='img' aria-label='{esc(title)}'>{''.join(grid)}<polyline class='{line_class}' points='{pts}'/></svg>"
+def _over_bars(rep: dict[str, Any]) -> str:
+    inns = [i for i in rep["innings"] if i["overs"]]
+    if not inns:
+        return _empty("No over-by-over telemetry was recorded for this match.")
+    out = []
+    for k, inn in enumerate(inns):
+        rows = inn["overs"]
+        W, H, L, R, T, B = 760, 190, 30, 10, 20, 26
+        ymax = max(10, max(r["runs"] for r in rows))
+        n = max(len(rows), rep["total_overs"] if rep["total_overs"] <= 20 else len(rows))
+        bw = (W - L - R) / n
+        bars = [_axes(W, H, L, R, T, B, ymax, 2)]
+        for j, r in enumerate(rows):
+            x = L + (r["over"] - 1) * bw + 2
+            h = r["runs"] / ymax * (H - T - B)
+            fill = "#ff5d7a" if r["wkts"] else COL[k % 2]
+            bars.append(f"<rect x='{x:.1f}' y='{H - B - h:.1f}' width='{max(4, bw - 4):.1f}' height='{max(1, h):.1f}' rx='3' fill='{fill}' opacity='.92'><title>Over {r['over']}: {r['runs']} runs, {r['wkts']} wkt</title></rect>")
+            bars.append(f"<text class='ax' x='{x + (bw - 4) / 2:.1f}' y='{H - B - h - 4:.1f}' text-anchor='middle' fill='#eef4ff'>{r['runs']}</text>")
+            bars.append(f"<text class='ax' x='{x + (bw - 4) / 2:.1f}' y='{H - 8}' text-anchor='middle'>{r['over']}</text>")
+        out.append(f"<h3>{esc(inn['team'])} · runs per over</h3><svg class='chart' viewBox='0 0 {W} {H}'>{''.join(bars)}</svg>")
+    return "".join(out) + _legend([("Wicket over", "#ff5d7a")]) + "<p class='note'>Bars show runs conceded in each over; red bars contain at least one wicket.</p>"
 
 
-def _momentum_svg(payload: dict[str, Any]) -> str:
-    series = payload.get("analytics", {}).get("momentum_series") or []
-    pressure = payload.get("analytics", {}).get("pressure_series") or []
-    if not series and not pressure:
-        return "<div class='note'>Momentum telemetry is not available.</div>"
-    width, height, left, right, top, bottom = 760, 250, 48, 22, 18, 28
-    plot_w, plot_h = width-left-right, height-top-bottom
-    max_x=max([int(x.get('over') or 1) for x in series+pressure] or [1])
-    def xp(o): return left + ((o-1)/max(1,max_x-1))*plot_w if max_x>1 else left+plot_w/2
-    def yp(v): return top + (1-(v+2)/4)*plot_h
-    lines=[]
-    for cls, rows in (("line-a",series),("line-c",pressure)):
-        if rows:
-            pts=" ".join(f"{xp(int(r.get('over') or 1)):.1f},{yp(float(r.get('value') or 0)):.1f}" for r in rows)
-            lines.append(f"<polyline class='{cls}' points='{pts}'/>")
-    grid=[]
-    for value in (-2,-1,0,1,2):
-        y=yp(value); grid.append(f"<line class='gridline' x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}'/><text class='axis' x='{left-8}' y='{y+4:.1f}' text-anchor='end'>{value:+.0f}</text>")
-    return f"<svg class='chart' viewBox='0 0 {width} {height}' role='img' aria-label='Momentum and pressure'>{''.join(grid)}{''.join(lines)}</svg>"
+def _rr_compare(rep: dict[str, Any]) -> str:
+    inns = [i for i in rep["innings"] if i["overs"]]
+    if len(inns) < 2:
+        return ""
+    W, H, L, R, T, B = 760, 220, 44, 16, 16, 28
+    cums = []
+    for inn in inns:
+        c = []; legal = runs = 0
+        for r in inn["overs"]:
+            legal += r["legal"]; runs += r["runs"]
+            c.append((r["over"], runs * 6.0 / legal if legal else 0.0))
+        cums.append(c)
+    xmax = max(o for c in cums for o, _ in c)
+    ymax = max(8.0, max(v for c in cums for _, v in c)); ymax = float(int(ymax) + 2)
+    X = lambda x: L + (x - 1) / max(1, xmax - 1) * (W - L - R)
+    Y = lambda y: T + (1 - y / ymax) * (H - T - B)
+    out = [_axes(W, H, L, R, T, B, ymax, 4, lambda v: f"{v:.0f}")]
+    for k, c in enumerate(cums):
+        out.append(f"<polyline fill='none' stroke='{COL[k]}' stroke-width='2.6' stroke-linejoin='round' points='" + " ".join(f"{X(o):.1f},{Y(v):.1f}" for o, v in c) + "'/>")
+    for o in range(1, xmax + 1, 1 if xmax <= 10 else 2):
+        out.append(f"<text class='ax' x='{X(o):.1f}' y='{H - 8}' text-anchor='middle'>{o}</text>")
+    return "<h3>Cumulative run rate</h3><svg class='chart' viewBox='0 0 %d %d'>%s</svg>" % (W, H, "".join(out)) + _legend([(i["team"], COL[k]) for k, i in enumerate(inns)])
 
 
-def _scorecard(snap: dict[str, Any]) -> str:
-    bat_rows=[]
-    for b in snap.get("batters") or []:
-        runs=int(b.get("runs") or 0); balls=int(b.get("balls") or 0); sr=runs*100/balls if balls else 0
-        status="NOT OUT" if not b.get("dismissed") else (b.get("dismissal_text") or "OUT")
-        bat_rows.append(f"<tr><td>{esc(b.get('name'))}</td><td class='muted'>{esc(status)}</td><td class='num'>{runs}</td><td class='num'>{balls}</td><td class='num'>{int(b.get('fours') or 0)}</td><td class='num'>{int(b.get('sixes') or 0)}</td><td class='num'>{sr:.1f}</td></tr>")
-    bowl_rows=[]
-    for b in snap.get("bowlers") or []:
-        balls=int(b.get("balls") or 0); runs=int(b.get("runs") or 0); wk=int(b.get("wickets") or 0); econ=runs*6/balls if balls else 0
-        maidens=int(b.get('maidens') or 0); bowl_rows.append(f"<tr><td>{esc(b.get('name'))}</td><td class='num'>{overs(balls)}</td><td class='num'>{maidens}</td><td class='num'>{runs}</td><td class='num'>{wk}</td><td class='num'>{econ:.2f}</td></tr>")
-    extras = sum(int(v or 0) for v in (snap.get("extras") or {}).values())
-    return (
-        f"<div class='scroll'><table class='report-table scorecard-bat'><thead><tr><th>Batter</th><th>Status</th><th class='num'>R</th><th class='num'>B</th><th class='num'>4s</th><th class='num'>6s</th><th class='num'>SR</th></tr></thead><tbody>"
-        + ("".join(bat_rows) or "<tr><td colspan='7' class='muted'>No batter telemetry.</td></tr>")
-        + "</tbody></table></div>"
-        f"<div class='scroll' style='margin-top:10px'><table class='report-table scorecard-bowl'><thead><tr><th>Bowler</th><th class='num'>O</th><th class='num'>M</th><th class='num'>R</th><th class='num'>W</th><th class='num'>Econ</th></tr></thead><tbody>"
-        + ("".join(bowl_rows) or "<tr><td colspan='6' class='muted'>No bowler telemetry.</td></tr>")
-        + f"</tbody></table></div><div class='note'>Team extras: {extras} • Fall-of-wicket events recorded: {len(snap.get('wickets_fallen') or [])}</div>"
-    )
+def _balls(balls: list[dict[str, Any]]) -> str:
+    out = []
+    for b in balls:
+        if b.get("wicket"):
+            cls, lab = "w", "W"
+        elif is_wide(b):
+            cls, lab = "x", f"{_i(b.get('runs')) if _i(b.get('runs')) > 1 else ''}wd"
+        elif is_noball(b):
+            cls, lab = "x", "nb"
+        elif bat_runs(b) == 6:
+            cls, lab = "six", "6"
+        elif bat_runs(b) == 4:
+            cls, lab = "four", "4"
+        elif _i(b.get("runs")) == 0:
+            cls, lab = "dot", "•"
+        else:
+            cls, lab = "r", str(_i(b.get("runs")))
+        tip = f"{b.get('batter') or ''} v {b.get('bowler') or ''}"
+        out.append(f"<span class='ball {cls}' title='{esc(tip)}'>{esc(lab)}</span>")
+    return "".join(out)
 
 
-def _balls(value: list[dict[str, Any]]) -> str:
-    out=[]
-    for b in value:
-        if b.get("wicket"): cls="w"; label="W"
-        elif b.get("outcome") == "wide": cls="x"; label="WD"
-        elif b.get("outcome") == "no_ball": cls="x"; label="NB"
-        elif int(b.get("runs") or 0)==6: cls="six"; label="6"
-        elif int(b.get("runs") or 0)==4: cls="four"; label="4"
-        elif int(b.get("runs") or 0)==0: cls="x"; label="•"
-        else: cls="x"; label=str(int(b.get("runs") or 0))
-        out.append(f"<span class='ball {cls}' title='{esc((b.get('batter') or 'Player') + ' • ' + (b.get('outcome') or ''))}'>{esc(label)}</span>")
-    return "<div class='ball-row'>"+"".join(out)+"</div>"
-
-
-def _duel(payload: dict[str, Any]) -> str:
-    sections=[]
-    for snap in payload.get("innings") or []:
-        overs=snap.get("analysis_overs") or []
-        if not overs: continue
-        rows=[]
-        for row in overs:
-            rows.append(
-                f"<tr><td class='num'>{num(row.get('over'))}</td><td>{esc(row.get('batting_approach'))}</td><td>{esc(row.get('bowling_plan'))}</td>"
-                f"<td class='num'>{num(row.get('runs'))}</td><td class='num'>{num(row.get('wickets'))}</td><td>{_balls(row.get('balls') or [])}</td></tr>"
-            )
-        sections.append(
-            f"<h3>{esc(snap.get('batting_team_display'))} • decision trace</h3>"
-            "<div class='scroll'><table class='report-table duel-table'><thead><tr><th class='num'>Over</th><th>Batting approach</th><th>Bowling plan</th><th class='num'>R</th><th class='num'>W</th><th>Ball path</th></tr></thead><tbody>"
-            + "".join(rows) + "</tbody></table></div>"
-        )
-    return "".join(sections) or "<div class='note'>No tactical telemetry was recorded.</div>"
-
-
-def _heatmap(payload: dict[str, Any]) -> str:
-    cells = payload.get("analytics", {}).get("strategy_matrix") or []
-    if not cells: return "<div class='note'>No approach-pair data available.</div>"
-    bats=sorted({str(x.get('batting') or 'Balanced') for x in cells})
-    bowls=sorted({str(x.get('bowling') or 'Mixed') for x in cells})
-    lookup={(str(x.get('batting')),str(x.get('bowling'))):x for x in cells}
-    vals=[float(x.get('rpo') or 0) for x in cells]
-    low, high=min(vals), max(vals)
-    def level(v):
-        if high<=low: return 3
-        return max(1,min(5,1+int((v-low)/(high-low)*4)))
-    html_out=f"<div class='heatmap' style='--cols:{len(bowls)}'><div class='heat'><strong>Bat ↓ / Bowl →</strong></div>"
-    html_out += "".join(f"<div class='heat'><strong>{esc(x)}</strong></div>" for x in bowls)
-    for bat in bats:
-        html_out+=f"<div class='heat'><strong>{esc(bat)}</strong></div>"
-        for bowl in bowls:
-            x=lookup.get((bat,bowl))
-            if not x: html_out+="<div class='heat'>•</div>"
-            else: html_out+=f"<div class='heat level{level(float(x.get('rpo') or 0))}'><strong>{num(x.get('rpo'),1)}</strong><small>{num(x.get('runs'))}r • {num(x.get('wickets'))}w • {num(x.get('overs'))}ov</small></div>"
-    return html_out+"</div>"
-
-
-def _fall_of_wickets(payload: dict[str, Any]) -> str:
-    rows=[]
-    for snap in payload.get("innings") or []:
-        team= snap.get("batting_team_display") or "TEAM"
-        for idx, w in enumerate(snap.get("wickets_fallen") or [], start=1):
-            rows.append(f"<tr><td>{esc(team)}</td><td class='num'>{idx}</td><td>{esc(w.get('batter') or 'Player')}</td><td>{esc(w.get('type') or 'Wicket')}</td><td>{esc(w.get('fielder') or '—')}</td><td>{esc(w.get('over') or '—')}</td></tr>")
-    return "".join(rows) or "<tr><td colspan='6' class='muted'>No recorded fall-of-wicket events.</td></tr>"
-
-
-def _extras_table(payload: dict[str, Any]) -> str:
-    rows=[]
-    for snap in payload.get("innings") or []:
-        extras=snap.get("extras") or {}
-        total=sum(_safe_int(v) for v in extras.values())
-        rows.append(f"<tr><td>{esc(snap.get('batting_team_display') or 'TEAM')}</td><td class='num'>{total}</td><td class='num'>{_safe_int(extras.get('wides') or extras.get('wide'))}</td><td class='num'>{_safe_int(extras.get('no_balls') or extras.get('no_ball'))}</td><td class='num'>{_safe_int(extras.get('byes') or 0)}</td><td class='num'>{_safe_int(extras.get('leg_byes') or extras.get('legbye') or 0)}</td></tr>")
-    return "".join(rows) or "<tr><td colspan='6' class='muted'>No extras were recorded.</td></tr>"
-
-
-def _partnership_table(payload: dict[str, Any]) -> str:
-    rows=[]
-    for p in payload.get("analytics", {}).get("partnerships") or []:
-        rows.append(f"<tr><td>{esc(p.get('team'))}</td><td>{num(p.get('wicket'))}</td><td>{esc(p.get('partnership'))}</td><td class='num'>{num(p.get('runs'))}</td><td class='num'>{num(p.get('balls'))}</td><td>{esc(p.get('status'))}</td></tr>")
-    return "".join(rows) or "<tr><td colspan='6' class='muted'>No partnership sequence recorded.</td></tr>"
-
-
-def _impact_table(payload: dict[str, Any]) -> str:
-    rows=[]
-    for p in payload.get("analytics", {}).get("player_impact") or []:
-        stat=(f"{num(p.get('runs'))} ({num(p.get('balls'))})" if p.get('type')=='Bat' else f"{num(p.get('wickets'))}W • {num(p.get('economy'),2)}")
-        rows.append(f"<tr><td>{esc(p.get('name'))}</td><td>{esc(p.get('team'))}</td><td>{esc(p.get('type'))}</td><td class='num'>{stat}</td><td class='num'>{num(p.get('impact'),1)}</td></tr>")
-    return "".join(rows) or "<tr><td colspan='5' class='muted'>No impact metrics available.</td></tr>"
-
-
-def _turning_points(payload: dict[str, Any]) -> str:
-    pts=payload.get("analytics",{}).get("turning_points") or []
-    if not pts: return "<div class='note'>No large statistical swing crossed the report threshold.</div>"
-    return "<ol class='list'>"+"".join(f"<li><b>{esc(p.get('kind'))} • Over {num(p.get('over'))}</b>: {num(p.get('from'),1)} → {num(p.get('to'),1)} ({'+' if float(p.get('change') or 0)>=0 else ''}{num(p.get('change'),1)})</li>" for p in pts)+"</ol>"
-
-
-def _conditions(payload: dict[str, Any]) -> str:
-    m=payload
-    metrics=m.get("analytics",{}).get("metrics",{})
-    best=m.get("analytics",{}).get("metrics",{}).get("best_over") or {}
-    low=m.get("analytics",{}).get("metrics",{}).get("lowest_over") or {}
-    statements=[
-        f"Pitch profile: <b>{esc(m.get('pitch') or 'Standard')}</b>. No physical pitch change is fabricated; late-phase scoring is shown as an observed proxy.",
-        f"Venue: <b>{esc(m.get('stadium') or 'Virtual ground')}</b>. Weather field: <b>{esc(m.get('weather') or 'Not recorded')}</b>.",
-        f"Report-par rate baseline: <b>{num(metrics.get('par_rpo'),2)} RPO</b>. Boundary runs contributed <b>{num(metrics.get('boundary_run_pct'),1)}%</b> of recorded runs.",
-        f"Dot-ball share: <b>{num(metrics.get('dot_ball_pct'),1)}%</b>. Strike-rotation proxy: <b>{num(metrics.get('strike_rotation_pct'),1)}%</b> of legal balls.",
-        f"Best scoring over: <b>{num(best.get('over'))}</b> for <b>{num(best.get('runs'))}</b>. Lowest: <b>{num(low.get('over'))}</b> for <b>{num(low.get('runs'))}</b>.",
+# ---------------------------------------------------------------- sections
+def _hero(payload: dict[str, Any], rep: dict[str, Any]) -> str:
+    inns = rep["innings"]; res = rep["result"]
+    players = payload.get("players") or []
+    def box(k: int) -> str:
+        if k < len(inns):
+            i = inns[k]
+            return (f"<div class='team t{k}'><span class='lab'>Innings {k + 1}</span><b class='tn'>{esc(i['team'])}</b>"
+                    f"<div class='sc'>{i['runs']}<small>/{i['wickets']}</small></div><span class='ov'>{esc(i['over_text'])} overs · RR {i['rr']:.2f}</span></div>")
+        fallback = (players[k].get("first_name") if len(players) > k else f"Team {k + 1}")
+        return f"<div class='team t{k}'><span class='lab'>Innings {k + 1}</span><b class='tn'>{esc(fallback)}</b><div class='sc'>—</div><span class='ov'>did not bat</span></div>"
+    term = _status(payload.get("termination"))
+    result = res["text"] or ("Match ended early" if payload.get("termination") != "completed" else "Result not recorded")
+    chips = [
+        ("📍", payload.get("stadium")), ("🧱", f"{payload.get('pitch')} pitch"), ("🌤", payload.get("weather")),
+        ("🪙", f"{payload.get('toss_winner_name')} won toss · {payload.get('decision')}" if payload.get("toss_winner_name") else None),
+        ("🏏", f"{payload.get('format') or 'T20'} · {rep['total_overs']} over{'s' if rep['total_overs'] != 1 else ''}"),
+        ("🆔", f"Match #{num(payload.get('match_number') or payload.get('match_id'))}"),
     ]
-    return "<ul class='list'>"+"".join(f"<li>{x}</li>" for x in statements)+"</ul>"
+    chip_html = "".join(f"<span class='chip'>{e} {esc(t)}</span>" for e, t in chips if t and "Not recorded" not in str(t))
+    first = esc(inns[0]["team"]) if inns else esc(players[0].get("first_name") if players else "Player 1")
+    second = esc(inns[1]["team"]) if len(inns) > 1 else esc(players[1].get("first_name") if len(players) > 1 else "Player 2")
+    potm = rep["potm"]
+    potm_html = f"<div class='potm'>⭐ <b>Player of the Match</b> {esc(potm.get('name'))} <span>{esc(potm.get('line') or '')}</span></div>" if potm and potm.get("name") not in (None, "—") else ""
+    return (f"<header class='hero'><div class='eyebrow'>CRICKIUM · MATCH ANALYSIS · {esc(payload.get('game_name') or 'GAME').upper()}</div>"
+            f"<h1>{first} <em>vs</em> {second}</h1>"
+            f"<div class='teams'>{box(0)}<div class='vs'>VS</div>{box(1)}</div>"
+            f"<div class='result'>🏆 {esc(result)}<small>{esc(term)}{(' · ' + esc(payload.get('reason'))) if payload.get('reason') else ''}</small></div>"
+            f"{potm_html}<div class='chips'>{chip_html}</div></header>")
+
+
+def _nav(rep: dict[str, Any]) -> str:
+    items = [("report", "Report"), ("insights", "Insights"), ("worm", "Progress"), ("win", "Win %"), ("h2h", "Head to head"), ("phases", "Phases"),
+             ("cards", "Scorecards"), ("wkts", "Wickets"), ("tactics", "Tactics"), ("moments", "Key moments"), ("impact", "Impact"), ("bbb", "Ball by ball")]
+    return "<nav class='nav'>" + "".join(f"<a href='#{a}'>{t}</a>" for a, t in items) + "</nav>"
+
+
+def _kpis(rep: dict[str, Any]) -> str:
+    inns = rep["innings"]
+    if not inns:
+        return ""
+    tiles = []
+    for k, i in enumerate(inns):
+        tiles.append(f"<div class='kpi'><b style='color:{COL[k % 2]}'>{i['runs']}/{i['wickets']}</b><span>{esc(i['team'])}</span></div>")
+    tot_runs = sum(i["runs"] for i in inns); tot_legal = sum(i["legal"] for i in inns)
+    tiles.append(f"<div class='kpi'><b>{(tot_runs * 6.0 / tot_legal) if tot_legal else 0:.2f}</b><span>Match run rate</span></div>")
+    tiles.append(f"<div class='kpi'><b>{sum(i['fours'] for i in inns)} / {sum(i['sixes'] for i in inns)}</b><span>Fours / Sixes</span></div>")
+    tiles.append(f"<div class='kpi'><b>{sum(i['wickets'] for i in inns)}</b><span>Wickets</span></div>")
+    tiles.append(f"<div class='kpi'><b>{sum(i['extras_total'] for i in inns)}</b><span>Extras</span></div>")
+    return "<div class='kpis'>" + "".join(tiles) + "</div>"
+
+
+def _h2h(rep: dict[str, Any]) -> str:
+    inns = rep["innings"]
+    if len(inns) < 2:
+        return _empty("Head-to-head needs two innings.")
+    a, b = inns[0], inns[1]
+    def best(i):
+        t = max(i["batters"], key=lambda x: x["runs"], default=None)
+        return f"{t['name']} {t['runs']} ({t['balls']})" if t else "—"
+    def bestb(i):
+        t = max(i["bowlers"], key=lambda x: (x["wkts"], -x["runs"]), default=None)
+        return f"{t['name']} {t['wkts']}/{t['runs']}" if t else "—"
+    def bp(i):
+        t = max(i["partnerships"], key=lambda x: x["runs"], default=None)
+        return f"{t['runs']} ({t['balls']})" if t else "—"
+    def maxover(i):
+        t = max(i["overs"], key=lambda x: x["runs"], default=None)
+        return f"{t['runs']} (over {t['over']})" if t else "—"
+    rows = [
+        ("Score", f"{a['runs']}/{a['wickets']}", f"{b['runs']}/{b['wickets']}"),
+        ("Overs", a["over_text"], b["over_text"]),
+        ("Run rate", f"{a['rr']:.2f}", f"{b['rr']:.2f}"),
+        ("Fours", a["fours"], b["fours"]), ("Sixes", a["sixes"], b["sixes"]),
+        ("Boundary runs %", f"{a['boundary_run_pct']:.0f}%", f"{b['boundary_run_pct']:.0f}%"),
+        ("Dot-ball %", f"{a['dot_pct']:.0f}%", f"{b['dot_pct']:.0f}%"),
+        ("Extras", a["extras_total"], b["extras_total"]),
+        ("Top batter", best(a), best(b)), ("Top bowler (v them)", bestb(b), bestb(a)),
+        ("Best partnership", bp(a), bp(b)), ("Best over", maxover(a), maxover(b)),
+    ]
+    body = "".join(f"<tr><td class='h0'>{esc(r[1])}</td><td class='mid'>{esc(r[0])}</td><td class='h1'>{esc(r[2])}</td></tr>" for r in rows)
+    return f"<div class='scroll'><table class='h2h'><thead><tr><th class='h0'>{esc(a['team'])}</th><th></th><th class='h1'>{esc(b['team'])}</th></tr></thead><tbody>{body}</tbody></table></div>"
+
+
+def _phases(rep: dict[str, Any]) -> str:
+    out = []
+    for k, inn in enumerate(rep["innings"]):
+        if not inn["phases"]:
+            continue
+        rows = [[f"<span class='badge'>{esc(p['phase'])}</span>", f"{p['runs']}/{p['wkts']}", ov(p["balls"]), f"{p['rr']:.2f}", f"{p['dot_pct']:.0f}%", num(p["bounds"])] for p in inn["phases"]]
+        out.append(f"<div class='card'><h3 style='color:{COL[k % 2]}'>{esc(inn['team'])}</h3>" + _table([("Phase", False), ("Score", True), ("Overs", True), ("RR", True), ("Dot%", True), ("4s/6s", True)], rows) + "</div>")
+    return "<div class='duo'>" + "".join(out) + "</div>" if out else _empty("No phase telemetry recorded.")
+
+
+def _scorecard(inn: dict[str, Any], k: int) -> str:
+    bat = []
+    for b in inn["batters"]:
+        how = "not out" if not b["out"] else str(b["how"])
+        bat.append([f"<b>{esc(b['name'])}</b><small>{esc(how)}</small>", f"<b>{b['runs']}</b>", str(b["balls"]), str(b["fours"]), str(b["sixes"]),
+                    "—" if b["dots"] is None else str(b["dots"]), f"{b['sr']:.1f}"])
+    ex = inn["extras"]
+    ex_txt = f"wd {ex['wides']}, nb {ex['no_balls']}, b {ex['byes']}, lb {ex['leg_byes']}" + (f", pen {ex['penalty']}" if ex["penalty"] else "")
+    bat.append([f"<b>Extras</b><small>{esc(ex_txt)}</small>", f"<b>{inn['extras_total']}</b>", "", "", "", "", ""])
+    bat.append([f"<b>Total</b><small>{esc(inn['over_text'])} overs · RR {inn['rr']:.2f}</small>", f"<b>{inn['runs']}/{inn['wickets']}</b>", "", "", "", "", ""])
+    bowl = [[f"<b>{esc(b['name'])}</b>", ov(b["balls"]), str(b["maidens"]), str(b["runs"]), f"<b>{b['wkts']}</b>", "—" if b["dots"] is None else str(b["dots"]),
+             "—" if b["wd"] is None else f"{b['wd']}/{b['nb']}", f"{b['econ']:.2f}"] for b in inn["bowlers"]]
+    dnb = f"<p class='note'><b>Did not bat:</b> {', '.join(esc(n) for n in inn['did_not_bat'])}</p>" if inn["did_not_bat"] else ""
+    return (f"<div class='card'><h3 style='color:{COL[k % 2]}'>{esc(inn['team'])} <span>{inn['runs']}/{inn['wickets']} ({esc(inn['over_text'])})</span></h3>"
+            + (_table([("Batter", False), ("R", True), ("B", True), ("4s", True), ("6s", True), ("Dots", True), ("SR", True)], bat, "card-t") if inn["batters"] else _empty("No batting data."))
+            + dnb + f"<h4>Bowling · {esc(inn['bowling_team'])}</h4>"
+            + (_table([("Bowler", False), ("O", True), ("M", True), ("R", True), ("W", True), ("Dots", True), ("WD/NB", True), ("Econ", True)], bowl, "card-t") if bowl else _empty("No bowling data.")) + "</div>")
+
+
+def _wickets(rep: dict[str, Any]) -> str:
+    out = []
+    for k, inn in enumerate(rep["innings"]):
+        fow = "".join(f"<span class='fow'><b>{f['score']}-{f['wkt']}</b> {esc(f['batter'])} <small>{esc(f['kind'])} · ov {esc(f['over'])}</small></span>" for f in inn["fow"]) or "<span class='muted'>No wickets fell.</span>"
+        pr = [[esc(p["pair"]), str(p["runs"]), str(p["balls"]), f"{p['runs'] * 6.0 / p['balls']:.1f}" if p["balls"] else "—", esc(p["state"])] for p in inn["partnerships"]]
+        part = _table([("Partnership", False), ("Runs", True), ("Balls", True), ("RR", True), ("State", False)], pr) if pr else _empty("No partnership telemetry.")
+        out.append(f"<div class='card'><h3 style='color:{COL[k % 2]}'>{esc(inn['team'])}</h3><h4>Fall of wickets</h4><div class='fows'>{fow}</div><h4>Partnerships</h4>{part}</div>")
+    return "<div class='duo'>" + "".join(out) + "</div>" if out else _empty("No wicket data recorded.")
+
+
+def _tactics(rep: dict[str, Any]) -> str:
+    out = []
+    for k, inn in enumerate(rep["innings"]):
+        if not inn["bat_approach"] and not inn["bowl_plan"]:
+            continue
+        ba = [[f"<b>{esc(r['label'])}</b>", str(r["balls"]), str(r["runs"]), str(r["wkts"]), str(r["bounds"]), f"{r['sr']:.0f}", f"{r['dot_pct']:.0f}%"] for r in inn["bat_approach"]]
+        bp = [[f"<b>{esc(r['label'])}</b>", str(r["balls"]), str(r["runs"]), str(r["wkts"]), str(r["bounds"]), f"{r['rpo']:.1f}", f"{r['dot_pct']:.0f}%"] for r in inn["bowl_plan"]]
+        out.append(f"<div class='card'><h3 style='color:{COL[k % 2]}'>{esc(inn['team'])} batting</h3><h4>Batting approach</h4>"
+                   + _table([("Approach", False), ("Balls", True), ("Runs", True), ("Wkts", True), ("4s/6s", True), ("SR", True), ("Dot%", True)], ba)
+                   + f"<h4>Bowling plan faced</h4>" + _table([("Plan", False), ("Balls", True), ("Runs", True), ("Wkts", True), ("4s/6s", True), ("RPO", True), ("Dot%", True)], bp) + "</div>")
+    return "<div class='duo'>" + "".join(out) + "</div>" if out else _empty("Tactical choices were not recorded for this match.")
+
+
+def _moments(rep: dict[str, Any]) -> str:
+    ms = rep["moments"]
+    if not ms:
+        return _empty("No standout moments crossed the threshold.")
+    icon = {"wicket": "🔴", "over": "💥", "maiden": "🧊", "streak": "🔥", "swing": "📈"}
+    return "".join(f"<div class='mom {m['kind']}'><span class='mi'>{icon.get(m['kind'], '•')}</span><div><b>{esc(m['title'])}</b>"
+                   f"<small>{esc(m['team'])} · Inn {m['innings']} · over {esc(m['over'])} · {esc(m['score'])}</small></div></div>" for m in ms)
+
+
+def _impact(rep: dict[str, Any]) -> str:
+    rows = [[f"<b>{esc(r['name'])}</b><small>{esc(r['team'])}</small>", esc(r["kind"]), esc(r["line"]),
+             f"<div class='meter'><i style='width:{min(100, r['impact']):.0f}%'></i></div><span>{r['impact']:.0f}</span>"] for r in rep["impact"]]
+    if not rows:
+        return _empty("No impact data available.")
+    return _table([("Player", False), ("Role", False), ("Output", True), ("Impact", False)], rows, "impact") + "<p class='note'>Impact index (0–100) is a report-only composite of runs, boundaries and strike rate for batters, and wickets, economy and maidens for bowlers.</p>"
+
+
+def _bbb(rep: dict[str, Any]) -> str:
+    out = []
+    for k, inn in enumerate(rep["innings"]):
+        if not inn["overs"]:
+            continue
+        rows = []
+        for o in inn["overs"]:
+            bowler = next((str(b.get("bowler")) for b in o["balls"] if b.get("bowler")), "—")
+            wk_txt = f" · {o['wkts']} wkt" if o['wkts'] else ''
+            rows.append(f"<div class='over'><div class='oh'><b>Over {o['over']}</b><small>{esc(bowler)} · {o['runs']} run{'s' if o['runs'] != 1 else ''}{wk_txt} · {esc(o['phase'])}</small></div><div class='balls'>{_balls(o['balls'])}</div></div>")
+        out.append(f"<div class='card'><h3 style='color:{COL[k % 2]}'>{esc(inn['team'])}</h3>{''.join(rows)}</div>")
+    return "".join(out) or _empty("Ball-by-ball data was not recorded for this match.")
+
+
+def _commentary(rep: dict[str, Any]) -> str:
+    rows = []
+    for inn in rep["innings"]:
+        for b in inn["balls"]:
+            if b.get("commentary") and (b.get("wicket") or bat_runs(b) in (4, 6)):
+                rows.append((inn["number"], b))
+    if not rows:
+        return ""
+    items = "".join(f"<div class='cm {'w' if b.get('wicket') else 'b'}'><span>{_i(b.get('over')) - 1}.{_i(b.get('ball'))}</span>{esc(str(b['commentary']).replace(chr(10), ' ')[:240])}</div>" for _, b in rows[:24])
+    return f"<section class='section' id='comm'><h2>Highlights commentary</h2>{items}</section>"
 
 
 def render_report(payload: dict[str, Any]) -> str:
-    innings=payload.get("innings") or []
-    analytics=payload.get("analytics") or {}
-    players=payload.get("players") or []
-    team_a=innings[0] if innings else {}
-    team_b=innings[1] if len(innings)>1 else {}
-    title=f"Crickium • {payload.get('game_name') or 'Game'} • Match {payload.get('match_number') or ''}"
-    winner=payload.get("winner_name") or "No winner"
-    result=(f"{esc(winner)} won" if payload.get("winner_id") else ("Match exited / ended early" if payload.get("termination")!='completed' else "Match tied or undecided"))
-    status=_status_label(payload.get("termination"))
-    metrics=analytics.get("metrics") or {}
-    header=(
-        "<section class='hero'>"
-        f"<div class='eyebrow'>CRICKIUM MATCH INTELLIGENCE • {esc(payload.get('game_name') or 'GAME')}</div>"
-        f"<h1>{esc(team_a.get('batting_team_display') or (players[0].get('first_name') if players else 'Player 1'))} <span class='muted'>vs</span> {esc(team_b.get('batting_team_display') or (players[1].get('first_name') if len(players)>1 else 'Player 2'))}</h1>"
-        f"<p class='hero-sub'>{esc(status)} • Report #{num(payload.get('match_number'))} • {esc(payload.get('format') or 'T20')}</p>"
-        "<div class='hero-grid'>"
-        f"<div class='team-box'><span class='team-label'>Innings 1</span><div class='team-name'>{esc(team_a.get('batting_team_display') or 'Team A')}</div><div class='score'>{score_text(team_a)}</div><div class='overs'>{esc(team_a.get('over_text') or '0.0')} overs</div></div>"
-        f"<div class='vs'>VS</div>"
-        f"<div class='team-box'><span class='team-label'>Innings 2</span><div class='team-name'>{esc(team_b.get('batting_team_display') or 'Pending')}</div><div class='score'>{score_text(team_b) if team_b else '—'}</div><div class='overs'>{esc(team_b.get('over_text') or '0.0') if team_b else '—'} overs</div></div>"
-        "</div>"
-        f"<div class='result-strip'>🏆 {result} • Termination: {esc(status)}{(' • ' + esc(payload.get('reason'))) if payload.get('reason') else ''}</div>"
-        "<div class='meta-grid'>"
-        f"<div class='meta'><span class='k'>Match ID</span><span class='v'>#{num(payload.get('match_id'))}</span></div>"
-        f"<div class='meta'><span class='k'>Ground</span><span class='v'>{esc(payload.get('stadium'))}</span></div>"
-        f"<div class='meta'><span class='k'>Pitch</span><span class='v'>{esc(payload.get('pitch'))}</span></div>"
-        f"<div class='meta'><span class='k'>Weather</span><span class='v'>{esc(payload.get('weather'))}</span></div>"
-        f"<div class='meta'><span class='k'>Toss</span><span class='v'>{esc(payload.get('toss_winner_name') or 'Not recorded')}</span></div>"
-        f"<div class='meta'><span class='k'>Decision</span><span class='v'>{esc(payload.get('decision') or 'Not recorded')}</span></div>"
-        f"<div class='meta'><span class='k'>Player of Match</span><span class='v'>{esc((payload.get('potm') or {}).get('name') or '—')}</span></div>"
-        f"<div class='meta'><span class='k'>Report status</span><span class='v'>{esc(status)}</span></div>"
-        "</div></section>"
-    )
-    body=[header]
-    body.append(
-        "<section class='section'><h2>Match pulse</h2><div class='kpis'>"
-        f"<div class='kpi'><span class='label'>Par rate</span><span class='value'>{num(metrics.get('par_rpo'),2)}</span></div>"
-        f"<div class='kpi'><span class='label'>Dot balls</span><span class='value'>{num(metrics.get('dot_ball_pct'),1)}%</span></div>"
-        f"<div class='kpi'><span class='label'>Boundary runs</span><span class='value'>{num(metrics.get('boundary_run_pct'),1)}%</span></div>"
-        f"<div class='kpi'><span class='label'>Rotation proxy</span><span class='value'>{num(metrics.get('strike_rotation_pct'),1)}%</span></div>"
-        f"<div class='kpi'><span class='label'>Max boundary streak</span><span class='value'>{num(metrics.get('max_boundary_streak'))}</span></div>"
-        "</div></section>"
-    )
-    body.append("<section class='section'><h2>Phase readout</h2><div class='scroll'><table class='report-table phase-table'><thead><tr><th>Team</th><th>Phase</th><th class='num'>Runs</th><th class='num'>Wickets</th><th class='num'>Overs</th><th class='num'>Rate</th></tr></thead><tbody>"+_phase_rows(payload)+"</tbody></table></div></section>")
-    body.append("<section class='section'><h2>Runs by over</h2>"+_bar_chart(payload)+"<div class='legend'><span><i class='dot a'></i>Innings 1</span><span><i class='dot b'></i>Innings 2</span></div><p class='note'>Bars are the recorded over totals. No simulation values are recreated or changed for the report.</p></section>")
-    body.append("<section class='section'><h2>The worm</h2>"+_line_svg(analytics.get('innings_series') or [], value_key='cumulative_runs', y_min=0, y_max=max([int(x.get('cumulative_runs') or 0) for x in analytics.get('innings_series') or []] or [10]), wicket_events=_worm_wicket_events(payload))+"<div class='legend'><span><i class='dot a'></i>Innings 1</span><span><i class='dot b'></i>Innings 2</span></div><p class='note'>Cumulative score path by over, retained from recorded match events.</p></section>")
-    body.append("<section class='section'><h2>Momentum &amp; pressure</h2>"+_momentum_svg(payload)+"<div class='legend'><span><i class='dot a'></i>Momentum</span><span><i class='dot c'></i>Chase pressure</span></div><p class='note'>Momentum is a report-derived ±2 indicator. Pressure rises as the chase model becomes more demanding.</p></section>")
-    body.append("<section class='section'><h2>Win probability model</h2>"+_prob_svg(analytics.get('win_series') or [])+"<div class='highlight'>This is an analytical estimate generated from the recorded score, wickets, balls remaining and required run rate. It is not the engine's decision probability.</div></section>")
-    body.append("<section class='section'><h2>Scorecards</h2>"+"".join(f"<h3>{esc(s.get('batting_team_display'))} — {score_text(s)} ({esc(s.get('over_text') or '0.0')})</h3>"+_scorecard(s) for s in innings[:2])+"</section>")
-    body.append("<section class='section'><h2>Turning points</h2>"+_turning_points(payload)+"</section>")
-    body.append("<section class='section'><h2>Partnerships &amp; wickets</h2><h3>Partnership sequence</h3><div class='scroll'><table class='report-table partnership-table'><thead><tr><th>Team</th><th class='num'>Wkt</th><th>Pair</th><th class='num'>Runs</th><th class='num'>Balls</th><th>State</th></tr></thead><tbody>"+_partnership_table(payload)+"</tbody></table></div><h3>Fall of wickets</h3><div class='scroll'><table class='report-table wicket-table'><thead><tr><th>Team</th><th class='num'>Wkt</th><th>Batter</th><th>Event</th><th>Fielder</th><th class='num'>Over</th></tr></thead><tbody>"+_fall_of_wickets(payload)+"</tbody></table></div><h3>Extras ledger</h3><div class='scroll'><table class='report-table extras-table'><thead><tr><th>Team</th><th class='num'>Total</th><th class='num'>Wides</th><th class='num'>No-balls</th><th class='num'>Byes</th><th class='num'>Leg-byes</th></tr></thead><tbody>"+_extras_table(payload)+"</tbody></table></div><p class='note'>When a live engine does not expose a detailed dismissal/fielder label, the report preserves the recorded event and shows an em dash rather than fabricating data.</p></section>")
-    streaks=analytics.get('strategy_streaks') or {}
-    combos=analytics.get('strategy_combinations') or []
-    combo_html="".join("<div class='pair'><div class='name'>"+esc(x.get('batting'))+" × "+esc(x.get('bowling'))+"</div><div class='score-mini'>"+num(x.get('runs'))+"r • "+num(x.get('wickets'))+"w • "+num(x.get('rpo'),2)+" RPO</div></div>" for x in combos[:8]) or "<div class='note'>No paired strategy events recorded.</div>"
-    body.append("<section class='section'><h2>The approach duel</h2>"+_duel(payload)+"<h3>Approach pairing map</h3>"+_heatmap(payload)+"<div class='duo' style='margin-top:12px'>"+"".join("<div class='card'><h3>"+esc(x.get('group'))+" • "+esc(x.get('label'))+"</h3><div class='muted small'>Overs: "+num(x.get('overs'))+" • Runs: "+num(x.get('runs'))+" • Wickets: "+num(x.get('wickets'))+"</div><div style='margin-top:4px;font-weight:900'>"+num(x.get('rpo'),2)+" RPO</div></div>" for x in (analytics.get('strategy_summary') or [])[:8])+"</div><div class='duo' style='margin-top:12px'><div class='card'><h3>Longest intent streak</h3><div class='highlight'>"+esc(streaks.get('batting',{}).get('label') or '—')+" × "+num(streaks.get('batting',{}).get('length'))+" overs</div></div><div class='card'><h3>Longest bowling-plan streak</h3><div class='highlight'>"+esc(streaks.get('bowling',{}).get('label') or '—')+" × "+num(streaks.get('bowling',{}).get('length'))+" overs</div></div></div><h3>Tactical combinations</h3>"+combo_html+"</section>")
-    body.append("<section class='section'><h2>Player impact board</h2><div class='scroll'><table class='report-table impact-table'><thead><tr><th>Player</th><th>Team</th><th>Discipline</th><th class='num'>Primary output</th><th class='num'>Impact index</th></tr></thead><tbody>"+_impact_table(payload)+"</tbody></table><p class='note'>Impact index is a report-only composite used to rank observed contribution across batting and bowling.</p></div></section>")
-    body.append("<section class='section'><h2>How the pitch changed</h2><div class='highlight'>Pitch profile: <b>"+esc(payload.get('pitch') or 'Standard')+"</b>. The report does not fabricate physical wear. It surfaces observed scoring-rate shifts as the match progressed.</div><div class='duo' style='margin-top:12px'><div class='card'><h3>Opening phase</h3><div class='score-mini'>"+num((analytics.get('phase_map') or {}).get((1,'Powerplay'),{}).get('rpo'),2)+" RPO</div></div><div class='card'><h3>Late phase</h3><div class='score-mini'>"+num((analytics.get('phase_map') or {}).get((2,'Death'),{}).get('rpo'),2)+" RPO</div></div></div></section>")
-    body.append("<section class='section'><h2>What the conditions did</h2>"+_conditions(payload)+"</section>")
+    rep = build_report(payload)
+    status = _status(payload.get("termination"))
+    inns = rep["innings"]
+    title = f"Crickium · {payload.get('game_name') or 'Game'} · Match {payload.get('match_number') or ''}"
+    narr = "".join(f"<p>{esc(p)}</p>" for p in rep["narrative"])
+    ins = "".join(f"<div class='ins'>{esc(x)}</div>" for x in rep["insights"]) or _empty("Not enough ball telemetry for automatic insights.")
+    body = [_hero(payload, rep), _nav(rep), _kpis(rep)]
+    sec = lambda sid, h, content: f"<section class='section' id='{sid}'><h2>{h}</h2>{content}</section>"
+    body.append(sec("report", "Match report", f"<div class='prose'>{narr}</div>"))
+    body.append(sec("insights", "Key insights", ins))
+    body.append(sec("worm", "Run progression", _worm(rep) + _over_bars(rep) + _rr_compare(rep)))
+    body.append(sec("win", "Win probability", _win_chart(rep)))
+    body.append(sec("h2h", "Head to head", _h2h(rep)))
+    body.append(sec("phases", "Phase analysis", _phases(rep)))
+    body.append(sec("cards", "Scorecards", "".join(_scorecard(i, k) for k, i in enumerate(inns)) or _empty("No innings were recorded before the match ended.")))
+    body.append(sec("wkts", "Wickets &amp; partnerships", _wickets(rep)))
+    body.append(sec("tactics", "Tactics breakdown", _tactics(rep)))
+    body.append(sec("moments", "Key moments", _moments(rep)))
+    body.append(sec("impact", "Player impact", _impact(rep)))
+    body.append(_commentary(rep))
+    body.append(sec("bbb", "Ball by ball", _bbb(rep)))
     if payload.get("super_over_rounds"):
-        rows=[]
-        for i, round_data in enumerate(payload.get("super_over_rounds") or [], start=1):
-            rows.append(f"<div class='pair'><div class='name'>Decider round {i}</div><div class='score-mini'>{esc(str(round_data)[:180])}</div></div>")
-        body.append("<section class='section'><h2>Super Over history</h2>"+"".join(rows)+"</section>")
-    return TEMPLATE_PATH.read_text(encoding="utf-8").replace("{{TITLE}}", esc(title)).replace("{{CSS}}", THEME_PATH.read_text(encoding="utf-8")).replace("{{BODY}}", "".join(body)).replace("{{MATCH_NUMBER}}", num(payload.get("match_number")))
+        rows = "".join(f"<div class='row'><b>Decider round {k}</b><span>{esc(str(r)[:200])}</span></div>" for k, r in enumerate(payload["super_over_rounds"], 1))
+        body.append(sec("so", "Super Over history", rows))
+    return (TEMPLATE_PATH.read_text(encoding="utf-8")
+            .replace("{{TITLE}}", esc(title)).replace("{{CSS}}", THEME_PATH.read_text(encoding="utf-8"))
+            .replace("{{BODY}}", "".join(body)).replace("{{MATCH_NUMBER}}", num(payload.get("match_number"))))

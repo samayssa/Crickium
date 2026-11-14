@@ -10,3 +10,5 @@ This folder owns the HTML match-analysis system.
 - `generated/` is a small local working cache for the most recent generated reports and is pruned automatically.
 
 The report layer is telemetry-only. It does not participate in the scoring resolver and should never be used as an input to match simulation.
+
+- `insights.py` builds the report model (per-innings stats, ball-by-ball win probability, phases, partnerships, fall of wickets, tactics tables, key moments, impact index, auto insights and match-report text). It is analytics only and never feeds the engines.
