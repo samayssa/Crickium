@@ -115,7 +115,21 @@ async def _start_decider(
         },
     )
     decider = dict(decider)
+    # PLAYINT / PLAYIPL / PLAYWPL (and tournament) matches use the XI stored inside the match session, NOT the
+    # user's personal squad. Carry the real Playing XIs into the Super Over, otherwise the bowler keyboard is
+    # empty and Telegram rejects it with REPLY_MARKUP_INVALID.
+    origin_squads: dict[str, list] = {}
+    try:
+        _sess = await _load_origin_session(str(origin_engine).upper(), int(origin_match_id))
+        if _sess is not None:
+            origin_squads = {
+                str(int(_sess.batting_team_id)): [dict(p) for p in (_sess.batting_squad or [])],
+                str(int(_sess.bowling_team_id)): [dict(p) for p in (_sess.bowling_squad or [])],
+            }
+    except Exception as exc:
+        print(f"[super_over_bridge] could not read the origin Playing XIs: {exc!r}")
     source_state = {
+        "origin_squads": _jsonable(origin_squads),
         "origin_engine": str(origin_engine),
         "origin_match_id": int(origin_match_id),
         "origin_chat_id": int(chat_id),
