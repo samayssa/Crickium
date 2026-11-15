@@ -15,6 +15,15 @@ async def _is_admin(user_id: int | None) -> bool:
     return int(user_id or 0) == int(ADMIN_USER_ID)
 
 
+def _flush_cache_after_restore() -> None:
+    """A restore replaces whole tables: forget every cached copy (memory + Redis)."""
+    try:
+        from database import cache
+        cache.flush_all()
+    except Exception as exc:
+        print(f"[recover] cache flush skipped: {exc!r}")
+
+
 @register("recover")
 async def recover_command(message):
     chat_id = message["chat"]["id"]
@@ -66,7 +75,9 @@ async def recover_command(message):
                 raise ValueError("Backup file is larger than the 64 MB restore limit.")
             print(f"[recover] Backup downloaded to disk: {actual_size} bytes")
             results = await import_tables(backup_path)
+        _flush_cache_after_restore()
     except Exception as exc:
+        _flush_cache_after_restore()
         print(f"[recover] Restore failed: {exc!r}")
         await app.send_message(
             chat_id,

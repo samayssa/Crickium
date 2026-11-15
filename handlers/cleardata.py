@@ -96,6 +96,11 @@ async def cleardata_step2_yes(callback_query):
 
     await clear_all_game_data()
     clear_probability_profile_cache()
+    try:
+        from database import cache
+        cache.flush_all()            # cached rows belong to the data that was just cleared
+    except Exception as exc:
+        print(f"[cleardata] cache flush skipped: {exc!r}")
     await app.edit_message_text(
         chat_id,
         callback_query["message"]["message_id"],
