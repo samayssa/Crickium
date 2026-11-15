@@ -227,27 +227,50 @@ def _is_owned(player: dict[str, Any], squad: list[dict[str, Any]]) -> bool:
     return any(owned_same_card(dict(item), player) for item in squad)
 
 
+_UPSERT_USER_SQL = """
+    INSERT INTO users(user_id, username, first_name, last_seen_at)
+    VALUES($1,$2,$3,NOW())
+    ON CONFLICT(user_id) DO UPDATE SET
+        username=COALESCE(EXCLUDED.username,users.username),
+        first_name=COALESCE(EXCLUDED.first_name,users.first_name),
+        last_seen_at=NOW();
+"""
+_USER_TOUCH: dict[int, tuple[float, Any, Any]] = {}
+_USER_TOUCH_SECONDS = 45.0
+
+
 async def _ensure_user(viewer: TelegramViewer) -> dict[str, Any]:
-    await execute(
-        """
-        INSERT INTO users(user_id, username, first_name, last_seen_at)
-        VALUES($1,$2,$3,NOW())
-        ON CONFLICT(user_id) DO UPDATE SET
-            username=COALESCE(EXCLUDED.username,users.username),
-            first_name=COALESCE(EXCLUDED.first_name,users.first_name),
-            last_seen_at=NOW();
-        """,
-        int(viewer.id), viewer.username, viewer.first_name,
+    """Create/refresh the user row, then read the (never cached) wallet columns.
+
+    ``last_seen_at`` is only informational, so the identity UPSERT is skipped when
+    the same user/name was written less than ``_USER_TOUCH_SECONDS`` ago.  The
+    SELECT below always runs, and if the row has vanished (for example after a
+    data reset) the UPSERT is repeated immediately.
+    """
+    import time as _time
+    uid = int(viewer.id)
+    now = _time.monotonic()
+    seen = _USER_TOUCH.get(uid)
+    recent = (
+        seen is not None and now - seen[0] < _USER_TOUCH_SECONDS
+        and seen[1] == viewer.username and seen[2] == viewer.first_name
     )
-    row = await fetchrow(
-        """
+    if not recent:
+        await execute(_UPSERT_USER_SQL, uid, viewer.username, viewer.first_name)
+        if len(_USER_TOUCH) > 5000:
+            _USER_TOUCH.clear()
+        _USER_TOUCH[uid] = (now, viewer.username, viewer.first_name)
+    select_sql = """
         SELECT user_id,username,first_name,balance,rubies,total_spent,level,xp,
                franchise_name,sigils,total_sigils_earned
         FROM users WHERE user_id=$1;
-        """,
-        int(viewer.id),
-    )
-    return dict(row) if row else {"user_id": int(viewer.id), "balance": 0, "rubies": 0, "level": 1, "xp": 0}
+        """
+    row = await fetchrow(select_sql, uid)
+    if row is None and recent:
+        await execute(_UPSERT_USER_SQL, uid, viewer.username, viewer.first_name)
+        _USER_TOUCH[uid] = (now, viewer.username, viewer.first_name)
+        row = await fetchrow(select_sql, uid)
+    return dict(row) if row else {"user_id": uid, "balance": 0, "rubies": 0, "level": 1, "xp": 0}
 
 
 async def _get_player_image_source(kind: str, entity_id: int) -> tuple[str, str] | None:
@@ -358,6 +381,50 @@ async def _owned_squad(user_id: int) -> list[dict[str, Any]]:
     return _squad(row["squad"] if row else None)
 
 
+# The squad is one JSONB document per user (every card with its full stats).
+# Pages that only need "how many cards" or "do I already own this card" used to
+# download all of it on every open, which was a large share of database egress.
+# These helpers ask PostgreSQL for just the numbers / identity fields and fall
+# back to the full read if the projection query ever fails.  They are read-only
+# and never cached: ownership stays exactly as fresh as the database.
+_SQUAD_ELEMENTS_SQL = """
+    FROM team_squads t
+    CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(t.squad)='array' THEN t.squad ELSE '[]'::jsonb END
+    ) AS e
+    WHERE t.user_id=$1 AND jsonb_typeof(e)='object'
+"""
+_SQUAD_COUNT_SQL = "SELECT COUNT(*)::int AS n " + _SQUAD_ELEMENTS_SQL
+_SQUAD_KEYS_SQL = (
+    "SELECT COALESCE(jsonb_agg(jsonb_strip_nulls(jsonb_build_object("
+    "'player_id', e->'player_id', 'player_kind', e->'player_kind', "
+    "'is_showcase', e->'is_showcase', 'showcase_card_id', e->'showcase_card_id', "
+    "'is_special', e->'is_special', 'special_edition_id', e->'special_edition_id'))), '[]'::jsonb) AS keys "
+    + _SQUAD_ELEMENTS_SQL
+)
+
+
+async def _owned_count(user_id: int) -> int:
+    try:
+        row = await fetchrow(_SQUAD_COUNT_SQL, int(user_id))
+        if row is not None and row["n"] is not None:
+            return int(row["n"])
+    except Exception as exc:
+        print(f"[miniapp_backend] squad count projection failed, using full read: {type(exc).__name__}")
+    return len(await _owned_squad(user_id))
+
+
+async def _owned_card_keys(user_id: int) -> list[dict[str, Any]]:
+    """Squad reduced to the fields ``card_identity_key`` reads (ownership checks only)."""
+    try:
+        row = await fetchrow(_SQUAD_KEYS_SQL, int(user_id))
+        if row is not None:
+            return _squad(row["keys"])
+    except Exception as exc:
+        print(f"[miniapp_backend] squad key projection failed, using full read: {type(exc).__name__}")
+    return await _owned_squad(user_id)
+
+
 def _player_id_set(squad: list[dict[str, Any]]) -> set[int]:
     return {int(player.get("player_id") or 0) for player in squad if int(player.get("player_id") or 0) != 0}
 
@@ -419,28 +486,39 @@ async def _rank_for_user(user_id: int) -> int:
 
 _SNAPSHOT_FIRST = True
 _SNAPSHOT_CACHE: dict[tuple[str, int], tuple[float, Any]] = {}
-_SNAPSHOT_TTL_SECONDS = 2.0
+_SNAPSHOT_TTL_SECONDS = 3.0
 
 
-async def _fresh_snapshot(engine: str, match_id: int):
-    """Load the latest persisted runtime snapshot (cached for a couple of seconds)."""
+async def _fresh_snapshot_ex(engine: str, match_id: int):
+    """Latest runtime snapshot as ``(session, confirmed_absent)``.
+
+    Order: this process (3 s) -> Redis copy written by the bot -> database row.
+    ``confirmed_absent`` is True only when the lookup completed and found no
+    snapshot, so callers can skip repeating the same database query.
+    """
     import time as _time
     key = (engine, int(match_id))
     now = _time.monotonic()
     cached = _SNAPSHOT_CACHE.get(key)
     if cached and now - cached[0] < _SNAPSHOT_TTL_SECONDS:
-        return cached[1]
+        return cached[1], cached[1] is None
     try:
-        from services.game_session_recovery import _load_snapshot
-        session = await _load_snapshot(engine, int(match_id))
+        from services.game_session_recovery import load_snapshot_for_view
+        session, confirmed = await load_snapshot_for_view(engine, int(match_id))
     except Exception as exc:
         print(f"[miniapp_backend] fresh snapshot unavailable engine={engine} id={int(match_id)} type={type(exc).__name__}")
-        return None
-    if session is not None:
+        return None, False
+    if session is not None or confirmed:
         _SNAPSHOT_CACHE[key] = (now, session)
         if len(_SNAPSHOT_CACHE) > 200:
             for old_key in sorted(_SNAPSHOT_CACHE, key=lambda k: _SNAPSHOT_CACHE[k][0])[:100]:
                 _SNAPSHOT_CACHE.pop(old_key, None)
+    return session, bool(confirmed and session is None)
+
+
+async def _fresh_snapshot(engine: str, match_id: int):
+    """Load the latest persisted runtime snapshot (cached for a few seconds)."""
+    session, _absent = await _fresh_snapshot_ex(engine, match_id)
     return session
 
 
@@ -462,8 +540,9 @@ async def _runtime_session(engine: str, match_id: int):
                                                                         
                                                                              
                                                        
+    snapshot_absent = False
     if _SNAPSHOT_FIRST:
-        fresh = await _fresh_snapshot(engine, numeric_id)
+        fresh, snapshot_absent = await _fresh_snapshot_ex(engine, numeric_id)
         if fresh is not None:
             return fresh
 
@@ -481,7 +560,7 @@ async def _runtime_session(engine: str, match_id: int):
                                                                               
     try:
         from services.game_session_recovery import restore_session
-        session = await restore_session(engine, numeric_id)
+        session = await restore_session(engine, numeric_id, allow_db=not snapshot_absent)
         if session is not None:
             return session
     except Exception as exc:
@@ -489,6 +568,8 @@ async def _runtime_session(engine: str, match_id: int):
 
                                                                          
                                                                             
+    if snapshot_absent:
+        return None          # the database was just checked and has no snapshot for this match
     try:
         row = await fetchrow(
             "SELECT payload FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
@@ -639,7 +720,7 @@ async def build_home_response(viewer: TelegramViewer) -> dict[str, Any]:
         int(viewer.id),
     )
     stats = dict(stats_row) if stats_row else {}
-    squad = await _owned_squad(viewer.id)
+    squad_count = await _owned_count(viewer.id)
     level = max(1, min(MAX_LEVEL, int(user.get("level") or 1)))
     xp = max(0, int(user.get("xp") or 0))
     next_xp = xp_to_next_level(level)
@@ -697,7 +778,7 @@ async def build_home_response(viewer: TelegramViewer) -> dict[str, Any]:
             "rank": rank,
         },
         "league": {"label": "User level", "progress_percent": progress, "progress_text": f"Level {level} • {xp:,} / {next_xp if next_xp is not None else 'MAX'} XP"},
-        "squad": {"count": len(squad), "capacity": MAX_SQUAD_SIZE},
+        "squad": {"count": squad_count, "capacity": MAX_SQUAD_SIZE},
         "daily_reward": {
             "streak": int((daily or {}).get("streak") or 0),
             "total_claimed": int((daily or {}).get("total_claimed") or 0),
@@ -745,6 +826,24 @@ def _match_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _query_players(kind: str, query: str, limit: int) -> list[dict[str, Any]]:
+    """Catalogue search (players / special / showcase rows are shared by every user).
+
+    Cached in this process for a few minutes and dropped immediately when an admin
+    changes the catalogue (tag ``catalog``).  Nothing user specific is cached here.
+    """
+    key = f"qp:{kind}:{int(limit)}:{str(query or '').strip().lower()[:80]}"
+    try:
+        from database import cache
+    except Exception:
+        return await _query_players_uncached(kind, query, limit)
+    result = await cache.get_or_load(
+        key, lambda: _query_players_uncached(kind, query, limit),
+        ttl=300, l1_ttl=300, tag="catalog", l2=False,
+    )
+    return result if isinstance(result, list) else await _query_players_uncached(kind, query, limit)
+
+
+async def _query_players_uncached(kind: str, query: str, limit: int) -> list[dict[str, Any]]:
     pattern = f"%{query.strip()}%" if query.strip() else "%"
     if kind == "global":
         rows = await fetch(
@@ -803,7 +902,7 @@ async def build_player_search_response(viewer: TelegramViewer, query: str, limit
         rows.extend(group)
     rows.sort(key=lambda p: (-max(int(p.get("bat_level") or 0), int(p.get("bowl_level") or 0)), str(p.get("name") or "")))
     rows = rows[:limit]
-    squad = await _owned_squad(viewer.id)
+    squad = await _owned_card_keys(viewer.id)
     results = [_player_payload(row, owned=_is_owned(row, squad)) for row in rows]
     return {"query": query, "count": len(results), "results": results}
 
@@ -836,7 +935,7 @@ async def build_market_response(viewer: TelegramViewer, params: dict[str, str]) 
             print(f"[miniapp_backend] market source failed: {group!r}")
             continue
         candidates.extend(group)
-    squad = await _owned_squad(viewer.id)
+    squad = await _owned_card_keys(viewer.id)
     items = [_player_payload(row, owned=_is_owned(row, squad)) for row in candidates]
     role_set = allowed_roles.get(requested_role)
     if role_set:
@@ -917,7 +1016,7 @@ async def build_player_detail_response(viewer: TelegramViewer, *, kind: str, ent
     if not row:
         return None
     player = dict(row)
-    squad = await _owned_squad(viewer.id)
+    squad = await _owned_card_keys(viewer.id)
     summary = _player_payload(player, owned=_is_owned(player, squad))
     pid = int(summary["player_id"])
     stats_row = await fetchrow(
