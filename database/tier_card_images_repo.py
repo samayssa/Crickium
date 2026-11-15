@@ -8,6 +8,7 @@ into the next tier.
 """
 from __future__ import annotations
 
+from database import cache
 from database.query import execute, fetchrow
 
 
@@ -27,5 +28,9 @@ async def save_tier_card_image(tier_key: str, file_id: str, channel_message_id: 
 
 
 async def get_tier_card_image(tier_key: str) -> dict | None:
-    row = await fetchrow("SELECT * FROM tier_card_images WHERE tier_key = $1;", tier_key)
-    return dict(row) if row else None
+    async def _load():
+        row = await fetchrow("SELECT * FROM tier_card_images WHERE tier_key = $1;", tier_key)
+        return dict(row) if row else None
+    return await cache.get_or_load(
+        f"img:tier:{tier_key}", _load, ttl=21600, l1_ttl=1800, tag="catalog", neg_ttl=300,
+    )

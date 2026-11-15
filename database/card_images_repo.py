@@ -5,7 +5,21 @@ Database operations for player card images uploaded via /upload_img:
   player of that type without a custom image (template_card_image)
 """
 
+from database import cache
 from database.query import execute, fetchrow
+
+# Uploaded card images change only when an admin uploads one (the INSERT/UPDATE below
+# invalidates the "catalog" tag automatically), so lookups are cached: 30 min in memory,
+# 6 h in Redis, and 5 min for "no custom image".  Values are only Telegram file ids.
+_IMG_TTL = 21600
+_IMG_L1_TTL = 1800
+_IMG_MISSING_TTL = 300
+
+
+async def _cached_row(key: str, loader):
+    return await cache.get_or_load(
+        key, loader, ttl=_IMG_TTL, l1_ttl=_IMG_L1_TTL, tag="catalog", neg_ttl=_IMG_MISSING_TTL,
+    )
 
                                                                      
                                                                   
@@ -28,8 +42,10 @@ async def save_player_card_image(player_id: int, file_id: str, channel_message_i
 
 
 async def get_player_card_image(player_id: int) -> dict | None:
-    row = await fetchrow("SELECT * FROM player_card_images WHERE player_id = $1;", player_id)
-    return dict(row) if row else None
+    async def _load():
+        row = await fetchrow("SELECT * FROM player_card_images WHERE player_id = $1;", player_id)
+        return dict(row) if row else None
+    return await _cached_row(f"img:player:{player_id}", _load)
 
 
 async def save_card_template_image(card_type: str, file_id: str, channel_message_id: int | None, uploaded_by: int) -> None:
@@ -50,8 +66,10 @@ async def save_card_template_image(card_type: str, file_id: str, channel_message
 
 async def get_card_template_image(card_type: str) -> dict | None:
     """`card_type` is "bat" or "ball"."""
-    row = await fetchrow("SELECT * FROM template_card_image WHERE card_type = $1;", card_type)
-    return dict(row) if row else None
+    async def _load():
+        row = await fetchrow("SELECT * FROM template_card_image WHERE card_type = $1;", card_type)
+        return dict(row) if row else None
+    return await _cached_row(f"img:template:{card_type}", _load)
 
 
 async def save_special_player_card_image(special_player_id: int, file_id: str, channel_message_id: int | None, uploaded_by: int) -> None:
@@ -70,8 +88,10 @@ async def save_special_player_card_image(special_player_id: int, file_id: str, c
 
 
 async def get_special_player_card_image(special_player_id: int) -> dict | None:
-    row = await fetchrow("SELECT * FROM special_player_card_images WHERE special_player_id = $1;", special_player_id)
-    return dict(row) if row else None
+    async def _load():
+        row = await fetchrow("SELECT * FROM special_player_card_images WHERE special_player_id = $1;", special_player_id)
+        return dict(row) if row else None
+    return await _cached_row(f"img:special:{special_player_id}", _load)
 
 
 async def save_showcase_player_card_image(showcase_card_id: int, file_id: str, channel_message_id: int | None, uploaded_by: int) -> None:
@@ -90,8 +110,10 @@ async def save_showcase_player_card_image(showcase_card_id: int, file_id: str, c
 
 
 async def get_showcase_player_card_image(showcase_card_id: int) -> dict | None:
-    row = await fetchrow(
-        "SELECT * FROM showcase_player_card_images WHERE showcase_card_id = $1;",
-        int(showcase_card_id),
-    )
-    return dict(row) if row else None
+    async def _load():
+        row = await fetchrow(
+            "SELECT * FROM showcase_player_card_images WHERE showcase_card_id = $1;",
+            int(showcase_card_id),
+        )
+        return dict(row) if row else None
+    return await _cached_row(f"img:showcase:{int(showcase_card_id)}", _load)

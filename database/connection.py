@@ -305,13 +305,28 @@ async def connect():
     else:
         print("[db/connection] Pool already exists, reusing it.")
 
+    await _start_cache_layer()
     return _pool
+
+
+async def _start_cache_layer() -> None:
+    """Start the Redis/memory cache once per process. Never blocks or breaks startup."""
+    try:
+        from database import cache
+        await cache.start()
+    except Exception as exc:
+        print(f"[db/connection] cache layer not started: {exc!r}")
 
 
 async def disconnect():
     global _pool
 
     print("[db/connection] disconnect() called")
+    try:
+        from database import cache
+        await cache.stop()
+    except Exception:
+        pass
 
     if _pool:
         await _pool.close()

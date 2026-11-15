@@ -2,6 +2,8 @@
 import asyncio
 import os
 import random
+import re
+import time
 
 from database.connection import (
     get_pool,
@@ -40,14 +42,41 @@ def _short_args(args):
     return tuple(_short_value(arg) for arg in args)
 
 
+# --- cache/diagnostics hooks -------------------------------------------------
+# Counts rows/bytes per statement (database/db_stats.py) and drops cached
+# catalogue data right after any statement that writes a catalogue table.
+# Both are best effort and can never change a query result.
+_CATALOG_WRITE_RE = re.compile(
+    r"\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?)\s+(?:ONLY\s+)?(?:public\.)?"
+    r"(?:players|special_edition_players|showcase_cards|showcase_sets|player_card_images|"
+    r"special_player_card_images|showcase_player_card_images|template_card_image|"
+    r"tier_card_images|stadium_images)\b",
+    re.IGNORECASE,
+)
+
+
+def _note_statement(query, result, started, *, write=False):
+    try:
+        from database import db_stats
+        db_stats.record(query, result, started, write=write)
+        text = str(query)
+        if not text.lstrip()[:6].upper() == "SELECT" and _CATALOG_WRITE_RE.search(text):
+            from database import cache
+            cache.invalidate_tag("catalog")
+    except Exception:
+        pass
+
+
 async def execute(query, *args):
     if _LOG:
         print(f"[db/query] EXECUTE: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
+    started = time.monotonic()
     try:
         async with pool.acquire() as conn:
             result = await conn.execute(query, *args)
+        _note_statement(query, result, started, write=True)
         if _LOG:
             print(f"[db/query] EXECUTE OK: {result}")
         return result
@@ -63,9 +92,11 @@ async def executemany(query, args):
         print(f"[db/query] EXECUTEMANY: {_short(query)} | {len(args)} row(s)")
     pool = get_pool()
 
+    started = time.monotonic()
     try:
         async with pool.acquire() as conn:
             result = await conn.executemany(query, args)
+        _note_statement(query, result, started, write=True)
         if _LOG:
             print("[db/query] EXECUTEMANY OK")
         return result
@@ -81,9 +112,11 @@ async def fetch(query, *args):
         print(f"[db/query] FETCH: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
+    started = time.monotonic()
     try:
         async with pool.acquire() as conn:
             result = await conn.fetch(query, *args)
+        _note_statement(query, result, started)
         if _LOG:
             print(f"[db/query] FETCH OK: {len(result)} row(s)")
         return result
@@ -99,9 +132,11 @@ async def fetchrow(query, *args):
         print(f"[db/query] FETCHROW: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
+    started = time.monotonic()
     try:
         async with pool.acquire() as conn:
             result = await conn.fetchrow(query, *args)
+        _note_statement(query, result, started)
         if _LOG:
             print(f"[db/query] FETCHROW OK: {None if result is None else _short_value(dict(result))}")
         return result
@@ -117,9 +152,11 @@ async def fetchval(query, *args):
         print(f"[db/query] FETCHVAL: {_short(query)} | args={_short_args(args)}")
     pool = get_pool()
 
+    started = time.monotonic()
     try:
         async with pool.acquire() as conn:
             result = await conn.fetchval(query, *args)
+        _note_statement(query, result, started)
         if _LOG:
             print(f"[db/query] FETCHVAL OK: {_short_value(result)}")
         return result

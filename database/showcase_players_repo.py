@@ -135,6 +135,11 @@ async def upload_showcase_sections(sections: dict[str, list[str]], uploaded_by: 
             summary["sets"].append(bucket)
 
     await transaction(_tx)
+    try:
+        from database import cache
+        cache.invalidate_tag("catalog")      # new showcase sets/cards were committed
+    except Exception:
+        pass
     return summary
 
 
