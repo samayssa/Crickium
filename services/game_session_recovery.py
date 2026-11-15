@@ -18,6 +18,11 @@ _TERMINAL = {"timed_out", "completed", "declined", "ended", "expired"}
 _SAVER_TASK: asyncio.Task | None = None
 _SAVE_LOCK = asyncio.Lock()
 RECOVERY_CHECKPOINT_SECONDS = 10.0
+# Redis copy of the latest snapshot, read by the Mini App web process so it does
+# not download the whole pickled session from the database on every poll.  The
+# database row stays the source of truth (restarts always restore from it).
+SNAPSHOT_REDIS_TTL_SECONDS = 60.0       # written by the bot on every change
+SNAPSHOT_REDIS_POPULATE_SECONDS = 30.0  # written by a reader after a database fallback (never overwrites)
                                                                                   
                                                                                     
 _LAST_SNAPSHOT_DIGEST: dict[tuple[str, int], bytes] = {}
@@ -32,6 +37,41 @@ async def ensure_schema() -> None:
     return None
 
 
+def _blob_key(engine: str, match_id: int) -> str:
+    return f"snap:{str(engine).upper()}:{int(match_id)}"
+
+
+def _snapshot_redis_enabled() -> bool:
+    try:
+        import config
+        return bool(getattr(config, "CACHE_SNAPSHOT_REDIS", True))
+    except Exception:
+        return True
+
+
+def _redis_snapshot_put(engine: str, match_id: int, payload: bytes, digest: bytes, *, nx: bool = False) -> None:
+    """Best effort: never raises and never blocks the game loop."""
+    if not _snapshot_redis_enabled():
+        return
+    try:
+        from database import cache
+        cache.blob_put(
+            _blob_key(engine, match_id), payload,
+            ttl=SNAPSHOT_REDIS_POPULATE_SECONDS if nx else SNAPSHOT_REDIS_TTL_SECONDS,
+            nx=nx, version=None if nx else digest,
+        )
+    except Exception:
+        pass
+
+
+def _redis_snapshot_drop(engine: str, match_id: int) -> None:
+    try:
+        from database import cache
+        cache.blob_drop(_blob_key(engine, match_id))
+    except Exception:
+        pass
+
+
 async def delete_snapshot(engine: str, match_id: int) -> None:
     try:
         await execute(
@@ -39,6 +79,7 @@ async def delete_snapshot(engine: str, match_id: int) -> None:
             str(engine).upper(), int(match_id),
         )
         _LAST_SNAPSHOT_DIGEST.pop((str(engine).upper(), int(match_id)), None)
+        _redis_snapshot_drop(engine, match_id)
     except Exception as exc:
         print(f"[session-recovery] delete failed {engine}:{match_id}: {exc!r}")
 
@@ -68,7 +109,15 @@ async def persist_session(engine: str, session: Any) -> bool:
         digest_key = (str(engine).upper(), match_id)
         digest = hashlib.blake2b(payload, digest_size=16).digest()
         if _LAST_SNAPSHOT_DIGEST.get(digest_key) == digest:
-            return True                                                          
+            # Database copy is already current. Only retry the Redis copy if an
+            # earlier Redis write did not land (outage / restart of Redis).
+            try:
+                from database import cache
+                if cache.blob_version(_blob_key(engine_key, match_id)) != digest:
+                    _redis_snapshot_put(engine_key, match_id, payload, digest)
+            except Exception:
+                pass
+            return True
         async with _SAVE_LOCK:
             await execute(
                 """
@@ -81,6 +130,7 @@ async def persist_session(engine: str, session: Any) -> bool:
                 str(engine).upper(), match_id, payload,
             )
         _LAST_SNAPSHOT_DIGEST[digest_key] = digest
+        _redis_snapshot_put(engine_key, match_id, payload, digest)
         return True
     except Exception as exc:
         print(f"[session-recovery] persist failed {engine}:{match_id}: {exc!r}")
@@ -100,6 +150,47 @@ async def _load_snapshot(engine: str, match_id: int) -> Any | None:
         print(f"[session-recovery] snapshot decode failed {engine}:{match_id}: {exc!r}")
         await delete_snapshot(engine, match_id)
         return None
+
+
+async def load_snapshot_for_view(engine: str, match_id: int) -> tuple[Any | None, bool]:
+    """Read path for the Mini App web process: Redis copy first, database second.
+
+    Returns ``(session, confirmed)``.  ``confirmed`` is True when the lookup
+    completed (so ``session is None`` really means "no snapshot exists"); it is
+    False when the database could not be queried.  The session is only used to
+    *render* a live view; recovery after a restart still reads the database row.
+    """
+    engine = str(engine).upper()
+    mid = int(match_id)
+    key = _blob_key(engine, mid)
+    data = None
+    if _snapshot_redis_enabled():
+        try:
+            from database import cache
+            data = await cache.blob_get(key)
+        except Exception:
+            data = None
+    if data is not None:
+        try:
+            return pickle.loads(data), True
+        except Exception as exc:
+            print(f"[session-recovery] redis snapshot decode failed {engine}:{mid}: {exc!r}")
+            _redis_snapshot_drop(engine, mid)
+    row = await fetchrow(
+        "SELECT payload FROM game_session_snapshots WHERE engine=$1 AND match_id=$2;",
+        engine, mid,
+    )
+    if not row:
+        return None, True
+    payload = bytes(row["payload"])
+    try:
+        session = pickle.loads(payload)
+    except Exception as exc:
+        print(f"[session-recovery] snapshot decode failed {engine}:{mid}: {exc!r}")
+        await delete_snapshot(engine, mid)
+        return None, True
+    _redis_snapshot_put(engine, mid, payload, b"", nx=True)
+    return session, True
 
 
 def _inject(engine: str, session: Any) -> Any | None:
@@ -126,8 +217,12 @@ def _inject(engine: str, session: Any) -> Any | None:
     return session
 
 
-async def restore_session(engine: str, match_id: int) -> Any | None:
-    """Restore an existing snapshot into the engine registry if needed."""
+async def restore_session(engine: str, match_id: int, *, allow_db: bool = True) -> Any | None:
+    """Restore an existing snapshot into the engine registry if needed.
+
+    ``allow_db=False`` only looks at sessions that are already live in this
+    process (used by callers that just confirmed the database has no snapshot).
+    """
     engine = str(engine).upper()
     mid = int(match_id)
     try:
@@ -154,6 +249,8 @@ async def restore_session(engine: str, match_id: int) -> Any | None:
     except Exception:
         pass
 
+    if not allow_db:
+        return None
     session = await _load_snapshot(engine, mid)
     if session is None:
         return None
