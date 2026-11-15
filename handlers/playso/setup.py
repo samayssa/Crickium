@@ -56,8 +56,10 @@ def _bat_text(match: dict, batting_id: int, bowling_id: int, players: list[dict]
 
 async def start_setup(chat_id: int, match: dict, innings_no: int = 1):
     match = dict(match); batting_id, bowling_id = _users_for_innings(match, innings_no)
-    batting_xi = await current_xi(batting_id); bowling_xi = await current_xi(bowling_id)
     state = match.get("state") or {}
+    origin_squads = state.get("origin_squads") or {}
+    batting_xi = list(origin_squads.get(str(batting_id)) or []) or await current_xi(batting_id)
+    bowling_xi = list(origin_squads.get(str(bowling_id)) or []) or await current_xi(bowling_id)
     previous = state.get("previous_bowlers") or {}
     locked = previous.get(str(bowling_id)) if state.get("is_repeat_super_over") else None
     if locked is not None and int(locked) not in eligible_bowlers(bowling_xi, None):

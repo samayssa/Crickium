@@ -25,7 +25,7 @@ _DEDUP: dict[tuple[int, str, int, int], float] = {}
 
 
 PERSIST_KEYS = ("origin_engine", "origin_match_id", "origin_chat_id", "origin_innings", "origin_pitch",
-                "origin_xp_awarded", "super_over_rounds", "stadium", "weather")
+                "origin_xp_awarded", "super_over_rounds", "stadium", "weather", "origin_squads")
 
 
 def persist_keys(state: dict[str, Any] | None) -> dict[str, Any]:
