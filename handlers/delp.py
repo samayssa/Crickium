@@ -217,6 +217,67 @@ async def _del_engine_team(message, engine: str, team_code: str, full_name: str)
     return True
 
 
+_SECTION_RE = re.compile(r"^\s*(T20I|IPL)\s*-\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE)
+
+
+def _split_sections(raw_text: str) -> list[dict]:
+    """Split a replied text into [{'header': 'T20I-IND', 'names': [...]}, ...] sections."""
+    sections: list[dict] = []
+    current = None
+    for raw_line in str(raw_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _SECTION_RE.match(line)
+        if match:
+            current = {"header": f"{match.group(1).upper()}-{match.group(2)}", "names": []}
+            sections.append(current)
+            continue
+        if current is not None:
+            name = _plain_player_name(line)
+            if name:
+                current["names"].append(name)
+    return sections
+
+
+async def _del_multi_sections(message, sections: list[dict]) -> bool:
+    """One /delp for MANY teams: reply to a text that has T20I-XXX / IPL-XXX header lines + player names."""
+    chat_id = int(message["chat"]["id"])
+    user_id = int((message.get("from") or {}).get("id") or 0)
+    found, missing, invalid = [], [], []
+    per_team: dict[str, int] = {}
+    for sec in sections:
+        resolved = _engine_team_arg(f"/delp {sec['header']}")
+        if not resolved:
+            invalid.append(sec["header"])
+            continue
+        engine, code, full_name = resolved
+        for name in sec["names"]:
+            row = await get_engine_team_player(engine, code, name)
+            if row:
+                found.append({"kind": "engine_team", "engine": engine, "team_code": code, "team_name": full_name,
+                              "player": dict(row), "name": str(row["name"]), "edition": None})
+                per_team[f"{engine}-{code}"] = per_team.get(f"{engine}-{code}", 0) + 1
+            else:
+                missing.append(f"{code}: {name}")
+    if not found:
+        await app.send_message(chat_id, "⚠️ No matching squad players were found in the database.", parse_mode="HTML")
+        return True
+    token = uuid.uuid4().hex[:12]
+    _PENDING[token] = {"owner_id": user_id, "targets": found}
+    lines = ["⚠️ <b>DELETE PLAYERS</b>", "", f"Are you sure you want to delete <b>{len(found)} player(s)</b> from these squads?", ""]
+    for key, count in per_team.items():
+        lines.append(f"🏏 {html.escape(key)} ➤ <b>{count}</b>")
+    if missing:
+        lines.extend(["", f"⚠️ Not in database ➤ <b>{len(missing)}</b>"])
+        lines.extend(f"• {html.escape(item)}" for item in missing[:15])
+    if invalid:
+        lines.extend(["", "❌ Invalid team headers: " + html.escape(", ".join(invalid))])
+    lines.extend(["", "This action cannot be undone."])
+    await app.send_message(chat_id, "\n".join(lines), parse_mode="HTML", reply_markup=delete_confirm_keyboard(token))
+    return True
+
+
 @register("delp")
 async def delp_command(message):
     chat_id = message["chat"]["id"]
@@ -232,6 +293,12 @@ async def delp_command(message):
     parts = text.split(maxsplit=1)
     arg = parts[1].strip() if len(parts) > 1 else ""
     reply_to = message.get("reply_to_message")
+
+    # Multi-team delete: reply to a text that has T20I-XXX / IPL-XXX header lines followed by player names.
+    if reply_to and reply_to.get("text") and not arg:
+        sections = _split_sections(reply_to["text"])
+        if sections:
+            return await _del_multi_sections(message, sections)
 
                                                         
     if reply_to and reply_to.get("text") and not arg:
