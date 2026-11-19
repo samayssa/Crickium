@@ -377,11 +377,14 @@ async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: in
             SELECT tm.*, t.engine AS _engine, t.ladder AS _ladder, t.squad_min AS _squad_min, t.squad_max AS _squad_max,
                    t.overseas_squad_max AS _os_max, t.overseas_squad_min AS _os_min, t.xi_overseas_max AS _xi_os,
                    t.min_base_lakh AS _min_base, t.role_rules AS _role_rules,
+                   cb.user_id AS cobidder_id, cb.first_name AS cobidder_name, cb.username AS cobidder_username,
                    COALESCE((SELECT jsonb_object_agg(r.role, r.n) FROM
                              (SELECT role, COUNT(*) AS n FROM tour_squad WHERE tid=$1 AND team_no=tm.team_no GROUP BY role) r),
                             '{}'::jsonb) AS _rc
             FROM tour_teams tm JOIN tour_tournaments t ON t.tid = tm.tid
-            WHERE tm.tid=$1 AND (CASE WHEN $2::int IS NOT NULL THEN tm.team_no = $2::int ELSE tm.owner_id = $3::bigint END);
+                 LEFT JOIN tour_cobidders cb ON cb.tid = tm.tid AND cb.team_no = tm.team_no
+            WHERE tm.tid=$1 AND (CASE WHEN $2::int IS NOT NULL THEN tm.team_no = $2::int
+                                      ELSE (tm.owner_id = $3::bigint OR cb.user_id = $3::bigint) END);
             """, int(tid), None if team_no is None else int(team_no), None if user_id is None else int(user_id))
         if team is None:
             return {"ok": False, "reason": "no_team" if team_no is not None else "not_in"}
@@ -400,6 +403,7 @@ async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: in
         for role, n in (_jload(team["_rc"], {}) or {}).items():
             role_counts[tc.norm_role(role)] += int(n)
         team_d = {k: v for k, v in dict(team).items() if not k.startswith("_")}
+        team_d["bidder_id"] = None if user_id is None else int(user_id)
         team_c = {**team_d, "role_counts": role_counts}
         player = {"overseas": bool(lot["overseas"]), "role": lot["role"]}
         allowed, reason = tc.check_bid_allowed(team_c, player, price, rules)

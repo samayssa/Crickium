@@ -45,7 +45,8 @@ def _team(x: dict | None) -> dict | None:
         return None
     return {"no": int(x["team_no"]), "code": x.get("base_code"), "short": tx.team_short(x), "name": x.get("name"),
             "owner": x.get("owner_name"), "owner_id": x.get("owner_id"), "purse": int(x.get("purse_left") or 0), "purse_text": _money(x.get("purse_left")),
-            "spent_text": _money(x.get("spent")), "squad": int(x.get("squad_count") or 0), "overseas": int(x.get("overseas_count") or 0)}
+            "spent_text": _money(x.get("spent")), "squad": int(x.get("squad_count") or 0), "overseas": int(x.get("overseas_count") or 0),
+            "logo": f"/api/image/teamlogo?tid={int(x['tid'])}&team={int(x['team_no'])}" if x.get("logo_file_id") and x.get("tid") is not None else None}
 
 
 def _prize(t: dict) -> dict | None:
@@ -79,7 +80,7 @@ async def build_list(viewer) -> dict[str, Any]:
         if int(t["tid"]) in seen:
             continue
         seen.add(int(t["tid"]))
-        team = await tr.team_of_user(int(t["tid"]), uid)
+        team = await tr.team_of_bidder(int(t["tid"]), uid)
         c = _card(t)
         c.update({"mine": bool(team) or int(t["creator_id"]) == uid, "my_team": _team(team), "teams": len(await tr.teams(int(t["tid"])))})
         items.append(c)
@@ -109,7 +110,7 @@ async def build_detail(viewer, tid: int) -> dict[str, Any] | None:
     teams = {int(x["team_no"]): x for x in teams_l}
     fixtures = await _fixture_rows(tid, teams)
     table = tc.table_from_rows(teams_l, await tr.fixtures(tid)) if fixtures else []
-    mine = await tr.team_of_user(tid, uid)
+    mine = await tr.team_of_bidder(tid, uid)
     days = [{"day": int(d["day_no"]), "date": d["play_date"].isoformat(), "status": d["status"], "opens_at": _iso(d["opens_at"]), "closes_at": _iso(d["closes_at"])} for d in await tr.days(tid)]
     return {"ok": True, "now": _iso(datetime.now(timezone.utc)), "tournament": _card(t), "can_control": auc.can_control(t, uid),
             "my_team": _team(mine), "teams": [_team(x) for x in teams_l], "fixtures": fixtures, "days": days,
@@ -159,6 +160,80 @@ async def build_squads(tid: int) -> dict[str, Any] | None:
     return {"ok": True, "teams": out}
 
 
+def _player_row(r: dict, show_price: bool) -> dict:
+    return {"pkey": r["pkey"], "name": r["name"], "role": tc.norm_role(r["role"]), "role_label": tx.role_label(r["role"]), "role_icon": tx.role_icon(r["role"]),
+            "country": r.get("country"), "overseas": bool(r.get("overseas")), "bat": int(r.get("bat_level") or 0), "bowl": int(r.get("bowl_level") or 0),
+            "ovr": tc.player_ovr(r), "xi": bool(r.get("xi")), "price_text": _money(r.get("price_lakh")) if show_price else None}
+
+
+async def build_myteam(viewer, tid: int) -> dict[str, Any] | None:
+    """The viewer's own team: only the players it BOUGHT (with the price while the auction is on),
+    after the auction the squad by role with a Playing XI builder (Custom tournaments)."""
+    t = await tr.get(tid)
+    if t is None or t["status"] in ("setup", "cancelled"):
+        return None
+    uid = int(viewer.id)
+    team = await tr.team_of_bidder(tid, uid)
+    if team is None:
+        return {"ok": True, "has_team": False, "tournament": _card(t)}
+    squad = await ar.squad(tid, int(team["team_no"]))
+    cob = await tr.cobidder_of_team(tid, int(team["team_no"]))
+    show_price = t["status"] in ("registration", "auction")
+    rules = tc.tournament_rules(t)
+    is_owner = team.get("owner_id") is not None and int(team["owner_id"]) == uid
+    players = [_player_row(r, show_price) for r in squad]
+    counts = tc.role_counts(squad)
+    need = tc.needs_text({k: v for k, v in tc.squad_needs(counts, sum(1 for r in squad if r.get("overseas")), rules).items() if k != "squad"})
+    can_edit = t["engine"] == "PLAY" and t["status"] in ("ready", "live") and is_owner and len(squad) >= 11
+    return {"ok": True, "has_team": True, "tournament": _card(t), "team": _team(team), "is_owner": is_owner,
+            "cobidder": {"name": cob.get("first_name"), "id": int(cob["user_id"])} if cob else None,
+            "phase": "auction" if show_price else "build", "show_price": show_price,
+            "purse_total_text": _money(t.get("purse_lakh")), "players": players, "counts": counts, "need": need,
+            "rules": _rules_payload(t), "squad_max": rules["squad_max"], "squad_min": rules["squad_min"],
+            "xi_overseas_max": rules["xi_overseas_max"], "can_edit_xi": can_edit, "xi_picked_by_captain": t["engine"] != "PLAY",
+            "xi_rules": {"size": 11, "batters_min": 1, "keepers_min": 1, "allrounders": [2, 4], "bowlers": [3, 4], "overseas_max": rules["xi_overseas_max"]}}
+
+
+async def set_xi(viewer, tid: int, payload: dict) -> tuple[int, dict]:
+    """Save (or auto-pick) the Playing XI of the viewer's team - same validation as every engine."""
+    t = await tr.get(tid)
+    if t is None:
+        return 404, {"ok": False, "detail": "Not found"}
+    team = await tr.team_of_user(tid, int(viewer.id))
+    if team is None:
+        return 403, {"ok": False, "detail": "Only the team owner can set the Playing XI."}
+    if t["engine"] != "PLAY":
+        return 409, {"ok": False, "detail": "In this tournament the captains choose the XI in the match itself."}
+    if t["status"] not in ("ready", "live"):
+        return 409, {"ok": False, "detail": "The Playing XI can be set once the auction is over."}
+    squad = await ar.squad(tid, int(team["team_no"]))
+    by_key = {r["pkey"]: r for r in squad}
+    xi_max = int(t.get("xi_overseas_max") or 0)
+    if payload.get("auto"):
+        best = tc.pick_best_xi([dict(r, key=r["pkey"]) for r in squad], xi_max)
+        if not best:
+            return 409, {"ok": False, "detail": "This squad cannot field a legal XI yet."}
+        keys = [p["pkey"] for p in best]
+    else:
+        raw = payload.get("pkeys")
+        keys = [str(k) for k in raw] if isinstance(raw, list) else []
+        if len(set(keys)) != len(keys) or any(k not in by_key for k in keys):
+            return 400, {"ok": False, "detail": "Pick players from your own squad, each only once."}
+    why = tc.validate_xi([by_key[k] for k in keys], xi_max)
+    if why:
+        return 409, {"ok": False, "detail": why, "message": why}
+    await ar.set_xi(tid, int(team["team_no"]), keys)
+    return 200, {"ok": True, "message": "✅ Playing XI saved.", "pkeys": keys}
+
+
+async def team_logo_bytes(tid: int, team_no: int) -> tuple[bytes, str] | None:
+    team = await tr.team(tid, team_no)
+    if not team or not team.get("logo_file_id"):
+        return None
+    from miniapp_backend import api
+    return await api._download_telegram_image(str(team["logo_file_id"]))
+
+
 _SNAP: dict[int, tuple[float, dict]] = {}
 _SNAP_INFLIGHT: dict[int, "asyncio.Future"] = {}
 SNAP_TTL = 0.7
@@ -166,11 +241,11 @@ SNAP_TTL = 0.7
 
 async def _load_snapshot(tid: int) -> dict | None:
     """Everything of the auction room that is the same for every viewer, read with parallel queries."""
-    t, a, teams_l, role_map = await asyncio.gather(tr.get(tid), ar.get_auction(tid), tr.teams(tid), ar.team_role_counts(tid))
+    t, a, teams_l, role_map, cobs = await asyncio.gather(tr.get(tid), ar.get_auction(tid), tr.teams(tid), ar.team_role_counts(tid), tr.cobidders(tid))
     if t is None:
         return None
     snap: dict[str, Any] = {"t": t, "a": a, "teams": teams_l, "roles": role_map, "lot": None, "bids": [], "counts": None,
-                            "recent": [], "upcoming": [], "sets": []}
+                            "recent": [], "upcoming": [], "sets": [], "cobidders": cobs}
     if not a:
         return snap
     lot = await ar.lot_view(tid, int(a["cur_ord"])) if a.get("cur_ord") is not None else None
@@ -222,11 +297,13 @@ async def build_auction(viewer, tid: int) -> dict[str, Any] | None:
         return None
     t, a, teams_l = snap["t"], snap["a"], snap["teams"]
     uid = int(viewer.id)
-    mine = next((x for x in teams_l if x.get("owner_id") and int(x["owner_id"]) == uid), None)
+    cobs = snap.get("cobidders") or {}
+    mine = next((x for x in teams_l if (x.get("owner_id") and int(x["owner_id"]) == uid)
+                 or (cobs.get(int(x["team_no"])) and int(cobs[int(x["team_no"])]["user_id"]) == uid)), None)
     now = datetime.now(timezone.utc)
     out: dict[str, Any] = {"ok": True, "now": _iso(now), "tournament": _card(t), "can_control": auc.can_control(t, uid), "my_team": _team(mine),
                            "teams": [_team(x) for x in teams_l], "status": a["status"] if a else "idle", "version": int(a["version"]) if a else 0,
-                           "squad_max": int(t["squad_max"]), "squad_min": int(t["squad_min"]),
+                           "squad_max": int(t["squad_max"]), "squad_min": int(t["squad_min"]), "bid_seconds": tc.BID_SECONDS,
                            "rules": _rules_payload(t),
                            "ladder": [list(r) for r in tc.ladder_rows(t.get("ladder"))]}
     if mine is not None:
@@ -314,6 +391,8 @@ async def handle(viewer, method: str, path: str, query: dict, payload: dict) -> 
                 data = await build_board(tid, str(query.get("name") or "orange"))
             elif sub == "squads":
                 data = await build_squads(tid)
+            elif sub == "myteam":
+                data = await build_myteam(viewer, tid)
             elif sub == "squad":
                 data = await build_squad(tid, int(query.get("team") or 0))
             else:
@@ -321,6 +400,8 @@ async def handle(viewer, method: str, path: str, query: dict, payload: dict) -> 
             return (200, data) if data is not None else (404, {"ok": False, "detail": "Not found"})
         if sub == "bid":
             return 403, {"ok": False, "detail": "Bid with the /bid command in the group."}
+        if sub == "xi":
+            return await set_xi(viewer, tid, payload)
         if sub == "control":
             return await control(viewer, tid, str(payload.get("action") or ""))
     except (ValueError, IndexError):

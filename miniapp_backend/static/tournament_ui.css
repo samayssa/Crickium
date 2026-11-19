@@ -157,3 +157,26 @@
 .tn-rules span{padding:3px 8px;border-radius:10px;background:rgba(127,127,127,.15)}
 .tn-rules span.need{background:rgba(230,160,0,.25)}
 .tn-rules span.full{background:rgba(220,60,60,.25)}
+
+/* ---- My Team tab ---- */
+.tn-myhead { display: flex; align-items: center; gap: 12px; margin: 4px 0 10px; }
+.tn-logo { width: 64px; height: 64px; border-radius: 18px; object-fit: cover; border: 1px solid var(--line); background: #0f1b16; flex: none; }
+.tn-logo.ph { display: grid; place-items: center; font-weight: 900; font-size: 20px; color: var(--gold); }
+.tn-myhead-t h3 { margin: 0; font-size: 18px; }
+.tn-myhead-t small { color: var(--muted); }
+.tn-mystats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.tn-mystats > div { padding: 10px; border-radius: 14px; background: #0f1b16; border: 1px solid var(--line); text-align: center; }
+.tn-mystats small { display: block; font-size: 10px; letter-spacing: .08em; color: var(--muted); }
+.tn-mystats b { display: block; font-size: 16px; color: var(--gold); margin-top: 3px; }
+.tn-mystats i { font-style: normal; font-size: 10px; color: var(--muted); }
+.tn-progress { height: 7px; border-radius: 99px; background: #0f1b16; border: 1px solid var(--line); margin: 10px 0; overflow: hidden; }
+.tn-progress span { display: block; height: 100%; background: linear-gradient(90deg, #7ed957, #efc66b); border-radius: 99px; }
+.tn-pl span small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; }
+.tn-pl.pick { cursor: pointer; }
+.tn-pl.on { border-color: rgba(126,217,87,.6); background: rgba(126,217,87,.08); }
+.tn-ovr-chip { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.tn-xibar { margin: 12px 0 8px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.tn-xibar.ok { background: rgba(126,217,87,.1); border-color: rgba(126,217,87,.4); }
+.tn-xibar.bad { background: rgba(255,126,114,.08); border-color: rgba(255,126,114,.3); }
+.tn-xibtns { display: flex; gap: 8px; } .tn-xibtns .tn-btn { flex: 1; margin-top: 0; }
+.tn-xibtns .tn-btn[disabled] { opacity: .45; }

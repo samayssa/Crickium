@@ -138,9 +138,14 @@ def _wiz_card(t: dict) -> tuple[str, dict]:
                 f"Example: <code>Samay Premier League</code>\nOr use the default: <b>{tx.esc(prof['short'])} Cup</b></blockquote>")
         kb = tx.markup([tx.button(f"✅ Use “{prof['short']} Cup”", f"trc:{tid}:n:d", style="success")], [cancel])
     elif step == "mode":
-        text = (f"{off}{_wiz_head(t)}\n\n<b>Step 3/5 — squads</b>\n<blockquote>🏛 <b>With auction</b> — owners bid live for players (30 s timer, random sets).\n"
+        text = (f"{off}{_wiz_head(t)}\n\n<b>Step 3/5 — squads</b>\n<blockquote>🏛 <b>With auction</b> — owners bid live for players ({tc.BID_SECONDS} s timer, random sets).\n"
                 "⚡ <b>Without auction</b> — uses the saved squads (for Custom: each owner's own squad).</blockquote>")
         kb = tx.markup([tx.button("🏛 With auction", f"trc:{tid}:m:a", style="primary"), tx.button("⚡ Without auction", f"trc:{tid}:m:d", style="primary")], [cancel])
+    elif step == "overseas":
+        text = (f"{off}{_wiz_head(t)}\n\n<b>Step 3/5 — overseas players</b>\n<blockquote>✈️ <b>Do you want to add overseas players?</b>\n"
+                "✅ <b>Yes</b> — overseas players are counted: every team gets an overseas quota in the squad and a limit in the Playing XI.\n"
+                "🚫 <b>No</b> — no overseas rule at all: teams may buy any players.</blockquote>")
+        kb = tx.markup([tx.button("✅ Yes, add overseas", f"trc:{tid}:o:y", style="success"), tx.button("🚫 No restriction", f"trc:{tid}:o:n", style="primary")], [cancel])
     elif step == "teams":
         prof = tc.profile(t["engine"])
         nums = list(range(int(prof["min_teams"]), int(prof["max_teams"]) + 1))
@@ -213,11 +218,13 @@ async def officialtour_command(message):
 async def _finish_wizard(t: dict, window: tuple[int, int], cq: dict) -> None:
     tid = int(t["tid"])
     prof = tc.profile(t["engine"])
+    os_vals = {"overseas_squad_max": int(prof["overseas_squad_max"]), "xi_overseas_max": int(prof["xi_overseas_max"]),
+               "overseas_squad_min": int(prof["overseas_squad_min"])}
+    if t.get("overseas_choice") is not None:
+        os_vals = tc.overseas_values(t["engine"], bool(t["overseas_choice"]))
     row = await tr.cas_status(tid, ["setup"], "registration", window_start_min=window[0], window_end_min=window[1], setup_step="done",
                               purse_lakh=int(prof["purse_lakh"]), squad_min=int(prof["squad_min"]) if t["mode"] == "auction" else 11,
-                              squad_max=int(prof["squad_max"]), overseas_squad_max=int(prof["overseas_squad_max"]),
-                              xi_overseas_max=int(prof["xi_overseas_max"]), overseas_squad_min=int(prof["overseas_squad_min"]),
-                              role_rules=tc.default_role_rules(t["engine"]))
+                              squad_max=int(prof["squad_max"]), role_rules=tc.default_role_rules(t["engine"]), **os_vals)
     if row is None:
         await _answer(cq, "Already created.")
         return
@@ -231,7 +238,7 @@ def _lobby_markup(t: dict) -> dict:
 
 
 async def _post_lobby(t: dict, replace: dict | None = None) -> None:
-    teams = await tr.teams(int(t["tid"]))
+    teams = tr.visible_teams(await tr.teams(int(t["tid"])))
     text, kb = tv.lobby_text(t, teams), _lobby_markup(t)
     if replace is not None:
         await _edit(replace, text, kb)
@@ -247,7 +254,7 @@ async def _refresh_lobby(tid: int) -> None:
     if not t or t["status"] != "registration" or not t.get("lobby_msg_id"):
         return
     try:
-        await app.edit_message_text(int(t["host_chat_id"]), int(t["lobby_msg_id"]), tv.lobby_text(t, await tr.teams(tid)), parse_mode="HTML", reply_markup=_lobby_markup(t))
+        await app.edit_message_text(int(t["host_chat_id"]), int(t["lobby_msg_id"]), tv.lobby_text(t, tr.visible_teams(await tr.teams(tid))), parse_mode="HTML", reply_markup=_lobby_markup(t))
     except Exception:
         pass
 
@@ -276,7 +283,12 @@ async def on_wizard(cq):
     elif act == "n" and t["setup_step"] == "name":
         t = await tr.update_fields(tid, setup_step="mode")
     elif act == "m" and t["setup_step"] == "mode":
-        t = await tr.update_fields(tid, mode="auction" if arg == "a" else "direct", setup_step="teams")
+        auction = arg == "a"
+        nxt = "overseas" if auction and tc.overseas_question_applies(t["engine"]) else "teams"
+        t = await tr.update_fields(tid, mode="auction" if auction else "direct", setup_step=nxt, overseas_choice=None)
+    elif act == "o" and t["setup_step"] == "overseas" and arg in ("y", "n"):
+        t = await tr.update_fields(tid, overseas_choice=(arg == "y"), setup_step="teams",
+                                   **tc.overseas_values(t["engine"], arg == "y"))
     elif act == "t" and t["setup_step"] == "teams" and arg.isdigit():
         prof = tc.profile(t["engine"])
         n = max(int(prof["min_teams"]), min(int(prof["max_teams"]), int(arg)))
@@ -325,10 +337,11 @@ def _franchise_name(engine: str, base: str) -> str:
     return importlib.import_module(_TEAM_LISTS[engine][0]).TEAM_MAP[base]
 
 
-async def _join_team(t: dict, user: dict, base: str, name: str, short: str | None) -> str | None:
+async def _join_team(t: dict, user: dict, base: str, name: str, short: str | None, pending: bool = False) -> str | None:
     """Create a team owned by ``user``. Returns an error text or None."""
     try:
-        await tr.add_team(int(t["tid"]), base, tvirt.make_code(base, int(t["tid"])) if t["engine"] != "PLAY" else base, name, short, user, int(t["purse_lakh"] or 0))
+        await tr.add_team(int(t["tid"]), base, tvirt.make_code(base, int(t["tid"])) if t["engine"] != "PLAY" else base, name, short, user, int(t["purse_lakh"] or 0),
+                          pending=pending)
     except tr.TourError as exc:
         return str(exc)
     return None
@@ -356,8 +369,14 @@ async def on_lobby(cq):
             taken = {x["base_code"] for x in teams}
             while base in taken or len(base) < 2:
                 base = (base + "X")[:6]
-            err = await _join_team(t, u, base, f"{u['first_name']} XI", base)
-            await _answer(cq, err or "✅ You joined! Rename your team any time with /teamname <name>", bool(err))
+            default_name = (tc.clean_name(f"{u['first_name']} XI", 60) or "My XI")[:18].strip()
+            err = await _join_team(t, u, base, default_name, base, pending=True)
+            await _answer(cq, err or "✅ You joined! Choose your team name in the chat.", bool(err))
+            if not err:
+                from handlers import tournament_team
+                team = await tr.team_of_user(tid, u["id"])
+                if team:
+                    await tournament_team.ask_name(t, team, u)
             await _refresh_lobby(tid)
             return
         taken = {x["base_code"] for x in teams}
@@ -395,16 +414,24 @@ async def on_lobby(cq):
 async def teamname_command(message):
     chat_id, _ = _chat(message)
     u = _user(message)
-    name = tc.clean_name(_args(message))
+    name = tc.clean_name(_args(message), 80)
     t = await _find(chat_id, u["id"])
     team = await tr.team_of_user(int(t["tid"]), u["id"]) if t else None
     if not t or not team or not name:
-        await _send(chat_id, "Usage: <code>/teamname Mighty Kings</code> (you need a team in a tournament).")
+        await _send(chat_id, "Usage: <code>/teamname Mighty Kings</code> (max 18 characters · you need a team in a tournament).")
         return
     if t["engine"] != "PLAY":
         await _send(chat_id, "Franchise teams keep their real name. Only Custom tournaments allow renaming.")
         return
-    await tr.rename_team(int(t["tid"]), int(team["team_no"]), name)
+    if len(name) > 18:
+        await _send(chat_id, f"⚠️ That name has {len(name)} characters — the maximum is <b>18</b>. Try a shorter one.")
+        return
+    was_pending = bool(team.get("reg_pending"))
+    new = await tr.rename_and_confirm(int(t["tid"]), int(team["team_no"]), name)
+    if was_pending and new:
+        from handlers import tournament_team
+        await tournament_team.after_registration(t, new, u)
+        return
     await _send(chat_id, f"✅ Team renamed to <b>{tx.esc(name)}</b>.")
     await _refresh_lobby(int(t["tid"]))
 
@@ -425,7 +452,7 @@ def _panel(t: dict, teams: list[dict]) -> tuple[str, dict]:
             rows.append([tx.button(tc.fmt_money(v), f"trm:{tid}:pu:{v}") for v in prof["purse_presets"][:4]])
             rows.append([tx.button("📈 IPL steps", f"trm:{tid}:ld:ipl"), tx.button("⚡ Fast steps", f"trm:{tid}:ld:fast")])
             rows.append([tx.button("🏛 Start auction", f"trm:{tid}:sa", style="success")])
-            lines.append("<i>Squad rules: /rules" + (" · Custom: /setroles /setsquad /setoverseas" if t.get("engine") == "PLAY" else " (official, fixed like the real auction)") + "</i>")
+            lines.append("<i>Squad rules: /aucrules" + (" · Custom: /setroles /setsquad /setoverseas" if t.get("engine") == "PLAY" else " (official, fixed like the real auction)") + "</i>")
             lines.append("<i>Custom purse: /setpurse 120cr · custom steps (lakh): /setsteps 5 10 20 25 (below 1cr, 1–2cr, 2–5cr, above 5cr) or /setsteps 10 for flat</i>")
         else:
             rows.append([tx.button("🚀 Start tournament", f"trm:{tid}:st", style="success")])
@@ -576,6 +603,15 @@ async def setsteps_command(message):
                                                                              
                                                                                     
                                                                              
+def _overseas_line(t: dict, r: dict) -> str | None:
+    if r["overseas_squad_max"] or r["overseas_squad_min"]:
+        return (f"✈️ Overseas ➤ min {r['overseas_squad_min']} · max {r['overseas_squad_max'] or 'any'} in the squad"
+                + (f" · max {r['xi_overseas_max']} in the XI" if r["xi_overseas_max"] else ""))
+    if t.get("engine") == "PLAYINT":
+        return "✈️ Overseas ➤ not applicable (national teams)"
+    return "✈️ Overseas ➤ no restriction (any player can be bought)"
+
+
 def _rules_view(t: dict) -> str:
     r = tc.tournament_rules(t)
     rr = r["role_rules"]
@@ -583,25 +619,48 @@ def _rules_view(t: dict) -> str:
              f"👥 Squad ➤ {r['squad_min']}–{r['squad_max']} players"]
     for role in tc.ROLES:
         lines.append(f"{tc.ROLE_ICON[role]} {tc.ROLE_PLURAL[role]} ➤ {rr[role][0]}–{rr[role][1]}")
-    if r["overseas_squad_max"] or r["overseas_squad_min"]:
-        lines.append(f"✈️ Overseas ➤ {r['overseas_squad_min']}–{r['overseas_squad_max'] or 'any'}"
-                     + (f" · max {r['xi_overseas_max']} in the XI" if r["xi_overseas_max"] else ""))
-    elif t.get("engine") == "PLAYINT":
-        lines.append("✈️ Overseas ➤ not applicable (national teams)")
+    lines.append(_overseas_line(t, r))
     lines.append("</blockquote>The auction enforces these for every team: a bid is refused if it would break a maximum, "
                  "or leave no slot for a role you still must sign. Teams still short at the end are topped up with unsold players.")
     return "\n".join(lines)
 
 
-@register("rules")
-async def rules_command(message):
+def aucrules_text(t: dict) -> str:
+    """Everything a bidder must know: money, timer, bid steps, squad size, every role limit and the overseas rule."""
+    r = tc.tournament_rules(t)
+    rr = r["role_rules"]
+    prof = tc.profile(t.get("engine"))
+    min_base = int(t.get("min_base_lakh") or 0)
+    head = f"📋 <b>AUCTION RULES</b> · {tx.esc(t['name'])}"
+    money = (f"💰 Purse per team ➤ <b>{tx.esc(tc.fmt_money(t['purse_lakh']))}</b>\n"
+             + (f"🏷 Lowest base price ➤ {tx.esc(tc.fmt_money(min_base))}\n" if min_base else "")
+             + f"⏱ Bid timer ➤ <b>{tc.BID_SECONDS} s</b> (resets on every bid)")
+    steps = "\n".join(f"   {tx.esc(a)} ➤ <b>{tx.esc(b)}</b>" for a, b in tc.ladder_rows(t.get("ladder")))
+    squad = [f"👥 Squad size ➤ min <b>{r['squad_min']}</b> · max <b>{r['squad_max']}</b>"]
+    for role in tc.ROLES:
+        squad.append(f"{tc.ROLE_ICON[role]} {tc.ROLE_PLURAL[role]} ➤ min <b>{rr[role][0]}</b> · max <b>{rr[role][1]}</b>")
+    if r["overseas_squad_max"] or r["overseas_squad_min"]:
+        squad.append(f"✈️ Overseas ➤ min <b>{r['overseas_squad_min']}</b> · max <b>{r['overseas_squad_max'] or 'any'}</b> in the squad"
+                     + (f" · max <b>{r['xi_overseas_max']}</b> in the XI" if r["xi_overseas_max"] else ""))
+    else:
+        squad.append(_overseas_line(t, r))
+    xi = "🎽 Playing XI ➤ 11 players · min 1 batter · min 1 keeper · 2–4 all-rounders · 3–4 bowlers"
+    return (f"{head}\n<blockquote>{money}</blockquote>"
+            f"<blockquote>📈 <b>Bid steps</b>\n{steps}</blockquote>"
+            f"<blockquote>" + "\n".join(squad) + f"\n{xi}</blockquote>"
+            "<i>A bid is refused if it would break a maximum or leave you too little purse / too few slots for the roles you still must sign. "
+            "Teams still short at the end are topped up with unsold players.</i>")
+
+
+@register("aucrules")
+async def aucrules_command(message):
     chat_id, _ = _chat(message)
     u = _user(message)
     t = await _find(chat_id, u["id"])
     if not t or t.get("mode") != "auction":
         await _send(chat_id, "No auction tournament found here.")
         return
-    await _send(chat_id, _rules_view(t))
+    await _send(chat_id, aucrules_text(t))
 
 
 async def _custom_rules_target(message) -> tuple[int, dict | None]:
@@ -1043,6 +1102,32 @@ async def bid_command(message):
     if not res.get("ok"):
         who = tv.owner_mention({"owner_id": u["id"], "owner_username": u["username"], "owner_name": u["first_name"]})
         await _send(chat_id, f"{who} — {tx.esc(tx.bid_feedback(res))}")
+
+
+async def _auc_control_command(message, action: str) -> None:
+    chat_id, _ = _chat(message)
+    u = _user(message)
+    t = await _find(chat_id, u["id"], statuses=("registration", "auction"))
+    if not t or t.get("mode") != "auction":
+        await _send(chat_id, "No auction tournament found here.")
+        return
+    if t["status"] != "auction":
+        await _send(chat_id, "⏳ The auction has not started yet — start it from the tournament panel first.")
+        return
+    res = await auc.control(int(t["tid"]), u["id"], action)
+    await _send(chat_id, ("" if res.get("ok") else "⚠️ ") + str(res.get("message") or "Done."))
+
+
+@register("aucpause")
+async def aucpause_command(message):
+    """Host / bot owner: pause the running auction (works for official and normal tournaments)."""
+    await _auc_control_command(message, "pause")
+
+
+@register("aucresume")
+async def aucresume_command(message):
+    """Host / bot owner: resume a paused auction."""
+    await _auc_control_command(message, "resume")
 
 
 @register_callback("trh")

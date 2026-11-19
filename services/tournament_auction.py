@@ -535,6 +535,7 @@ async def start_auction(tid: int, by_user: int) -> dict[str, Any]:
     if why_not:
                                                                                                                     
         print(f"[tournament/auction] pool cannot cover every role minimum: {why_not}")
+    await tr.finalize_pending(tid)
     claimed = await tr.cas_status(tid, ["registration"], "auction")
     if claimed is None:
         return {"ok": False, "error": "The auction is already starting."}

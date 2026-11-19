@@ -157,6 +157,14 @@ async def start_command(message):
         int(user_id),
     )
 
+    if referral_payload.lower() == "teamlogo":
+        try:
+            from handlers.tournament_team import dm_prompt
+            await dm_prompt(int(chat_id), int(user_id))
+            return
+        except Exception as exc:
+            print(f"[start_dm] team logo prompt failed: {exc!r}")
+
     if referrer_id is not None:
         try:
             created = await create_referral(referrer_id, int(user_id))

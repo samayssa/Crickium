@@ -150,6 +150,14 @@ def lot_card(t: Mapping[str, Any], lot: Mapping[str, Any], total_lots: int, next
     return head + body + f"💬 Team owners: send <b>/bid</b> to bid{nxt}\n⏱ <i>{tc.BID_SECONDS}s · the clock resets on every bid</i>"
 
 
+def _cobidder_line(team: Mapping[str, Any]) -> str:
+    """"🤝 Bid by co-bidder X" - only when the bid came from the team's co-bidder."""
+    cid = team.get("cobidder_id")
+    if cid is None or team.get("bidder_id") is None or int(cid) != int(team["bidder_id"]):
+        return ""
+    return f"🤝 <b>Co-bidder</b> ➤ {mention_html(int(cid), team.get('cobidder_username'), team.get('cobidder_name') or 'Co-bidder')}\n"
+
+
 def bid_accepted(t: Mapping[str, Any], lot: Mapping[str, Any], team: Mapping[str, Any], price: int, total_lots: int = 0) -> str:
     """One message per accepted /bid (text only; always carries the Open Auction Room button)."""
     return (
@@ -157,6 +165,7 @@ def bid_accepted(t: Mapping[str, Any], lot: Mapping[str, Any], team: Mapping[str
         f"<blockquote>{player_heading(lot)}</blockquote>"
         f"🏷 <b>Team</b> ➤ {team_label(team, owner=False)}\n"
         f"👤 <b>Owner</b> ➤ {owner_tag(team)}\n"
+        f"{_cobidder_line(team)}"
         f"💵 <b>Base price</b> ➤ {money(lot.get('base_lakh'))}\n"
         f"💰 <b>Current price</b> ➤ <b>{money(price)}</b>\n"
         f"👑 <b>Highest bidder</b> ➤ <b>{esc(team_short(team))}</b>"
@@ -321,7 +330,7 @@ def bid_feedback(result: Mapping[str, Any]) -> str:
     if reason == "paused":
         return "⏸ The auction is paused."
     if reason == "not_in":
-        return "Only team owners can bid in this auction."
+        return "Only team owners and their co-bidders can bid in this auction."
     if reason == "no_team":
         return "Your team was not found in this tournament."
     if reason == "busy":

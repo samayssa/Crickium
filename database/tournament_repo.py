@@ -171,6 +171,24 @@ SCHEMA_STATEMENTS = [
     "ALTER TABLE tour_tournaments ADD COLUMN IF NOT EXISTS overseas_squad_min INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE tour_tournaments ADD COLUMN IF NOT EXISTS role_rules JSONB NOT NULL DEFAULT '{}'::jsonb;",
     "CREATE INDEX IF NOT EXISTS idx_tour_lots_status ON tour_lots(tid, status, ord);",
+    "ALTER TABLE tour_tournaments ADD COLUMN IF NOT EXISTS overseas_choice BOOLEAN;",
+    "ALTER TABLE tour_teams ADD COLUMN IF NOT EXISTS reg_pending BOOLEAN NOT NULL DEFAULT FALSE;",
+    "ALTER TABLE tour_teams ADD COLUMN IF NOT EXISTS logo_file_id TEXT;",
+    "ALTER TABLE tour_teams ADD COLUMN IF NOT EXISTS logo_pending_file_id TEXT;",
+    "ALTER TABLE tour_teams ADD COLUMN IF NOT EXISTS logo_wait BOOLEAN NOT NULL DEFAULT FALSE;",
+    """
+    CREATE TABLE IF NOT EXISTS tour_cobidders(
+        tid BIGINT NOT NULL,
+        team_no INTEGER NOT NULL,
+        user_id BIGINT NOT NULL,
+        username TEXT,
+        first_name TEXT,
+        added_by BIGINT,
+        added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (tid, user_id)
+    );
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tour_cobidders_team ON tour_cobidders(tid, team_no);",
     """
     CREATE TABLE IF NOT EXISTS tour_bids(
         tid BIGINT NOT NULL,
@@ -295,7 +313,7 @@ _TOURNAMENT_FIELDS = {
     "max_teams", "purse_lakh", "ladder", "squad_min", "squad_max", "overseas_squad_max", "xi_overseas_max",
     "overseas_squad_min", "role_rules", "min_base_lakh", "window_start_min", "window_end_min", "tz_min", "legs", "prize", "setup_step", "setup_msg_id",
     "lobby_msg_id", "champion_team_no", "champion_user_id", "runner_up_team_no", "runner_up_user_id",
-    "league_done", "current_day", "started_at", "completed_at", "cleaned",
+    "league_done", "current_day", "started_at", "completed_at", "cleaned", "overseas_choice",
 }
 
 
@@ -471,7 +489,7 @@ async def team_by_base(tid: int, base_code: str) -> dict | None:
 
 
 async def add_team(tid: int, base_code: str, code: str, name: str, short: str | None, owner: dict | None, purse: int = 0,
-                   statuses: Iterable[str] = ("registration",)) -> dict:
+                   statuses: Iterable[str] = ("registration",), pending: bool = False) -> dict:
     """Create a team (optionally with an owner). Raises TourError: closed / full / taken / has_team."""
 
     async def _tx(conn):
@@ -490,11 +508,11 @@ async def add_team(tid: int, base_code: str, code: str, name: str, short: str | 
         team_no = int(await conn.fetchval("SELECT COALESCE(MAX(team_no), 0) + 1 FROM tour_teams WHERE tid=$1;", int(tid)))
         row = await conn.fetchrow(
             """
-            INSERT INTO tour_teams(tid, team_no, code, base_code, name, short, owner_id, owner_name, owner_username, purse_left)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *;
+            INSERT INTO tour_teams(tid, team_no, code, base_code, name, short, owner_id, owner_name, owner_username, purse_left, reg_pending)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *;
             """,
             int(tid), team_no, str(code), str(base_code), str(name), short,
-            int(owner["id"]) if owner else None, (owner or {}).get("first_name"), (owner or {}).get("username"), int(purse),
+            int(owner["id"]) if owner else None, (owner or {}).get("first_name"), (owner or {}).get("username"), int(purse), bool(pending),
         )
         if owner:
             await _upsert_member(conn, int(tid), owner, team_no)
@@ -549,6 +567,7 @@ async def remove_owner(tid: int, team_no: int, delete_if_registration: bool = Tr
         status = await conn.fetchval("SELECT status FROM tour_tournaments WHERE tid=$1;", int(tid))
         if row["owner_id"] is not None:
             await conn.execute("UPDATE tour_members SET active=FALSE, team_no=NULL WHERE tid=$1 AND user_id=$2;", int(tid), int(row["owner_id"]))
+        await conn.execute("DELETE FROM tour_cobidders WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no))
         if status == "registration" and delete_if_registration:
             await conn.execute("DELETE FROM tour_teams WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no))
             return {**dict(row), "deleted": True}
@@ -575,6 +594,137 @@ async def set_all_purses(tid: int, purse_lakh: int) -> None:
 
 async def rename_team(tid: int, team_no: int, name: str) -> None:
     await execute("UPDATE tour_teams SET name=$3 WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no), name)
+
+
+                                                                             
+                                                                   
+                                                                             
+PENDING_VISIBLE_AFTER_S = 180
+
+
+async def set_pending(tid: int, team_no: int, pending: bool) -> None:
+    await execute("UPDATE tour_teams SET reg_pending=$3 WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no), bool(pending))
+
+
+async def finalize_pending(tid: int) -> int:
+    """Every team still in the "choosing a name" step becomes a normal registered team (auction start, timeout)."""
+    rows = await fetch("UPDATE tour_teams SET reg_pending=FALSE WHERE tid=$1 AND reg_pending RETURNING team_no;", int(tid))
+    return len(rows)
+
+
+def visible_teams(teams: Iterable[dict]) -> list[dict]:
+    """Teams shown in the lobby: a team whose owner is still choosing a name stays hidden for a few minutes."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    out = []
+    for x in teams:
+        if x.get("reg_pending"):
+            made = x.get("created_at")
+            if made is not None and getattr(made, "tzinfo", None) is None:
+                made = made.replace(tzinfo=timezone.utc)
+            if made is None or (now - made).total_seconds() < PENDING_VISIBLE_AFTER_S:
+                continue
+        out.append(x)
+    return out
+
+
+async def rename_and_confirm(tid: int, team_no: int, name: str) -> dict | None:
+    return _row(await fetchrow("UPDATE tour_teams SET name=$3, reg_pending=FALSE WHERE tid=$1 AND team_no=$2 RETURNING *;",
+                               int(tid), int(team_no), name))
+
+
+async def set_logo_wait(tid: int, team_no: int, wait: bool, clear_pending: bool = True) -> None:
+    if clear_pending:
+        await execute("UPDATE tour_teams SET logo_wait=$3, logo_pending_file_id=NULL WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no), bool(wait))
+    else:
+        await execute("UPDATE tour_teams SET logo_wait=$3 WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no), bool(wait))
+
+
+async def team_waiting_for_logo(user_id: int) -> dict | None:
+    """The newest team of this user that is waiting for a logo picture (tournament not finished)."""
+    return _row(await fetchrow(
+        """
+        SELECT tm.*, t.name AS tour_name, t.host_chat_title AS group_name, t.host_chat_id AS group_id
+        FROM tour_teams tm JOIN tour_tournaments t ON t.tid = tm.tid
+        WHERE tm.owner_id=$1 AND tm.logo_wait AND t.status IN ('registration','auction','ready','live')
+        ORDER BY tm.created_at DESC LIMIT 1;
+        """, int(user_id)))
+
+
+async def set_logo_pending(tid: int, team_no: int, file_id: str) -> None:
+    await execute("UPDATE tour_teams SET logo_pending_file_id=$3 WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no), file_id)
+
+
+async def commit_logo(tid: int, team_no: int) -> dict | None:
+    return _row(await fetchrow(
+        "UPDATE tour_teams SET logo_file_id=logo_pending_file_id, logo_pending_file_id=NULL, logo_wait=FALSE "
+        "WHERE tid=$1 AND team_no=$2 AND logo_pending_file_id IS NOT NULL RETURNING *;", int(tid), int(team_no)))
+
+
+                                                                             
+                                                                          
+                                                                             
+async def team_of_bidder(tid: int, user_id: int) -> dict | None:
+    """The team this user may bid for: the one they own, or the one they are co-bidder of."""
+    try:
+        return await _team_of_bidder(tid, user_id)
+    except Exception as exc:                       # schema not migrated yet (rolling deploy): owners still work
+        print(f"[tournament_repo] team_of_bidder fallback: {exc!r}")
+        return await team_of_user(tid, user_id)
+
+
+async def _team_of_bidder(tid: int, user_id: int) -> dict | None:
+    return _row(await fetchrow(
+        """
+        SELECT tm.* FROM tour_teams tm
+        WHERE tm.tid=$1 AND (tm.owner_id=$2 OR EXISTS (SELECT 1 FROM tour_cobidders c WHERE c.tid=tm.tid AND c.team_no=tm.team_no AND c.user_id=$2))
+        ORDER BY (tm.owner_id=$2) DESC LIMIT 1;
+        """, int(tid), int(user_id)))
+
+
+async def cobidder_of_team(tid: int, team_no: int) -> dict | None:
+    return _row(await fetchrow("SELECT * FROM tour_cobidders WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no)))
+
+
+async def cobidders(tid: int) -> dict[int, dict]:
+    try:
+        return {int(r["team_no"]): r for r in _rows(await fetch("SELECT * FROM tour_cobidders WHERE tid=$1;", int(tid)))}
+    except Exception as exc:                       # table not created yet during a rolling deploy
+        print(f"[tournament_repo] cobidders fallback: {exc!r}")
+        return {}
+
+
+async def is_registered_user(tid: int, user_id: int) -> bool:
+    """Owner of a team or co-bidder of one in this tournament."""
+    return bool(await fetchval(
+        "SELECT 1 FROM tour_teams WHERE tid=$1 AND owner_id=$2 UNION ALL SELECT 1 FROM tour_cobidders WHERE tid=$1 AND user_id=$2 LIMIT 1;",
+        int(tid), int(user_id)))
+
+
+async def add_cobidder(tid: int, team_no: int, user: dict, added_by: int) -> None:
+    """Raises TourError: closed / no_team / taken (team already has one) / registered (the user is already part of it)."""
+
+    async def _tx(conn):
+        tour = await conn.fetchrow("SELECT status FROM tour_tournaments WHERE tid=$1 FOR UPDATE;", int(tid))
+        if tour is None or tour["status"] not in ("registration", "auction", "ready"):
+            raise TourError("closed", "Co-bidders can only be added before the tournament starts.")
+        team = await conn.fetchrow("SELECT * FROM tour_teams WHERE tid=$1 AND team_no=$2 FOR UPDATE;", int(tid), int(team_no))
+        if team is None or team["owner_id"] is None or int(team["owner_id"]) != int(added_by):
+            raise TourError("no_team", "Only the owner of the team can add a co-bidder.")
+        if await conn.fetchval("SELECT 1 FROM tour_cobidders WHERE tid=$1 AND team_no=$2;", int(tid), int(team_no)):
+            raise TourError("taken", "This team already has a co-bidder. Remove them first with /cobidder remove.")
+        if await conn.fetchval("SELECT 1 FROM tour_teams WHERE tid=$1 AND owner_id=$2;", int(tid), int(user["id"])) \
+                or await conn.fetchval("SELECT 1 FROM tour_cobidders WHERE tid=$1 AND user_id=$2;", int(tid), int(user["id"])):
+            raise TourError("registered", "That user is already registered in this tournament.")
+        await conn.execute(
+            "INSERT INTO tour_cobidders(tid, team_no, user_id, username, first_name, added_by) VALUES($1,$2,$3,$4,$5,$6);",
+            int(tid), int(team_no), int(user["id"]), user.get("username"), user.get("first_name"), int(added_by))
+
+    await transaction(_tx)
+
+
+async def remove_cobidder(tid: int, team_no: int) -> dict | None:
+    return _row(await fetchrow("DELETE FROM tour_cobidders WHERE tid=$1 AND team_no=$2 RETURNING *;", int(tid), int(team_no)))
 
 
 async def members(tid: int) -> list[dict]:

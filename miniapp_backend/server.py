@@ -464,6 +464,18 @@ class CrickiumMiniApp:
                     return
                 await _send_bytes(send, image[0], image[1])
                 return
+            if path == "/api/image/teamlogo":
+                from . import tournament_api
+                try:
+                    logo_tid, logo_team = int(query.get("tid") or 0), int(query.get("team") or 0)
+                except ValueError:
+                    logo_tid = logo_team = 0
+                image = await tournament_api.team_logo_bytes(logo_tid, logo_team) if logo_tid > 0 and logo_team > 0 else None
+                if not image:
+                    await _send_json(send, {"detail": "No team logo"}, 404)
+                    return
+                await _send_bytes(send, image[0], image[1])
+                return
             if path == "/api/image/profile":
                 image = await api.profile_image_bytes(viewer.id)
                 if not image:

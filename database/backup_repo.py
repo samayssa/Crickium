@@ -119,6 +119,7 @@ FULL_BACKUP_TABLES = [
     "tour_fixtures",
     "tour_days",
     "tour_player_match",
+    "tour_cobidders",
     "giveaways",
     "giveaway_entries",
     "giveaway_deliveries",

@@ -81,7 +81,82 @@
       const names = [["orange", "🟠 Orange Cap"], ["purple", "🟣 Purple Cap"], ["mvp", "⭐ MVP"], ["hundreds", "💯 100s"], ["fifties", "5️⃣0️⃣ 50s"], ["fastest100", "⚡ Fastest 100"], ["sixes", "🚀 Sixes"], ["highest", "🏏 High score"], ["bestbowl", "🎳 Best bowling"]];
       return `<div class="tn-chips">${names.map(([k, l]) => `<button class="${board === k ? "on" : ""}" data-tn-board="${k}">${l}</button>`).join("")}</div><div id="tn-board"><div class="loading-line">Loading…</div></div>`;
     }
+    if (tab === "myteam") return `<div id="tn-myteam"><div class="loading-line">Loading your team…</div></div>`;
     return `<div id="tn-allsquads"><div class="loading-line">Loading squads…</div></div>`;
+  }
+
+  /* ---------------- my team: bought players (+ price) during the auction, squad by role + XI builder after it ---------------- */
+  let mt = null, mtXi = new Set(), mtMsg = "";
+  const ROLE_ORDER = [["Batsman", "🏏 Batters"], ["Wicketkeeper", "🧤 Wicket-keepers"], ["AllRounder", "🔄 All-rounders"], ["Bowler", "⚡ Bowlers"]];
+  function xiProblem() {
+    if (!mt) return "";
+    const ps = mt.players.filter((p) => mtXi.has(p.pkey)), c = (r) => ps.filter((p) => p.role === r).length;
+    if (ps.length !== 11) return `Pick exactly 11 players (${ps.length}/11).`;
+    if (c("Batsman") < 1) return "You need at least 1 batter.";
+    if (c("Wicketkeeper") < 1) return "You need at least 1 wicket-keeper.";
+    if (c("AllRounder") < 2 || c("AllRounder") > 4) return `You need 2–4 all-rounders (you have ${c("AllRounder")}).`;
+    if (c("Bowler") < 3 || c("Bowler") > 4) return `You need 3–4 bowlers (you have ${c("Bowler")}).`;
+    const om = Number(mt.xi_overseas_max || 0);
+    if (om && ps.filter((p) => p.overseas).length > om) return `At most ${om} overseas players in the XI.`;
+    return "";
+  }
+  function myTeamHtml() {
+    if (!mt.has_team) return '<p class="tn-empty">You do not have a team in this tournament.</p>';
+    const tm = mt.team, auctionPhase = mt.phase === "auction", total = mt.squad_max;
+    const logo = tm.logo ? app().image(tm.logo, tm.name, "tn-logo") : `<span class="tn-logo ph">${esc((tm.short || "T").slice(0, 2))}</span>`;
+    const pct = Math.min(100, Math.round(100 * mt.players.length / Math.max(1, total)));
+    const rl = mt.rules && mt.rules.roles ? mt.rules.roles : [];
+    const rolebar = `<div class="tn-rules">${rl.map((r) => { const n = (mt.counts || {})[r.role] || 0; return `<span class="${n < r.min ? "need" : n >= r.max ? "full" : ""}" title="${esc(r.label)}">${esc(r.icon)} ${n} · ${r.min}–${r.max}</span>`; }).join("")}${mt.rules.overseas ? `<span>✈️ ${mt.players.filter((p) => p.overseas).length} · ${mt.rules.overseas[0]}–${mt.rules.overseas[1] || "any"}</span>` : ""}</div>`;
+    const head = `<section class="tn-myhead">${logo}<div class="tn-myhead-t"><h3>${esc(tm.name)}</h3><small>${esc(tm.owner || "")}${mt.cobidder ? " · 🤝 Co-bidder " + esc(mt.cobidder.name || "") : ""}</small></div></section>
+      <div class="tn-mystats"><div><small>PURSE LEFT</small><b>${esc(tm.purse_text)}</b><i>of ${esc(mt.purse_total_text)}</i></div><div><small>SPENT</small><b>${esc(tm.spent_text)}</b></div>
+      <div><small>SQUAD</small><b>${mt.players.length}/${total}</b><i>min ${mt.squad_min}</i></div></div>
+      <div class="tn-progress"><span style="width:${pct}%"></span></div>${rolebar}${mt.need ? `<div class="tn-howto">⚠️ Still must sign: ${esc(mt.need)}</div>` : ""}`;
+    const canEdit = mt.can_edit_xi;
+    let body = "";
+    if (!mt.players.length) body = '<p class="tn-empty">No player bought yet — win a lot in the auction and it shows up here.</p>';
+    for (const [role, label] of ROLE_ORDER) {
+      const rows = mt.players.filter((p) => p.role === role);
+      if (!rows.length) continue;
+      body += `<div class="tn-sec">${label} · ${rows.length}</div>` + rows.map((p) => {
+        const on = mtXi.has(p.pkey);
+        const right = auctionPhase ? `<b>${esc(p.price_text || "")}</b>` : `<span class="tn-ovr-chip">🏏 ${p.bat} · ⚡ ${p.bowl}</span>`;
+        return `<div class="tn-sale tn-pl ${canEdit ? "pick" : ""} ${canEdit && on ? "on" : ""}" ${canEdit ? `data-tn-xi="${esc(p.pkey)}"` : ""}><span>${canEdit ? (on ? "✅ " : "⬜ ") : ""}${esc(p.name)}${p.overseas ? " ✈️" : ""}<small>${esc(p.country || "")} · OVR ${p.ovr}</small></span>${right}</div>`;
+      }).join("");
+    }
+    let xi = "";
+    if (!auctionPhase) {
+      if (canEdit) {
+        const why = xiProblem();
+        xi = `<div class="tn-xibar ${why ? "bad" : "ok"}"><b>Playing XI ${mtXi.size}/11</b><span>${why ? esc(why) : "✅ Valid XI — ready to save"}</span></div>
+          <div class="tn-xibtns"><button class="tn-btn gold" data-tn-xisave ${why ? "disabled" : ""}>💾 Save Playing XI</button><button class="tn-btn" data-tn-xiauto>✨ Auto-pick best XI</button></div>
+          <small class="tn-prize-note">Rules: 11 players · 1+ batter · 1+ keeper · 2–4 all-rounders · 3–4 bowlers${mt.xi_overseas_max ? " · max " + mt.xi_overseas_max + " overseas" : ""}. Tap players to add or remove them.</small>`;
+      } else if (mt.xi_picked_by_captain) {
+        xi = '<div class="tn-howto">🏏 In this tournament you choose your Playing XI in the match itself.</div>';
+      }
+      if (mtMsg) xi += `<div class="tn-howto">${esc(mtMsg)}</div>`;
+    }
+    return head + xi + body;
+  }
+  async function loadMyTeam() {
+    try {
+      mt = await app().api(`/api/tournaments/${tid}/myteam`);
+      mtXi = new Set((mt.players || []).filter((p) => p.xi).map((p) => p.pkey));
+      paintMyTeam();
+    } catch (e) { const el = document.getElementById("tn-myteam"); if (el) el.innerHTML = `<p class="tn-empty">${esc(e.message)}</p>`; }
+  }
+  function paintMyTeam() {
+    const el = document.getElementById("tn-myteam"); if (!el || !mt) return;
+    el.innerHTML = myTeamHtml();
+    try { app().hydrateImages(el); } catch (_) {}
+  }
+  async function saveXi(auto) {
+    try {
+      const r = await app().api(`/api/tournaments/${tid}/xi`, { method: "POST", body: JSON.stringify(auto ? { auto: true } : { pkeys: [...mtXi] }) });
+      mtMsg = r.message || "Saved";
+      if (auto && r.pkeys) mtXi = new Set(r.pkeys);
+      app().toast(mtMsg);
+    } catch (e) { mtMsg = (e.payload && (e.payload.message || e.payload.detail)) || e.message; app().toast(mtMsg, true); }
+    paintMyTeam();
   }
   async function loadSquads() {
     try {
@@ -97,7 +172,7 @@
   }
   function renderHub() {
     const c = hub.tournament, [label, cls] = ST[c.status] || [c.status, ""];
-    const tabs = [["fixtures", "Matches"], ["table", "Table"], ["stats", "Stats"], ["teams", "Teams"]];
+    const tabs = [["fixtures", "Matches"], ["table", "Table"], ["stats", "Stats"]].concat(hub.my_team ? [["myteam", "My Team"]] : [], [["teams", "Squads"]]);
     const champ = hub.champion ? `<div class="tn-champ">🏆 Champions <b>${esc(hub.champion.short)}</b> <small>${esc(hub.champion.owner || "")}</small>${hub.runner_up ? ` · 🥈 ${esc(hub.runner_up.short)}` : ""}</div>` : "";
     root().innerHTML = `<section class="tn-hero"><div class="tn-glow"></div><span class="eyebrow">${esc(c.icon)} ${esc(c.title)}</span><h2>${esc(c.name)}</h2>
       <div class="tn-hero-row"><span class="tn-pill ${cls}">${cls === "hot" || cls === "on" ? "<i></i>" : ""}${label}</span><span>🕔 ${esc(c.window)}</span><span>👥 ${hub.teams.length}/${c.max_teams}</span></div>${champ}
@@ -107,6 +182,7 @@
       <div class="tn-tabs">${tabs.map(([k, l]) => `<button class="${tab === k ? "on" : ""}" data-tn-tab="${k}">${l}</button>`).join("")}</div><div id="tn-body">${tabBody()}</div>`;
     if (tab === "stats") loadBoard();
     if (tab === "teams") loadSquads();
+    if (tab === "myteam") loadMyTeam();
   }
   async function loadBoard() {
     try {
@@ -127,9 +203,10 @@
     const l = snap?.lot; if (!l || l.seconds_left == null) return null;
     return snap.paused || l.status !== "live" ? l.seconds_left : Math.max(0, l.seconds_left - (Date.now() - snapAt) / 1000);
   };
+  const bidSecs = () => Number(snap?.bid_seconds) || 18;
   function ring(sec) {
     if (sec == null) return "";
-    const pct = Math.min(1, sec / 30), cls = sec <= 5 ? "bad" : sec <= 10 ? "warn" : "";
+    const pct = Math.min(1, sec / bidSecs()), cls = sec <= 5 ? "bad" : sec <= 10 ? "warn" : "";
     return `<div class="tn-ring ${cls}" style="--p:${(pct * 100).toFixed(1)}"><b>${Math.ceil(sec)}</b><small>SEC</small></div>`;
   }
   function roomHtml() {
@@ -184,7 +261,7 @@
     if (mode !== "room" || !snap || !snap.lot) return;
     const r = document.querySelector(".tn-ring"); if (!r) return;
     const sec = leftNow(); if (sec == null) return;
-    r.style.setProperty("--p", (Math.min(1, sec / 30) * 100).toFixed(1));
+    r.style.setProperty("--p", (Math.min(1, sec / bidSecs()) * 100).toFixed(1));
     r.querySelector("b").textContent = Math.ceil(sec);
     r.classList.toggle("bad", sec <= 5); r.classList.toggle("warn", sec > 5 && sec <= 10);
   }
@@ -207,6 +284,9 @@
     if ((el = g("[data-tn-room]"))) { ev.stopPropagation(); openRoom(Number(el.dataset.tnRoom)); return; }
     if ((el = g("[data-tn-squads]"))) { tab = "teams"; openHub(Number(el.dataset.tnSquads)); return; }
     if ((el = g("[data-tn-open]"))) { openHub(Number(el.dataset.tnOpen)); return; }
+    if ((el = g("[data-tn-xi]"))) { const k = el.dataset.tnXi; if (mtXi.has(k)) mtXi.delete(k); else if (mtXi.size < 11) mtXi.add(k); else app().toast("Your XI already has 11 players — remove one first.", true); mtMsg = ""; paintMyTeam(); return; }
+    if (g("[data-tn-xisave]")) { if (!xiProblem()) saveXi(false); return; }
+    if (g("[data-tn-xiauto]")) { saveXi(true); return; }
     if ((el = g("[data-tn-tab]"))) { tab = el.dataset.tnTab; renderHub(); return; }
     if ((el = g("[data-tn-board]"))) { board = el.dataset.tnBoard; renderHub(); return; }
     if ((el = g("[data-tn-watch]"))) { const [e, m] = el.dataset.tnWatch.split(":"); app().openMatch && app().openMatch(e, Number(m)); return; }

@@ -327,6 +327,13 @@ async def handle_message(_, message):
                                                                               
                                                                                
                                                                                
+        try:
+            from handlers.tournament_team import handle_dm_photo
+            if await handle_dm_photo(payload):
+                return
+        except Exception:
+            print("[main.py] Team logo DM dispatch failed:")
+            traceback.print_exc()
         reply = payload.get("reply_to_message") or {}
         if reply:
                                                                  

@@ -20,7 +20,7 @@ from typing import Any, Iterable, Mapping, Sequence
            
                                                                              
 TZ_MIN_IST = 330
-BID_SECONDS = 30                                                     
+BID_SECONDS = 18                                                     
 BETWEEN_LOTS_SECONDS = 2                                                                                                                     
 GOING_ONCE_AT = 10                                              
 GOING_TWICE_AT = 5                                               
@@ -1387,3 +1387,41 @@ def render_schedule_text(fixtures: Sequence[Mapping[str, Any]], teams: Sequence[
         tag = "" if stage == "league" else f" [{stage}]"
         lines.append(f"#{int(f['home_team_no'])} vs #{int(f['away_team_no'])}{tag}   # {short.get(int(f['home_team_no']))} vs {short.get(int(f['away_team_no']))}")
     return "\n".join(lines).strip() + "\n"
+
+
+                                                                             
+                                
+                                                                             
+OVERSEAS_ON_DEFAULTS = {"PLAYIPL": (0, 8, 4), "PLAYWPL": (0, 6, 4), "PLAY": (0, 8, 4)}
+
+
+def overseas_question_applies(engine: str) -> bool:
+    """National-team (T20 World Cup) tournaments have no overseas players, so nobody is asked."""
+    return str(engine or "").upper() in OVERSEAS_ON_DEFAULTS
+
+
+def overseas_values(engine: str, wanted: bool) -> dict[str, int]:
+    """Squad columns for the wizard's "add overseas players?" answer: (min, max, max in XI)."""
+    lo, hi, xi = OVERSEAS_ON_DEFAULTS.get(str(engine or "").upper(), (0, 0, 0)) if wanted else (0, 0, 0)
+    return {"overseas_squad_min": lo, "overseas_squad_max": hi, "xi_overseas_max": xi}
+
+
+def validate_xi(players: Sequence[Mapping[str, Any]], xi_overseas_max: int = 0) -> str | None:
+    """None when these 11 players are a legal Playing XI, else a short reason.
+
+    Same bar as every engine (utils.debut_gate.validate_playing_xi): exactly 11, at least 1 batter, at least 1
+    keeper, 2-4 all-rounders, 3-4 bowlers - plus, in overseas tournaments, at most ``xi_overseas_max`` overseas."""
+    if len(players) != 11:
+        return f"Pick exactly 11 players (you have {len(players)})."
+    counts = role_counts(players)
+    if counts[ROLE_BAT] < 1:
+        return "You need at least 1 batter (a keeper does not count as a batter)."
+    if counts[ROLE_WK] < 1:
+        return "You need at least 1 wicket-keeper."
+    if not 2 <= counts[ROLE_AR] <= 4:
+        return f"You need 2-4 all-rounders (you picked {counts[ROLE_AR]})."
+    if not 3 <= counts[ROLE_BOWL] <= 4:
+        return f"You need 3-4 bowlers (you picked {counts[ROLE_BOWL]})."
+    if xi_overseas_max and sum(1 for p in players if p.get("overseas")) > int(xi_overseas_max):
+        return f"At most {int(xi_overseas_max)} overseas players are allowed in the XI."
+    return None
