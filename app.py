@@ -449,6 +449,15 @@ async def _resilient(coro_factory, *, max_retries: int = 4, label: str = ""):
             raise
 
 
+def _link_preview_off():
+    """Pyrogram's own LinkPreviewOptions object (a plain dict crashes: 'dict' object has no attribute 'url')."""
+    try:
+        from pyrogram.types import LinkPreviewOptions
+        return LinkPreviewOptions(is_disabled=True)
+    except Exception:
+        return None
+
+
 class App:
     def __init__(self):
         self.client: Client | None = None
@@ -523,7 +532,8 @@ class App:
         print(f"[app.py] send_message -> chat_id={chat_id} text={text!r}")
 
         markup_json = _reply_markup_to_json(reply_markup)
-        if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text):
+        preview_off = _link_preview_off() if disable_web_page_preview else None
+        if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text) or (disable_web_page_preview and preview_off is None):
             print("[app.py] send_message -> routing through raw HTTP Bot API")
             payload = {"chat_id": chat_id, "text": text}
             if disable_web_page_preview:
@@ -643,7 +653,7 @@ class App:
                 text=text,
                 parse_mode=_parse_mode(parse_mode),
                 reply_markup=_convert_reply_markup(reply_markup),
-                **({"link_preview_options": {"is_disabled": True}} if disable_web_page_preview else {}),
+                **({"link_preview_options": preview_off} if preview_off is not None else {}),
             ),
             label="send_message",
         )
