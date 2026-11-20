@@ -716,7 +716,7 @@ async def on_equip_confirm(callback_query):
         await app.answer_callback_query(callback_query["id"], "That upgrade slot is already occupied. Unequip it first.", show_alert=True)
     elif result == "already_equipped":
         await app.answer_callback_query(callback_query["id"], "This upgrade is already equipped on one of your players. Unequip it before moving it.", show_alert=True)
-    elif result in {"role_ineligible", "family_ineligible"}:
+    elif result in {"role_ineligible", "family_ineligible", "invalid_slot"}:
         await app.answer_callback_query(callback_query["id"], "This player is not eligible for that upgrade.", show_alert=True)
     else:
         await app.answer_callback_query(callback_query["id"], "Unable to equip this upgrade.", show_alert=True)

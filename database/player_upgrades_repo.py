@@ -193,7 +193,38 @@ async def equipped_for_player(user_id: int, player_id: int, player_kind: str) ->
     return dict(row) if row else None
 
 
+async def prune_orphan_loadouts(user_id: int) -> int:
+    """Drop loadouts of players the user no longer owns (sold, traded, replaced).
+
+    Without this an upgrade stays "equipped" on a player who is gone: it can neither be equipped on someone else
+    (it looks active) nor unequipped (the player is not in the squad any more)."""
+    squad_row = await fetchrow("SELECT squad FROM team_squads WHERE user_id=$1;", int(user_id))
+    raw = squad_row["squad"] if squad_row else []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = []
+    owned = {(int(p.get("player_id") or 0), identify_player_kind(p)) for p in (raw or []) if isinstance(p, dict)}
+    rows = await fetch("SELECT player_id, player_kind FROM user_player_loadouts WHERE user_id=$1;", int(user_id))
+    gone = [(int(r["player_id"]), str(r["player_kind"])) for r in rows if (int(r["player_id"]), str(r["player_kind"])) not in owned]
+    for pid, kind in gone:
+        await execute("DELETE FROM user_player_loadouts WHERE user_id=$1 AND player_id=$2 AND player_kind=$3;", int(user_id), pid, kind)
+    return len(gone)
+
+
+async def release_loadouts(conn, user_id: int, player_ids) -> None:
+    """Inside a transaction: clear the loadouts of players that just left the squad."""
+    ids = [int(x) for x in player_ids]
+    if ids:
+        await conn.execute("DELETE FROM user_player_loadouts WHERE user_id=$1 AND player_id = ANY($2::bigint[]);", int(user_id), ids)
+
+
 async def list_equipped(user_id: int) -> list[dict[str, Any]]:
+    try:
+        await prune_orphan_loadouts(user_id)
+    except Exception as exc:
+        print(f"[upgrades] loadout cleanup skipped: {exc!r}")
     rows = await fetch(
         """
         SELECT l.*, b.name AS batting_name, b.upgrade_key AS batting_key,
@@ -245,6 +276,17 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
         squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(user_id))
         if not squad_row:
             return "player_not_owned"
+        squad_ids = set()
+        try:
+            _raw = squad_row["squad"]
+            _raw = json.loads(_raw) if isinstance(_raw, str) else (_raw or [])
+            squad_ids = {int(p.get("player_id") or 0) for p in _raw if isinstance(p, dict)}
+        except (TypeError, ValueError):
+            squad_ids = set()
+        if squad_ids:
+            await conn.execute(
+                "DELETE FROM user_player_loadouts WHERE user_id=$1 AND NOT (player_id = ANY($2::bigint[]));",
+                int(user_id), list(squad_ids))
         already_equipped = await conn.fetchval(
             """
             SELECT 1 FROM user_player_loadouts
@@ -279,7 +321,11 @@ async def equip_upgrade(user_id: int, player_id: int, player_kind: str, upgrade_
         if role not in eligible_roles:
             return "role_ineligible"
         family = catalog["eligible_family"]
-        if family and bowler_family(player.get("role"), player.get("bowling_hand")) != family:
+        is_bowling_upgrade = str(catalog["category"]) in {"pace_bowling", "spin_bowling"}
+        if (slot == "bowling") != is_bowling_upgrade:
+            return "invalid_slot"
+        # A batting upgrade's family is the bowler type it is used AGAINST - only bowling upgrades check the player's own.
+        if family and is_bowling_upgrade and bowler_family(player.get("role"), player.get("bowling_hand")) != family:
             return "family_ineligible"
 
         current = await conn.fetchrow(

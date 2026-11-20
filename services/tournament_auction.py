@@ -34,6 +34,7 @@ from services import tournament_tg as _tg
 INTRO_SECONDS = 45                                                   
 OPENING_GRACE = 3                                                                                                  
 MIN_EDIT_GAP = 3.5                                                                
+BID_CALL_GAP = 0.3
 MIN_CALL_GAP = 1.0                                                                    
 CALLS_PER_MINUTE_LOW = 14                                                                                              
 CALLS_PER_MINUTE_HIGH = 19                                                                    
@@ -190,22 +191,28 @@ class Presenter:
                 self._busy = False
 
                                                                                                      
-    async def _pace(self, high: bool = True) -> None:
+    async def _pace(self, high: bool = True, priority: bool = False) -> None:
+        """Keep under Telegram's group limit. ``priority`` (a BID ACCEPTED) never waits for the per-minute budget -
+        only a short gap - so a bid is on screen at once even right after a lot card and its countdown."""
         budget = CALLS_PER_MINUTE_HIGH if high else CALLS_PER_MINUTE_LOW
         while True:
             now = time.monotonic()
             while self.calls and now - self.calls[0] > 60.0:
                 self.calls.popleft()
-            gap = MIN_CALL_GAP - (now - self.last_call)
+            gap = (BID_CALL_GAP if priority else MIN_CALL_GAP) - (now - self.last_call)
             if gap > 0:
                 await asyncio.sleep(gap)
                 continue
-            if len(self.calls) >= budget:
+            if not priority and len(self.calls) >= budget:
                 await asyncio.sleep(min(2.0, max(0.2, 60.0 - (now - self.calls[0]))))
                 continue
             break
         self.last_call = time.monotonic()
         self.calls.append(self.last_call)
+
+    def _budget_left(self) -> int:
+        now = time.monotonic()
+        return CALLS_PER_MINUTE_LOW - sum(1 for c in self.calls if now - c <= 60.0)
 
     async def _tournament(self, fresh: bool = False) -> dict:
         if fresh or self._tour is None or time.monotonic() - self._tour_at > 15:
@@ -214,9 +221,9 @@ class Presenter:
                 self._tour, self._tour_at = row, time.monotonic()
         return self._tour or {}
 
-    async def _send(self, chat_id: int, text: str, markup: dict | None, high: bool = True) -> int | None:
+    async def _send(self, chat_id: int, text: str, markup: dict | None, high: bool = True, priority: bool = False) -> int | None:
         for attempt in range(3):
-            await self._pace(high)
+            await self._pace(high, priority)
             try:
                 return await _tg.get().send(chat_id, text, markup)
             except Exception as exc:
@@ -384,7 +391,7 @@ class Presenter:
         file_id = (known[1] if known else None) or lot.get("card_file_id")
         adapter = _tg.get()
         if file_id and getattr(adapter, "send_photo_ex", None) is not None and len(re.sub(r"<[^>]+>", "", text)) <= 900:
-            await self._pace(True)
+            await self._pace(True, True)
             try:
                 mid, _fid = await adapter.send_photo_ex(chat_id, file_id, text, markup)
                 if mid:
@@ -392,11 +399,11 @@ class Presenter:
             except Exception as exc:
                 print(f"[tournament/auction] bid photo by file_id failed (#{self.tid}): {exc!r}")
                 self.lot_media.pop(int(ord_), None)
-        await self._send(chat_id, text, markup)
+        await self._send(chat_id, text, markup, priority=True)
 
     async def _show_count(self, ord_: int, n: int, queued_at: float) -> None:
         """"N seconds remaining" - dropped when it is stale (a bid reset the clock, or the lot is over)."""
-        if time.monotonic() - queued_at > 2.5:
+        if time.monotonic() - queued_at > 2.5 or self._budget_left() <= 0:
             return
         lot, t, _auction = await self._view(ord_)
         if lot is None or lot["status"] != "live" or not t.get("host_chat_id") or self.paused:
@@ -405,7 +412,7 @@ class Presenter:
         if left is None or math.ceil(left) != n:
             return
         leader = self._leader(lot)
-        await self._send(int(t["host_chat_id"]), tx.countdown(n, lot, leader), tx.markup([tx.room_button(self.tid)]))
+        await self._send(int(t["host_chat_id"]), tx.countdown(n, lot, leader), tx.markup([tx.room_button(self.tid)]), high=False)
 
     async def _show_result(self, ord_: int, skipped: bool) -> None:
         lot, t, auction = await self._view(ord_)
@@ -589,11 +596,24 @@ async def auction_tid_for_chat(chat_id: int) -> int | None:
     return tid
 
 
-async def bid(tid: int, ord_: int | None, user_id: int, expected_lakh: int | None = None) -> dict[str, Any]:
+_BID_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+async def bid(tid: int, ord_: int | None, user_id: int, expected_lakh: int | None = None,
+              amount_text: str | None = None, sent_at: int | None = None) -> dict[str, Any]:
     """An owner's bid. ``ord_`` None = the lot that is live right now. One database transaction does it all
-    (team lookup, rules, bid); the group message is built from its result."""
+    (team lookup, rules, bid); the group message is built from its result.
+
+    Bids of one auction go through ONE in-process queue (a FIFO lock): a burst of /bid from many owners used to
+    fight over the same lot row, which made the database abort and retry transactions (seconds of delay, "busy"
+    answers). In a queue each bid takes a few milliseconds and the first sender wins, in the order received."""
+    lock = _BID_LOCKS.get(int(tid))
+    if lock is None:
+        lock = _BID_LOCKS[int(tid)] = asyncio.Lock()
     try:
-        result = await ar.place_bid(tid, ord_, None, int(user_id), expected_lakh=expected_lakh)
+        async with lock:
+            result = await ar.place_bid(tid, ord_, None, int(user_id), expected_lakh=expected_lakh,
+                                        amount_text=amount_text, sent_at=sent_at)
     except Exception as exc:
         if getattr(exc, "sqlstate", None) == "40001":
             return {"ok": False, "reason": "busy"}
@@ -829,11 +849,13 @@ async def _tick(tid: int) -> None:
         pres.seen_version = st["version"]
         pres.changed(int(ord_))
     left = (st["deadline_at"] - now).total_seconds()
-    if left <= 0:
+    if left <= -tc.BID_GRACE_SECONDS:
         result = await ar.settle(tid, int(ord_))
         if result:
             pres.result(int(ord_))
         return
+    if left <= 0:
+        return                                                  # network grace: a bid sent in time may still land
     n = math.ceil(left)
     if n in tx.COUNTDOWN_AT:
         bit = 1 << tx.COUNTDOWN_AT.index(n)

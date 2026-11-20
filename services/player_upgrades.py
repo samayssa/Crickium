@@ -247,6 +247,10 @@ def apply_upgrade_layer(weights: Mapping[Any, float], *, batting_upgrade: Mappin
 def eligible_for_player(upgrade: UpgradeDef, *, role: str | None, bowling_style: str | None, bowling_hand: str | None) -> bool:
     if role_key(role) not in upgrade.roles:
         return False
-    if upgrade.family and bowler_family(bowling_style or role, bowling_hand) != upgrade.family:
+    # The family of a BATTING upgrade (e.g. Spin Controller) is the kind of bowler the batter FACES in a match - the
+    # engine checks it ball by ball - so it never limits who may equip it. Only bowling upgrades are tied to the
+    # equipped player's own bowling family (pace / spin).
+    if upgrade.family and upgrade.category in {"pace_bowling", "spin_bowling"} \
+            and bowler_family(bowling_style or role, bowling_hand) != upgrade.family:
         return False
     return True

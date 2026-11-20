@@ -57,6 +57,12 @@ ${stars}
   const rarityClass = (ovr) => (ovr >= 95 ? "mythic" : ovr >= 90 ? "legendary" : ovr >= 85 ? "epic" : ovr >= 80 ? "rare" : "standard");
   const rarityLabel = { mythic: "MYTHIC", legendary: "LEGENDARY", epic: "EPIC", rare: "RARE", standard: "STANDARD" };
 
+  function deliveryChip(card) {
+    if (card.status === "added") return `<span class="pk-delivery added">✓ ADDED TO SQUAD</span>`;
+    if (card.status === "pending") return `<span class="pk-delivery pending">${card.reason === "full" ? "⚠ SQUAD FULL" : "⚠ ALREADY OWNED"}</span>`;
+    return "";
+  }
+
   /* helpers: { playerCard(player, compact), number(n), hydrate() } */
   function begin(packKey, helpers) {
     const t = tier(packKey);
@@ -88,7 +94,7 @@ ${stars}
           const rc = rarityClass(Number(card.ovr || 0));
           return `<button class="pk-card ${rc}" data-i="${i}" style="--d:${i * 110}ms" aria-label="Reveal card ${i + 1}">
             <span class="pk-card-inner"><span class="pk-face pk-back">${art(packKey)}<b>TAP</b></span>
-            <span class="pk-face pk-front"><span class="pk-rarity">${rarityLabel[rc]} · ${num(card.ovr)} OVR</span>${card.player ? helpers.playerCard(card.player, true) : `<span class="pk-missing">Player details unavailable</span>`}</span></span></button>`;
+            <span class="pk-face pk-front"><span class="pk-rarity">${rarityLabel[rc]} · ${num(card.ovr)} OVR</span>${card.player ? helpers.playerCard(card.player, true) : `<span class="pk-missing">Player details unavailable</span>`}${deliveryChip(card)}</span></span></button>`;
         }).join("")}</div>
         <div class="pk-rewards" hidden><span>🪙 ${num(opening.coins)} coins</span><span>◆ ${num(opening.rubies)} rubies</span></div>
         <div class="pk-actions"><button class="button secondary" data-pk="all">Reveal all</button><button class="button primary" data-pk="done" hidden>Done</button></div></div>`;
@@ -109,10 +115,137 @@ ${stars}
       allBtn.addEventListener("click", async () => {
         for (const el of deck.querySelectorAll(".pk-card:not(.flipped)")) { flip(el); await wait(reduce ? 0 : 260); }
       });
-      doneBtn.addEventListener("click", () => { close(); onDone && onDone(); });
+      const waiting = cards.filter((c) => c.status === "pending").length;
+      if (waiting) doneBtn.textContent = `Continue · ${waiting} to decide`;
+      doneBtn.addEventListener("click", () => { close(); onDone && onDone(opening); });
     }
     return { reveal, close, fail: close };
   }
 
-  window.CrickiumPacks = { art, begin, tier };
+
+  /* Release & Replace for pack cards that cannot join the squad (already owned / squad full).
+     cards: [{card_id, name.., sell_price, reason, can_replace ...player payload}], squad: [player payloads + sell_price]
+     helpers: { playerCard, number, hydrate, ping, toast, release(id), replace(id, playerId) }
+     Resolves { changed, balance } when the owner has dealt with every card (or chose "Decide later"). */
+  function decide(cards, squad, helpers) {
+    return new Promise((resolve) => {
+      const num = helpers.number || ((n) => n);
+      const queue = cards.slice();
+      let changed = false, balance = null;
+      const root = document.createElement("div");
+      root.className = "pk-overlay pk-dec show";
+      root.innerHTML = `<div class="pk-backdrop"></div><div class="pk-stage pk-dec-stage"></div>`;
+      document.body.appendChild(root);
+      document.body.classList.add("pk-lock");
+      const stage = root.querySelector(".pk-dec-stage");
+      const finish = () => { root.classList.remove("show"); document.body.classList.remove("pk-lock"); setTimeout(() => root.remove(), 260); resolve({ changed, balance }); };
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const swap = (html) => { stage.classList.remove("pk-dec-in"); void stage.offsetWidth; stage.innerHTML = html; stage.classList.add("pk-dec-in"); helpers.hydrate && helpers.hydrate(); };
+      const reasonText = (c) => c.reason === "full" ? `Your squad is full (${num(squad.length)}/25).` : "This player is already in your squad.";
+      const price = (c) => Number(c.sell_price || 0);
+      const nameOf = (p) => esc(p.name || "Player");
+      const busy = (btn, on) => { stage.querySelectorAll("button").forEach((b) => { b.disabled = on; }); if (btn) btn.classList.toggle("loading", on); };
+
+      function stepCard() {
+        const card = queue[0];
+        if (!card) { finish(); return; }
+        const left = queue.length;
+        swap(`<div class="pk-dec-card">
+          <span class="pk-eyebrow">PACK PULL · ${left} TO DECIDE</span>
+          <div class="pk-dec-player">${helpers.playerCard(card, true)}</div>
+          <p class="pk-dec-reason">${reasonText(card)}</p>
+          <div class="pk-dec-coins"><span>♻</span> Release value <b data-count="${price(card)}">0</b> coins</div>
+          <div class="pk-dec-actions">
+            <button class="button primary" data-dec="release">♻ Release · +${num(price(card))}</button>
+            ${card.can_replace ? `<button class="button secondary" data-dec="replace">🔁 Replace a player</button>` : ""}
+          </div>
+          <button class="pk-dec-later" data-dec="later">Decide later</button>
+          ${card.can_replace ? "" : `<small class="pk-dec-note">A squad can't hold the same card twice, so a duplicate can only be released.</small>`}
+        </div>`);
+        countUp(stage.querySelector("[data-count]"));
+      }
+
+      function stepPick() {
+        const card = queue[0];
+        const rows = squad.map((p) => `<button class="pk-dec-row" data-dec="pick" data-pid="${Number(p.squad_player_id)}">
+            <span class="pk-dec-row-main"><b>${nameOf(p)}</b><small>${esc(p.role || "")} · ${num(p.overall)} OVR</small></span>
+            <span class="pk-dec-row-price">+${num(p.sell_price)}</span></button>`).join("");
+        swap(`<div class="pk-dec-pick">
+          <span class="pk-eyebrow">REPLACE · CHOOSE A PLAYER TO SELL</span>
+          <p class="pk-dec-reason"><b>${nameOf(card)}</b> (${num(card.overall || card.card_ovr)} OVR) takes the place of the player you pick. The sold player's value is paid to you in coins.</p>
+          <div class="pk-dec-list">${rows || `<p class="pk-missing">No squad players found.</p>`}</div>
+          <div class="pk-dec-actions"><button class="button secondary" data-dec="back">⬅ Back</button><button class="button primary" data-dec="release">♻ Release instead</button></div>
+        </div>`);
+      }
+
+      function stepConfirm(target) {
+        const card = queue[0];
+        swap(`<div class="pk-dec-confirm">
+          <span class="pk-eyebrow">CONFIRM REPLACEMENT</span>
+          <div class="pk-dec-swap">
+            <div class="pk-dec-out"><small>OUT · SOLD</small>${helpers.playerCard(target, true)}<b class="pk-dec-plus">+${num(target.sell_price)} coins</b></div>
+            <div class="pk-dec-arrow">⇄</div>
+            <div class="pk-dec-in-card"><small>IN</small>${helpers.playerCard(card, true)}</div>
+          </div>
+          <p class="pk-dec-reason">Replace <b>${nameOf(target)}</b> with <b>${nameOf(card)}</b>?</p>
+          <div class="pk-dec-actions"><button class="button primary" data-dec="yes">✅ Yes, Replace</button><button class="button secondary" data-dec="no">❌ Cancel · Release</button></div>
+          <button class="pk-dec-later" data-dec="back2">⬅ Choose another player</button>
+        </div>`);
+      }
+
+      async function celebrate(text, coins) {
+        swap(`<div class="pk-dec-done"><div class="pk-dec-burst">✓</div><h3>${esc(text)}</h3><div class="pk-dec-coins big"><span>🪙</span> +<b data-count="${coins}">0</b> coins</div></div>`);
+        countUp(stage.querySelector("[data-count]"));
+        helpers.ping && helpers.ping("medium");
+        await wait(1100);
+      }
+
+      async function act(kind, target, btn) {
+        const card = queue[0];
+        busy(btn, true);
+        try {
+          const res = kind === "release" ? await helpers.release(card.card_id) : await helpers.replace(card.card_id, target.squad_player_id);
+          if (res.status !== "success") throw Object.assign(new Error(res.detail || res.status || "Failed"), { payload: res });
+          changed = true; balance = res.balance;
+          if (kind === "replace") {
+            const i = squad.findIndex((p) => Number(p.squad_player_id) === Number(target.squad_player_id));
+            if (i >= 0) squad[i] = { ...card, squad_player_id: Number(card.player_id || card.entity_id || 0) };
+          }
+          queue.shift();
+          await celebrate(kind === "release" ? `${card.name || "Player"} released` : `${target.name || "Player"} replaced`, Number(res.coins || res.sell_price || 0));
+          stepCard();
+        } catch (error) {
+          busy(btn, false);
+          helpers.toast && helpers.toast(error.message || "Could not complete that. Nothing was changed.", true);
+          if (error.status === 409) { queue.shift(); changed = true; stepCard(); }
+        }
+      }
+
+      function countUp(el) {
+        if (!el) return;
+        const to = Number(el.dataset.count || 0), t0 = performance.now(), dur = 700;
+        const tick = (now) => { const k = Math.min(1, (now - t0) / dur); el.textContent = num(Math.round(to * (1 - Math.pow(1 - k, 3)))); if (k < 1) requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      }
+
+      let pickedTarget = null;
+      stage.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-dec]");
+        if (!btn || btn.disabled) return;
+        const what = btn.dataset.dec;
+        if (what === "release" || what === "no") act("release", null, btn);
+        else if (what === "replace") stepPick();
+        else if (what === "back") stepCard();
+        else if (what === "back2") stepPick();
+        else if (what === "pick") {
+          pickedTarget = squad.find((p) => Number(p.squad_player_id) === Number(btn.dataset.pid));
+          if (pickedTarget) stepConfirm(pickedTarget);
+        } else if (what === "yes" && pickedTarget) act("replace", pickedTarget, btn);
+        else if (what === "later") finish();
+      });
+      stepCard();
+    });
+  }
+
+  window.CrickiumPacks = { art, begin, tier, decide };
 })();

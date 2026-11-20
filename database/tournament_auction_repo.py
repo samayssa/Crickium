@@ -11,6 +11,8 @@ Python clock of whichever process happens to handle the request.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 import json
 from typing import Any
 
@@ -336,7 +338,7 @@ def _jload(value: Any, default: Any) -> Any:
 
 
 async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: int | None, expected_lakh: int | None = None,
-                    bid_seconds: int | None = None) -> dict[str, Any]:
+                    bid_seconds: int | None = None, amount_text: str | None = None, sent_at: int | None = None) -> dict[str, Any]:
     """Place the next legal bid for a team.
 
     ``ord_`` None -> the lot that is live right now; ``team_no`` None -> the team owned by ``user_id``
@@ -347,6 +349,14 @@ async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: in
     paying a higher price.
     Returns {"ok": True, ...} or {"ok": False, "reason": ...}.
 
+    ``amount_text`` is a DIRECT bid ("/bid 12", "/bid 80l", "/bid 1.5cr"): a bare number is read in the unit the
+    price is shown in (crore from ₹1 Cr up, lakh below). That exact amount becomes the current price when it is higher than
+    the current price (or at least the base price for the opening bid); lower or equal is refused ('too_low').
+    ``sent_at`` is the Telegram timestamp (seconds) of the /bid message: a command that was sent before this lot
+    even opened never lands on it ('stale'), and one sent before the deadline still counts during the short
+    network grace after the deadline (``tc.BID_GRACE_SECONDS``) - so a bid sent at "1 second remaining" always
+    goes to the player that was on the block.
+
     Speed: three statements in one transaction (lot + auction + clock; team + rules + role counts; the bid,
     its history row and the version bump as one CTE) instead of eleven round trips to the database.
     """
@@ -355,7 +365,9 @@ async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: in
     async def _tx(conn):
         lot = await conn.fetchrow(
             """
-            SELECT l.*, (SELECT status FROM tour_auction WHERE tid=$1) AS _a_status, NOW() AS _now
+            SELECT l.*, (SELECT status FROM tour_auction WHERE tid=$1) AS _a_status, NOW() AS _now,
+                   EXTRACT(EPOCH FROM l.deadline_at) AS _dl_ts, EXTRACT(EPOCH FROM l.started_at) AS _st_ts,
+                   EXTRACT(EPOCH FROM NOW()) AS _now_ts
             FROM tour_lots l
             WHERE l.tid=$1 AND l.ord = COALESCE($2::int, (SELECT cur_ord FROM tour_auction WHERE tid=$1))
             FOR UPDATE;
@@ -369,8 +381,13 @@ async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: in
             return {"ok": False, "reason": "paused"}
         if a_status != "running":
             return {"ok": False, "reason": "closed"}
-        if lot["deadline_at"] is not None and lot["deadline_at"] <= lot["_now"]:
-            return {"ok": False, "reason": "closed"}
+        if sent_at is not None and lot["_st_ts"] is not None and int(sent_at) + tc.BID_STALE_MARGIN_SECONDS < float(lot["_st_ts"]):
+            return {"ok": False, "reason": "stale"}
+        if lot["deadline_at"] is not None and lot["_dl_ts"] is not None and float(lot["_now_ts"]) >= float(lot["_dl_ts"]):
+            late = float(lot["_now_ts"]) - float(lot["_dl_ts"])
+            sent_in_time = sent_at is None or int(sent_at) <= int(float(lot["_dl_ts"])) + 1
+            if late >= tc.BID_GRACE_SECONDS or not sent_in_time:
+                return {"ok": False, "reason": "closed"}
         lot_ord = int(lot["ord"])
         team = await conn.fetchrow(
             """
@@ -392,8 +409,21 @@ async def place_bid(tid: int, ord_: int | None, team_no: int | None, user_id: in
         if lot["leader_team_no"] is not None and int(lot["leader_team_no"]) == team_no_:
             return {"ok": False, "reason": "leading", "price": int(lot["cur_bid_lakh"])}
         ladder = tc.normalize_ladder(_jload(team["_ladder"], []))
-        price = tc.next_bid(int(lot["cur_bid_lakh"]), int(lot["base_lakh"]), int(lot["bid_count"]) > 0, ladder)
-        if expected_lakh is not None and int(expected_lakh) != price:
+        has_bid = int(lot["bid_count"]) > 0
+        price = tc.next_bid(int(lot["cur_bid_lakh"]), int(lot["base_lakh"]), has_bid, ladder)
+        amount_lakh = None
+        if amount_text:
+            ref_ = int(lot["cur_bid_lakh"]) if has_bid else int(lot["base_lakh"])
+            amount_lakh = tc.parse_money(amount_text, default_unit="cr" if ref_ >= 100 else "l")
+            if amount_lakh is None:
+                return {"ok": False, "reason": "bad_amount"}
+        if amount_lakh is not None:
+            floor_ = int(lot["cur_bid_lakh"]) + 1 if has_bid else int(lot["base_lakh"])
+            if int(amount_lakh) < floor_:
+                return {"ok": False, "reason": "too_low", "price": int(lot["cur_bid_lakh"]) if has_bid else int(lot["base_lakh"]),
+                        "has_bid": has_bid, "min_price": floor_}
+            price = int(amount_lakh)
+        elif expected_lakh is not None and int(expected_lakh) != price:
             return {"ok": False, "reason": "moved", "price": price}
         rules = tc.tournament_rules({
             "engine": team["_engine"], "squad_min": team["_squad_min"], "squad_max": team["_squad_max"],
@@ -451,7 +481,7 @@ async def settle(tid: int, ord_: int, between_s: int | None = None, force: bool 
         if auction is None or auction["status"] not in allowed:
             return None
         now = await conn.fetchval("SELECT NOW();")
-        if not force and lot["deadline_at"] is not None and lot["deadline_at"] > now:
+        if not force and lot["deadline_at"] is not None and lot["deadline_at"] + timedelta(seconds=tc.BID_GRACE_SECONDS) > now:
             return None
         if int(lot["bid_count"]) > 0 and lot["leader_team_no"] is not None:
             team_no, price = int(lot["leader_team_no"]), int(lot["cur_bid_lakh"])

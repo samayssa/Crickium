@@ -1088,62 +1088,64 @@ async def build_player_detail_response(viewer: TelegramViewer, *, kind: str, ent
 
 
 async def _pack_owned_cards(user_id: int, limit: int = 120) -> list[dict[str, Any]]:
-    """Return cards the pack service actually persisted as owned card inventory.
+    """Pack cards that are still waiting for a Release / Replace decision.
 
-    These are kept separate from the active squad: opening a pack does not silently
-    promote a reward into the user's playing XI/squad.
-    """
+    Pulled players go straight into the squad; only a card that cannot join it (the player is already owned, or the
+    squad is full) is listed here. Calling this also moves any card an older version left in the collection into
+    the squad."""
     try:
-        rows = await fetch(
-            """
-            SELECT pci.card_id,pci.opening_id,pci.player_id,pci.card_kind,pci.position,
-                   po.pack_key,po.opened_at,po.cards
-            FROM pack_card_inventory pci
-            JOIN pack_openings po ON po.opening_id=pci.opening_id
-            WHERE pci.user_id=$1
-            ORDER BY po.opened_at DESC,pci.position ASC LIMIT $2;
-            """, int(user_id), max(1, min(int(limit), 250)),
-        )
+        from services.pack_system import pending_cards
+        cards = await pending_cards(int(user_id))
     except Exception as exc:
-                                                                               
-                                                                                   
         print(f"[miniapp_backend] pack collection unavailable: {type(exc).__name__}")
         return []
-
     output: list[dict[str, Any]] = []
-    for raw in rows:
-        row = dict(raw)
-        cards = _json_value(row.get("cards"), [])
-        if not isinstance(cards, list):
-            continue
-        position = int(row.get("position") or 0)
-        if position < 1 or position > len(cards):
-            continue
-        card = cards[position - 1]
-        if not isinstance(card, dict) or not isinstance(card.get("player"), dict):
-            continue
-        player = dict(card["player"])
-                                                                          
-                                                                                
-        try:
-            if int(player.get("player_id") or card.get("player_id") or 0) != int(row.get("player_id") or 0):
-                continue
-        except (TypeError, ValueError):
-            continue
-        card_ovr = int(card.get("ovr") or max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0)))
+    for card in cards[: max(1, min(int(limit), 250))]:
         output.append({
-            **_player_payload(player, owned=True),
-                                                                             
-                                                                                       
-            "sell_price": int(get_price(card_ovr)[1]),
-            "pack_key": str(row.get("pack_key") or ""),
-            "pack_slot": str(row.get("card_kind") or card.get("kind") or "bonus"),
-            "card_id": int(row.get("card_id") or 0),
-            "opening_id": str(row.get("opening_id") or ""),
-            "opened_at": _iso(row.get("opened_at")),
-            "card_ovr": card_ovr,
+            **_player_payload(dict(card["player"]), owned=True),
+            "sell_price": int(card["sell_value"]),
+            "pack_key": str(card.get("pack_key") or ""),
+            "pack_slot": "pending",
+            "card_id": int(card["card_id"]),
+            "opening_id": str(card["opening_id"]),
+            "card_ovr": int(card["ovr"]),
+            "reason": str(card["reason"]),
+            "can_replace": bool(card["can_replace"]),
         })
     return output
+
+
+async def build_pack_pending_response(viewer: TelegramViewer) -> dict[str, Any]:
+    """Cards waiting for Release / Replace plus the squad the owner can swap them against."""
+    cards = await _pack_owned_cards(int(viewer.id))
+    squad = []
+    if cards:
+        from services.pack_system import sell_value_of
+        for p in await _owned_squad(int(viewer.id)):
+            squad.append(_player_payload(p, owned=True) | {
+                "squad_player_id": int(p.get("player_id") or 0),
+                "sell_price": int(sell_value_of(p)),
+            })
+        squad.sort(key=lambda x: (int(x.get("overall") or 0), str(x.get("name") or "")))
+    return {"cards": cards, "squad": squad, "capacity": MAX_SQUAD_SIZE}
+
+
+async def release_pack_card(viewer: TelegramViewer, card_id: int) -> dict[str, Any]:
+    from services.pack_system import release_card
+    res = await release_card(int(viewer.id), int(card_id))
+    if res.get("status") == "success":
+        res["player"] = _player_payload(dict(res["player"]), owned=False)
+        res["sell_price"] = int(res["coins"])
+    return res
+
+
+async def replace_pack_card(viewer: TelegramViewer, card_id: int, replace_player_id: int) -> dict[str, Any]:
+    from services.pack_system import replace_card
+    res = await replace_card(int(viewer.id), int(card_id), int(replace_player_id))
+    if res.get("status") == "success":
+        res["player"] = _player_payload(dict(res["player"]), owned=True)
+        res["sell_price"] = int(res["coins"])
+    return res
 
 
 async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
@@ -1470,50 +1472,16 @@ async def sell_squad_player(viewer: TelegramViewer, player_id: int) -> dict[str,
 
 
 async def sell_pack_collection_card(viewer: TelegramViewer, card_id: int) -> dict[str, Any]:
-    """Sell a separately-owned pack reward without changing the active squad."""
+    """Old "sell a pack card" endpoint: a pending pack card is now simply released for its sell value."""
     card_id = int(card_id)
     if card_id <= 0:
         return {"status": "invalid_selection"}
-    sold_player: dict[str, Any] | None = None
-    sell_price = 0
-    balance = 0
-    async with acquire() as conn:
-        async with conn.transaction():
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id=$1 FOR UPDATE;", int(viewer.id))
-            if not user:
-                return {"status": "user_missing"}
-            row = await conn.fetchrow(
-                """
-                SELECT pci.card_id,pci.player_id,pci.position,po.cards
-                FROM pack_card_inventory pci
-                JOIN pack_openings po ON po.opening_id=pci.opening_id
-                WHERE pci.card_id=$1 AND pci.user_id=$2
-                FOR UPDATE OF pci;
-                """,
-                card_id, int(viewer.id),
-            )
-            if not row:
-                return {"status": "card_not_owned"}
-            cards = _json_value(row.get("cards"), [])
-            position = int(row.get("position") or 0)
-            if not isinstance(cards, list) or position < 1 or position > len(cards):
-                return {"status": "card_data_unavailable"}
-            saved_card = cards[position - 1]
-            if not isinstance(saved_card, dict) or not isinstance(saved_card.get("player"), dict):
-                return {"status": "card_data_unavailable"}
-            player = dict(saved_card["player"])
-            if int(player.get("player_id") or saved_card.get("player_id") or 0) != int(row.get("player_id") or 0):
-                return {"status": "card_data_unavailable"}
-            overall = int(saved_card.get("ovr") or max(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0)))
-            sell_price = int(get_price(overall)[1])
-            sold_player = _player_payload(player, owned=True)
-            await conn.execute("DELETE FROM pack_card_inventory WHERE card_id=$1 AND user_id=$2;", card_id, int(viewer.id))
-            await conn.execute(
-                "UPDATE users SET balance=COALESCE(balance,0)+$1,last_seen_at=NOW() WHERE user_id=$2;",
-                sell_price, int(viewer.id),
-            )
-            balance = int(user.get("balance") or 0) + sell_price
-    return {"status": "success", "player": sold_player, "sell_price": sell_price, "balance": balance, "card_id": card_id}
+    res = await release_pack_card(viewer, card_id)
+    if res.get("status") == "not_found":
+        return {"status": "card_not_owned"}
+    if res.get("status") == "already_resolved":
+        return {"status": "card_not_owned"}
+    return res
 
 
 async def build_leaderboard_response(viewer: TelegramViewer, limit: int = 50) -> dict[str, Any]:

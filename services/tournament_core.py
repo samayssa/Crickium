@@ -21,6 +21,8 @@ from typing import Any, Iterable, Mapping, Sequence
                                                                              
 TZ_MIN_IST = 330
 BID_SECONDS = 18                                                     
+BID_GRACE_SECONDS = 1.5      # network grace: a /bid sent before the deadline still counts this long after it
+BID_STALE_MARGIN_SECONDS = 2  # a /bid sent this long before the lot opened belongs to the PREVIOUS lot
 BETWEEN_LOTS_SECONDS = 2                                                                                                                     
 GOING_ONCE_AT = 10                                              
 GOING_TWICE_AT = 5                                               

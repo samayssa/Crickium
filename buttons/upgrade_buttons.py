@@ -27,12 +27,12 @@ def shop_filters(
     rows = [[
         styled(
             "🏏 BATTING",
-            f"upgrade_filter:batting:{page}:{int(user_id)}",
+            f"upgrade_filter:batting:0:{int(user_id)}",
             "success",
         ),
         styled(
             "🎯 BOWLING",
-            f"upgrade_filter:bowling:{page}:{int(user_id)}",
+            f"upgrade_filter:bowling:0:{int(user_id)}",
             "danger",
         ),
     ]]

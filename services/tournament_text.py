@@ -172,7 +172,7 @@ def bid_accepted(t: Mapping[str, Any], lot: Mapping[str, Any], team: Mapping[str
     )
 
 
-COUNTDOWN_AT = (10, 5, 4, 3, 2, 1)
+COUNTDOWN_AT = (10, 5, 3)
 
 
 def countdown(n: int, lot: Mapping[str, Any], leader: Mapping[str, Any] | None) -> str:
@@ -327,6 +327,14 @@ def bid_feedback(result: Mapping[str, Any]) -> str:
         return f"⚡ Someone bid first — the price is now {money(price)}."
     if reason == "closed":
         return "🔒 This lot is closed."
+    if reason == "stale":
+        return "⏱ That bid was sent before the next player opened — bid again for this player."
+    if reason == "bad_amount":
+        return "⚠️ Use /bid for the next price, or /bid 12 (crore) · /bid 80l (lakh) for your own amount."
+    if reason == "too_low":
+        if result.get("has_bid"):
+            return f"⚠️ Your bid must be higher than the current price {money(price)}."
+        return f"⚠️ The opening bid must be at least the base price {money(price)}."
     if reason == "paused":
         return "⏸ The auction is paused."
     if reason == "not_in":

@@ -308,6 +308,9 @@ class CrickiumMiniApp:
             if path == "/api/packs":
                 await _send_json(send, await api.build_pack_shop_response(viewer))
                 return
+            if path == "/api/packs/pending":
+                await _send_json(send, await api.build_pack_pending_response(viewer))
+                return
             if path == "/api/packs/openings":
                 try:
                     history_limit = max(1, min(int(query.get("limit") or 10), 20))
@@ -659,6 +662,23 @@ class CrickiumMiniApp:
                 player_id = 0
             result = await api.sell_squad_player(viewer, player_id)
             status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "minimum_squad_size"} else 404 if result.get("status") == "user_missing" else 400
+            await _send_json(send, result, status)
+            return
+        if path in ("/api/packs/card/release", "/api/packs/card/replace"):
+            try:
+                card_id = int(payload.get("card_id") or 0)
+                target_id = int(payload.get("replace_player_id") or 0)
+            except (TypeError, ValueError):
+                card_id, target_id = 0, 0
+            if card_id <= 0 or (path.endswith("replace") and not target_id):
+                await _send_json(send, {"status": "invalid_selection", "detail": "Choose a card and a squad player."}, 400)
+                return
+            await api._ensure_user(viewer)
+            if path.endswith("release"):
+                result = await api.release_pack_card(viewer, card_id)
+            else:
+                result = await api.replace_pack_card(viewer, card_id, target_id)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"already_resolved", "target_missing", "duplicate_card", "not_found", "card_data_unavailable"} else 404 if result.get("status") == "user_missing" else 400
             await _send_json(send, result, status)
             return
         if path == "/api/collection/sell-pack-card":

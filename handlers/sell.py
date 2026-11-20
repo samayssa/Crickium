@@ -278,6 +278,12 @@ async def _sell_players_atomic(seller_id: int, player_ids: set[int], credit: int
             seller_id, _json.dumps(remaining, default=str),
         )
         await conn.execute("UPDATE users SET balance = COALESCE(balance,0) + $1 WHERE user_id = $2;", int(credit), seller_id)
+        try:                                                    # an upgrade equipped on a sold player must not stay "active"
+            async with conn.transaction():                      # savepoint: a failure here can never undo the sale
+                await conn.execute("DELETE FROM user_player_loadouts WHERE user_id=$1 AND player_id = ANY($2::bigint[]);",
+                                   seller_id, [int(x) for x in player_ids])
+        except Exception:
+            pass
         return True
 
     async with user_lock(seller_id):

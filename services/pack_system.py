@@ -7,7 +7,9 @@ import uuid
 from typing import Any
 
 from database.query import execute, fetch, fetchrow, transaction
+from services.card_identity import owned_same_card, player_kind as _card_kind
 from services.player_card import overall_rating
+from utils.price_chart import get_price
 from utils.PremiumEmoji import pack_emoji_html
 from utils.rarity import get_rarity
 
@@ -19,6 +21,7 @@ PACK_CATALOG: dict[str, dict[str, Any]] = {
     "platinum": {"name": "Platinum Pack", "price": 2_500, "cards": 4, "core": (92, 99), "bonus": (85, 94), "coins": 400_000, "rubies": 300, "description": "The ultimate chase, guaranteeing a 92-99 OVR core card and three elite bonuses."},
 }
 PACK_KEYS = tuple(PACK_CATALOG)
+MAX_SQUAD_SIZE = 25
 
 
 def normalize_pack_key(value: str | None) -> str | None:
@@ -223,7 +226,7 @@ def _sample(pool: list[dict[str, Any]], count: int, *, exclude_ids: set[int] | N
     return secrets.SystemRandom().sample(available, count)
 
 
-async def open_pack(user_id: int, pack_key: str, client_request_id: str | None = None) -> dict[str, Any]:
+async def _open_pack_core(user_id: int, pack_key: str, client_request_id: str | None = None) -> dict[str, Any]:
     key = normalize_pack_key(pack_key)
     if not key:
         return {"status": "invalid"}
@@ -362,6 +365,9 @@ async def open_pack(user_id: int, pack_key: str, client_request_id: str | None =
             """,
             int(p["coins"]), int(p["rubies"]), int(user_id),
         )
+        # The cards go straight into the player's SQUAD (team_squads). Only a card that cannot be added -
+        # the player is already owned, or the squad is full - waits for the Release / Replace decision.
+        await _settle_in_tx(conn, int(user_id))            # (also heals cards stranded by older versions)
         return {"status": "success", "opening_id": str(opening_id), "pack_key": key,
                 "cards": cards, "coins": int(p["coins"]), "rubies": int(p["rubies"]), "replayed": False}
 
@@ -382,4 +388,275 @@ async def get_opening(user_id: int, opening_id: str) -> dict[str, Any] | None:
         cards = json.loads(cards)
     data["cards"] = cards or []
     data["pack_key"] = normalize_pack_key(data.get("pack_key"))
+    await _attach_delivery(int(user_id), data)
     return data
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Delivery of pack cards into the squad + Release & Replace
+# ---------------------------------------------------------------------------------------------------------------------
+def _parse_squad(raw: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if isinstance(raw, list):
+        return [dict(p) for p in raw if isinstance(p, dict)]
+    return []
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    return value if isinstance(value, list) else []
+
+
+def sell_value_of(player: dict[str, Any]) -> int:
+    """What a player is worth when sold: the same chart /sell uses (45% of the buy price at his overall)."""
+    ovr = overall_rating(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
+    return int(get_price(ovr)[1])
+
+
+async def _full_snapshot(conn, player: dict[str, Any]) -> dict[str, Any]:
+    """The squad snapshot of a pack player - the same shape /buy and /claim store (full database row)."""
+    pid = int(player.get("player_id") or 0)
+    if pid < 0:
+        row = await conn.fetchrow("SELECT * FROM special_edition_players WHERE special_player_id=$1;", abs(pid))
+        if row is not None:
+            from database.special_players_repo import as_special_player
+            return as_special_player(row)
+        snap = dict(player)
+        snap.update({"player_kind": "special", "is_special": True, "is_showcase": False, "special_edition_id": abs(pid)})
+        return snap
+    row = await conn.fetchrow("SELECT * FROM players WHERE player_id=$1;", pid)
+    snap = dict(row) if row is not None else dict(player)
+    snap.update({"player_kind": "global", "is_special": False, "is_showcase": False})
+    return snap
+
+
+def _card_player(row: Any) -> dict[str, Any] | None:
+    cards = _as_list(row["cards"])
+    position = int(row["position"] or 0)
+    if position < 1 or position > len(cards) or not isinstance(cards[position - 1], dict):
+        return None
+    player = cards[position - 1].get("player")
+    return dict(player) if isinstance(player, dict) else None
+
+
+async def _write_squad(conn, user_id: int, squad: list[dict[str, Any]]) -> None:
+    await conn.execute(
+        "INSERT INTO team_squads (user_id, squad, updated_at) VALUES ($1, $2::jsonb, NOW()) "
+        "ON CONFLICT (user_id) DO UPDATE SET squad = EXCLUDED.squad, updated_at = NOW();",
+        int(user_id), json.dumps(squad, default=str),
+    )
+
+
+async def _settle_in_tx(conn, user_id: int, opening_id: Any = None) -> list[dict[str, Any]]:
+    """Move pending pack cards into the squad (inside the caller's transaction).
+
+    A card is added when the player is not owned yet and the squad has room. Anything else stays 'pending' and
+    waits for the owner's Release / Replace choice. Also heals cards that older versions left in the collection
+    table instead of the squad."""
+    args: list[Any] = [int(user_id)]
+    where = ""
+    if opening_id is not None:
+        args.append(opening_id if not isinstance(opening_id, str) else uuid.UUID(opening_id))
+        where = " AND pci.opening_id=$2"
+    rows = await conn.fetch(
+        f"""
+        SELECT pci.card_id, pci.opening_id, pci.position, po.cards
+        FROM pack_card_inventory pci JOIN pack_openings po ON po.opening_id = pci.opening_id
+        WHERE pci.user_id=$1 AND pci.status='pending'{where}
+        ORDER BY po.opened_at, pci.position
+        FOR UPDATE OF pci;
+        """, *args)
+    if not rows:
+        return []
+    squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(user_id))
+    squad = _parse_squad(squad_row["squad"]) if squad_row else []
+    changed = False
+    outcome: list[dict[str, Any]] = []
+    for row in rows:
+        player = _card_player(row)
+        if player is None:
+            continue
+        snap = await _full_snapshot(conn, player)
+        owned = any(owned_same_card(p, snap) for p in squad)
+        if not owned and len(squad) < MAX_SQUAD_SIZE:
+            squad.append(snap)
+            changed = True
+            await conn.execute("UPDATE pack_card_inventory SET status='added', resolved_at=NOW() WHERE card_id=$1;", int(row["card_id"]))
+            await conn.execute("DELETE FROM player_user_match_stats WHERE user_id=$1 AND player_id=$2;", int(user_id), int(snap.get("player_id") or 0))
+            outcome.append({"card_id": int(row["card_id"]), "status": "added"})
+        else:
+            outcome.append({"card_id": int(row["card_id"]), "status": "pending", "reason": "duplicate" if owned else "full"})
+    if changed:
+        await _write_squad(conn, int(user_id), squad)
+    return outcome
+
+
+async def _attach_delivery(user_id: int, data: dict[str, Any]) -> None:
+    """Add card_id / status / reason / sell value (and the paid amount once decided) to each card of an opening."""
+    try:
+        oid = uuid.UUID(str(data.get("opening_id")))
+        rows = await fetch(
+            "SELECT card_id, position, status, resolution_coins FROM pack_card_inventory WHERE opening_id=$1 AND user_id=$2;",
+            oid, int(user_id))
+        squad_row = await fetchrow("SELECT squad FROM team_squads WHERE user_id=$1;", int(user_id))
+    except Exception as exc:
+        print(f"[packs] delivery lookup failed: {exc!r}")
+        return
+    squad = _parse_squad(squad_row["squad"]) if squad_row else []
+    by_pos = {int(r["position"]): r for r in rows}
+    for pos, card in enumerate(data.get("cards") or [], start=1):
+        if not isinstance(card, dict):
+            continue
+        card["sell_value"] = sell_value_of(card.get("player") or {})
+        row = by_pos.get(pos)
+        if row is None:
+            continue
+        card["card_id"] = int(row["card_id"])
+        card["status"] = str(row["status"] or "pending")
+        card["resolution_coins"] = int(row["resolution_coins"] or 0)
+        if card["status"] == "pending":
+            pl = dict(card.get("player") or {})
+            owned = any(owned_same_card(p, {**pl, "player_kind": _card_kind(pl)}) for p in squad)
+            card["reason"] = "duplicate" if owned else "full"
+        card["can_replace"] = card.get("status") == "pending" and card.get("reason") == "full"
+
+
+async def open_pack(user_id: int, pack_key: str, client_request_id: str | None = None) -> dict[str, Any]:
+    result = await _open_pack_core(user_id, pack_key, client_request_id)
+    if result.get("status") == "success":
+        await _attach_delivery(int(user_id), result)
+    return result
+
+
+async def pending_cards(user_id: int) -> list[dict[str, Any]]:
+    """Cards still waiting for Release / Replace (settles first, so anything that fits is added to the squad)."""
+    async def _tx(conn):
+        await _settle_in_tx(conn, int(user_id))
+        return await conn.fetch(
+            """
+            SELECT pci.card_id, pci.opening_id, pci.position, po.cards, po.pack_key
+            FROM pack_card_inventory pci JOIN pack_openings po ON po.opening_id = pci.opening_id
+            WHERE pci.user_id=$1 AND pci.status='pending' ORDER BY po.opened_at DESC, pci.position;
+            """, int(user_id))
+    rows = await transaction(_tx)
+    squad_row = await fetchrow("SELECT squad FROM team_squads WHERE user_id=$1;", int(user_id))
+    squad = _parse_squad(squad_row["squad"]) if squad_row else []
+    out = []
+    for row in rows:
+        player = _card_player(row)
+        if player is None:
+            continue
+        ovr = overall_rating(int(player.get("bat_level") or 0), int(player.get("bowl_level") or 0))
+        owned = any(owned_same_card(p, {**player, "player_kind": _card_kind(player)}) for p in squad)
+        out.append({"card_id": int(row["card_id"]), "opening_id": str(row["opening_id"]), "position": int(row["position"]),
+                    "pack_key": str(row["pack_key"] or ""), "player": player, "ovr": ovr, "rarity": get_rarity(ovr),
+                    "sell_value": sell_value_of(player), "reason": "duplicate" if owned else "full",
+                    "can_replace": not owned})
+    return out
+
+
+async def squad_choices(user_id: int) -> list[dict[str, Any]]:
+    row = await fetchrow("SELECT squad FROM team_squads WHERE user_id=$1;", int(user_id))
+    out = []
+    for p in _parse_squad(row["squad"]) if row else []:
+        ovr = overall_rating(int(p.get("bat_level") or 0), int(p.get("bowl_level") or 0))
+        out.append({"player_id": int(p.get("player_id") or 0), "name": str(p.get("name") or "Player"),
+                    "edition": p.get("edition"), "role": p.get("role"), "country": p.get("country"),
+                    "bat_level": int(p.get("bat_level") or 0), "bowl_level": int(p.get("bowl_level") or 0),
+                    "player_kind": _card_kind(p), "ovr": ovr, "sell_value": sell_value_of(p)})
+    out.sort(key=lambda x: (x["ovr"], x["name"]))
+    return out
+
+
+async def _lock_pending_card(conn, user_id: int, card_id: int):
+    return await conn.fetchrow(
+        """
+        SELECT pci.card_id, pci.opening_id, pci.position, pci.status, po.cards, po.pack_key
+        FROM pack_card_inventory pci JOIN pack_openings po ON po.opening_id = pci.opening_id
+        WHERE pci.card_id=$1 AND pci.user_id=$2 FOR UPDATE OF pci;
+        """, int(card_id), int(user_id))
+
+
+async def release_card(user_id: int, card_id: int) -> dict[str, Any]:
+    """Release: the pack player is not kept; the owner is paid his sell value in coins (one transaction, once)."""
+    async def _tx(conn):
+        user = await conn.fetchrow("SELECT balance FROM users WHERE user_id=$1 FOR UPDATE;", int(user_id))
+        if user is None:
+            return {"status": "user_missing"}
+        row = await _lock_pending_card(conn, user_id, card_id)
+        if row is None:
+            return {"status": "not_found"}
+        if row["status"] != "pending":
+            return {"status": "already_resolved", "resolution": str(row["status"]), "opening_id": str(row["opening_id"]),
+                    "position": int(row["position"])}
+        player = _card_player(row)
+        if player is None:
+            return {"status": "card_data_unavailable"}
+        snap = await _full_snapshot(conn, player)
+        coins = sell_value_of(snap)
+        await conn.execute("UPDATE users SET balance=COALESCE(balance,0)+$1, last_seen_at=NOW() WHERE user_id=$2;", coins, int(user_id))
+        await conn.execute("UPDATE pack_card_inventory SET status='released', resolved_at=NOW(), resolution_coins=$2 WHERE card_id=$1;",
+                           int(card_id), coins)
+        return {"status": "success", "action": "release", "coins": coins, "balance": int(user["balance"] or 0) + coins,
+                "player": player, "opening_id": str(row["opening_id"]), "position": int(row["position"])}
+    return await transaction(_tx)
+
+
+async def replace_card(user_id: int, card_id: int, replace_player_id: int) -> dict[str, Any]:
+    """Replace: the chosen squad player is sold (coins) and the pack player takes his place in the squad."""
+    async def _tx(conn):
+        user = await conn.fetchrow("SELECT balance FROM users WHERE user_id=$1 FOR UPDATE;", int(user_id))
+        if user is None:
+            return {"status": "user_missing"}
+        row = await _lock_pending_card(conn, user_id, card_id)
+        if row is None:
+            return {"status": "not_found"}
+        if row["status"] != "pending":
+            return {"status": "already_resolved", "resolution": str(row["status"]), "opening_id": str(row["opening_id"]),
+                    "position": int(row["position"])}
+        player = _card_player(row)
+        if player is None:
+            return {"status": "card_data_unavailable"}
+        squad_row = await conn.fetchrow("SELECT squad FROM team_squads WHERE user_id=$1 FOR UPDATE;", int(user_id))
+        squad = _parse_squad(squad_row["squad"]) if squad_row else []
+        idx = next((i for i, p in enumerate(squad) if int(p.get("player_id") or 0) == int(replace_player_id)), None)
+        if idx is None:
+            return {"status": "target_missing"}
+        snap = await _full_snapshot(conn, player)
+        if any(owned_same_card(p, snap) for p in squad):
+            return {"status": "duplicate_card"}          # a squad never holds the same card twice - release it instead
+        old = squad[idx]
+        coins = sell_value_of(old)
+        squad[idx] = snap
+        await _write_squad(conn, int(user_id), squad)
+        await conn.execute("UPDATE users SET balance=COALESCE(balance,0)+$1, last_seen_at=NOW() WHERE user_id=$2;", coins, int(user_id))
+        await conn.execute(
+            "UPDATE pack_card_inventory SET status='replaced', resolved_at=NOW(), resolution_coins=$2, replaced_player_id=$3 WHERE card_id=$1;",
+            int(card_id), coins, int(replace_player_id))
+        for stmt in ("DELETE FROM user_player_loadouts WHERE user_id=$1 AND player_id=$2;",
+                     "DELETE FROM player_user_match_stats WHERE user_id=$1 AND player_id=$2;"):
+            try:
+                async with conn.transaction():
+                    await conn.execute(stmt, int(user_id), int(replace_player_id))
+            except Exception:
+                pass
+        try:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM player_user_match_stats WHERE user_id=$1 AND player_id=$2;", int(user_id), int(snap.get("player_id") or 0))
+        except Exception:
+            pass
+        return {"status": "success", "action": "replace", "coins": coins, "balance": int(user["balance"] or 0) + coins,
+                "player": player, "replaced": {"player_id": int(old.get("player_id") or 0), "name": str(old.get("name") or "Player"),
+                                               "edition": old.get("edition")},
+                "opening_id": str(row["opening_id"]), "position": int(row["position"])}
+    return await transaction(_tx)

@@ -155,6 +155,10 @@ async def migrate() -> None:
         );
     """)
     await execute("CREATE INDEX IF NOT EXISTS idx_pack_card_inventory_user ON pack_card_inventory(user_id,created_at DESC);")
+    await execute("ALTER TABLE pack_card_inventory ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';")
+    await execute("ALTER TABLE pack_card_inventory ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;")
+    await execute("ALTER TABLE pack_card_inventory ADD COLUMN IF NOT EXISTS resolution_coins BIGINT NOT NULL DEFAULT 0;")
+    await execute("ALTER TABLE pack_card_inventory ADD COLUMN IF NOT EXISTS replaced_player_id BIGINT;")
     await execute(
         """
         CREATE TABLE IF NOT EXISTS miniapp_kitbag_claims(

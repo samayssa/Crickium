@@ -5,6 +5,8 @@ into calls to services.tournament_runtime / services.tournament_auction and rend
 """
 from __future__ import annotations
 
+import time
+
 print("tournament.py loaded")
 
 import re
@@ -1076,12 +1078,34 @@ async def auction_command(message):
     await _send(chat_id, text, kb)
 
 
+_BID_REPLY_AT: dict[tuple[int, int], float] = {}
+
+
+def _reply_allowed(chat_id: int, user_id: int, gap: float = 4.0) -> bool:
+    """Answer a refused /bid at most once every few seconds per owner - a spammer must not flood the group
+    (Telegram's flood limit would then slow down the real bids of everybody else)."""
+    now = time.monotonic()
+    key = (int(chat_id), int(user_id))
+    if len(_BID_REPLY_AT) > 2000:
+        for k in [k for k, v in _BID_REPLY_AT.items() if now - v > 60]:
+            _BID_REPLY_AT.pop(k, None)
+    if now - _BID_REPLY_AT.get(key, 0.0) < gap:
+        return False
+    _BID_REPLY_AT[key] = now
+    return True
+
+
 @register("bid")
 async def bid_command(message):
-    """Team owners bid with /bid in the host group: it always takes the next legal price.
+    """Team owners bid with /bid in the host group.
+
+    * ``/bid``       - the next legal price (current price + the ladder step).
+    * ``/bid 12``    - a DIRECT bid: 12 becomes the current price if it is higher than the current price
+      (crore when the price is already ₹1 Cr or more, otherwise lakh; ``12cr`` / ``80l`` choose the unit).
 
     Fast path: no lookups before the bid - the group's running auction comes from memory and ONE database
-    transaction finds the live lot, the owner's team, checks the rules and places the bid."""
+    transaction finds the live lot, the owner's team, checks the rules and places the bid. The message's own
+    timestamp travels with it, so a command sent before the next player opened can never land on that player."""
     chat_id, ctype = _chat(message)
     u = _user(message)
     if not _is_group(ctype):
@@ -1089,17 +1113,25 @@ async def bid_command(message):
         return
     tid = await auc.auction_tid_for_chat(chat_id)
     if tid is None:
-        return                                                                                 
+        return
+    raw = _args(message)
     try:
-        res = await auc.bid(tid, None, u["id"])
+        res = await auc.bid(tid, None, u["id"], amount_text=raw or None, sent_at=message.get("date"))
     except Exception:
         traceback.print_exc()
-        await _send(chat_id, "⚠️ Something went wrong, send /bid again.")
+        if _reply_allowed(chat_id, u["id"], 2.0):
+            await _send(chat_id, "⚠️ Something went wrong, send /bid again.")
         return
-    if res.get("reason") in ("no_lot", "closed") and not res.get("ok"):
-        await _send(chat_id, "⏳ No player is open for bidding right now — the next one starts in a moment.")
+    if res.get("ok"):
         return
-    if not res.get("ok"):
+    reason = res.get("reason")
+    if reason == "stale":
+        return                                                   # sent for the previous player - drop it quietly
+    if reason in ("no_lot", "closed"):
+        if _reply_allowed(chat_id, u["id"], 6.0):
+            await _send(chat_id, "⏳ No player is open for bidding right now — the next one starts in a moment.")
+        return
+    if _reply_allowed(chat_id, u["id"]):
         who = tv.owner_mention({"owner_id": u["id"], "owner_username": u["username"], "owner_name": u["first_name"]})
         await _send(chat_id, f"{who} — {tx.esc(tx.bid_feedback(res))}")
 

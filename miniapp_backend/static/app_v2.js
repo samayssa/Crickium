@@ -668,6 +668,27 @@
     } finally { state.packBusy = false; }
   }
 
+  /* Pack cards that cannot join the squad (already owned / squad full): Release for coins or Replace a squad player. */
+  async function runPackDecisions(onlyCardId) {
+    if (!window.CrickiumPacks || !window.CrickiumPacks.decide) return;
+    let data;
+    try { data = await api("/api/packs/pending"); }
+    catch (error) { toast(error.message || "Could not load your pending pack cards.", true); return; }
+    let cards = data.cards || [];
+    if (onlyCardId) cards = cards.filter((card) => Number(card.card_id) === Number(onlyCardId));
+    if (!cards.length) { if (onlyCardId) toast("That card was already handled."); return; }
+    const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body) });
+    const result = await window.CrickiumPacks.decide(cards, data.squad || [], {
+      playerCard, number, hydrate: hydrateImages, ping, toast,
+      release: (cardId) => post("/api/packs/card/release", { card_id: Number(cardId) }),
+      replace: (cardId, playerId) => post("/api/packs/card/replace", { card_id: Number(cardId), replace_player_id: Number(playerId) }),
+    });
+    if (result && result.changed) {
+      if (state.home?.wallet && result.balance != null) state.home.wallet.coins = result.balance;
+      if (state.page === "squad") await loadSquad();
+    }
+  }
+
   async function openPack(packKey) {
     if (state.packBusy) return;
     state.packBusy = true;
@@ -682,7 +703,10 @@
       state.packOpening = null;
       ping("heavy");
       if (ui) {
-        await ui.reveal(opening, () => {});
+        await ui.reveal(opening, async () => {
+          const waiting = (opening.cards || []).some((card) => card.status === "pending");
+          if (waiting) { await runPackDecisions(); await loadPacks({ opening: null }); }
+        });
         await loadPacks({ opening: null });
       } else {
         toast(opening.replayed ? "Loaded your saved pack reveal." : "Pack opened. Your cards and rewards are saved.");
@@ -785,7 +809,7 @@
 
   function packCardsSection(packCards) {
     if (!packCards.length) return "";
-    return `<section class="managed-roster-section">${sectionTitle(`Pack cards · ${number(packCards.length)}`)}<p class="muted-copy">Cards saved from pack openings are separate from your active squad. Sell a card here to return its listed resale value to your coin balance.</p><div class="player-grid">${packCards.map((item) => `<div class="collection-pack-card">${playerCard(item, true)}<small>${esc(String(item.pack_key || "pack").toUpperCase())} · ${esc(String(item.pack_slot || "bonus").toUpperCase())} · ${number(item.card_ovr)} OVR</small><button class="button sell-button full" data-action="sell-pack-card" data-card-id="${Number(item.card_id)}" data-name="${esc(item.name || "player")}" data-sell-price="${Number(item.sell_price || 0)}">Sell · ${number(item.sell_price)} coins</button></div>`).join("")}</div></section>`;
+    return `<section class="managed-roster-section">${sectionTitle(`Pack cards waiting · ${number(packCards.length)}`)}<p class="muted-copy">These pack players could not join your squad (already owned, or the squad is full). Release one for its coin value${packCards.some((item) => item.can_replace) ? ", or replace a squad player with it" : ""}.</p><div class="player-grid">${packCards.map((item) => `<div class="collection-pack-card">${playerCard(item, true)}<small>${esc(String(item.pack_key || "pack").toUpperCase())} · ${item.reason === "full" ? "SQUAD FULL" : "ALREADY OWNED"} · ${number(item.card_ovr)} OVR</small><button class="button sell-button full" data-action="sell-pack-card" data-card-id="${Number(item.card_id)}" data-name="${esc(item.name || "player")}" data-sell-price="${Number(item.sell_price || 0)}">♻ Release · ${number(item.sell_price)} coins</button>${item.can_replace ? `<button class="button secondary full" data-action="decide-pack-card" data-card-id="${Number(item.card_id)}">🔁 Replace a player</button>` : ""}</div>`).join("")}</div></section>`;
   }
 
   function renderSquadList(data, hostId = "squad-list") {
@@ -1032,11 +1056,11 @@
       if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
       if (state.home?.wallet) state.home.wallet.coins = result.balance;
       await loadSquad();
-      toast(`${result.player?.name || "Player"} sold for ${number(result.sell_price)} coins.`);
+      toast(`${result.player?.name || "Player"} released for ${number(result.sell_price)} coins.`);
       ping("medium");
     } catch (error) {
       toast(claimError(error.payload || { status: error.message }), true);
-      if (button) { button.disabled = false; button.textContent = "Sell failed · Retry"; }
+      if (button) { button.disabled = false; button.textContent = "Release failed · Retry"; }
     }
   }
 
@@ -2090,7 +2114,10 @@
       if (action === "sell-pack-card") {
         const name = actionButton.dataset.name || "this collection card";
         const price = Number(actionButton.dataset.sellPrice || 0);
-        showConfirm(`Sell ${name} from your pack collection for ${number(price)} coins? This only removes the saved collection copy and does not change your squad.`, "Sell card", () => sellPackCard(actionButton.dataset.cardId, actionButton));
+        showConfirm(`Release ${name} for ${number(price)} coins? The pack player is not added to your squad and your squad does not change.`, "Release", () => sellPackCard(actionButton.dataset.cardId, actionButton));
+      }
+      if (action === "decide-pack-card") {
+        runPackDecisions(actionButton.dataset.cardId);
       }
       if (action === "open-kitbag-replace") startKitbagReplacement(actionButton.dataset.claimId || state.pendingKitbagClaimId);
       if (action === "replace-kitbag-player") {
