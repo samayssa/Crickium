@@ -860,85 +860,146 @@ async def export_tables(
     *,
     backup_type: str,
 ) -> bytes:
+    """Export tables as the existing gzip-JSON format, streaming database rows.
+
+    The previous implementation used ``fetch(SELECT *)`` for each table. That
+    buffers an entire table in memory and is subject to asyncpg's command
+    timeout. A large table could therefore abort the whole /sync backup.
+
+    This implementation uses a read-only repeatable-read transaction and a
+    server-side cursor. Rows are JSON-encoded directly into the gzip stream;
+    no table is omitted and row-count/schema metadata is retained for /recover.
+    """
+    import asyncio
+    import os
+    import time
+
     pool = get_pool()
+    try:
+        prefetch = int(os.getenv("BACKUP_CURSOR_PREFETCH", "500"))
+    except (TypeError, ValueError):
+        prefetch = 500
+    prefetch = max(100, min(2000, prefetch))
+    try:
+        query_timeout = float(os.getenv("BACKUP_QUERY_TIMEOUT_SECONDS", "900"))
+    except (TypeError, ValueError):
+        query_timeout = 900.0
+    query_timeout = max(120.0, min(query_timeout, 3600.0))
+
+    output = io.BytesIO()
+    row_counts: dict[str, int] = {}
+    total_rows = 0
+    export_started = time.monotonic()
+
+    def write_json(gzip_stream, value) -> None:
+        encoded = json.dumps(
+            value,
+            default=_json_default,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        gzip_stream.write(encoded)
 
     async with pool.acquire() as conn:
-        if backup_type == "sync" and table_names is None:
-            tables_to_export = await _public_base_tables(conn)
+        # Keep one consistent snapshot across every table while users continue
+        # playing. Cursors require an explicit transaction in asyncpg.
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            if backup_type == "sync" and table_names is None:
+                tables_to_export = await _public_base_tables(conn)
+            elif table_names is None:
+                raise ValueError("table_names is required for non-sync backups")
+            else:
+                tables_to_export = list(dict.fromkeys(str(t) for t in table_names))
 
-        elif table_names is None:
-            raise ValueError(
-                "table_names is required for non-sync backups"
-            )
-
-        else:
-            tables_to_export = list(
-                dict.fromkeys(
-                    str(t)
-                    for t in table_names
-                )
-            )
-
-        current_tables = set(
-            await _public_base_tables(
+            current_tables = set(await _public_base_tables(
                 conn,
                 include_schema_bookkeeping=False,
-            )
-        )
+            ))
+            invalid = sorted(set(tables_to_export) - current_tables)
+            if invalid:
+                raise ValueError(
+                    "Backup requested unknown public table(s): " + ", ".join(invalid)
+                )
 
-        invalid = sorted(
-            set(tables_to_export) - current_tables
-        )
+            with gzip.GzipFile(
+                fileobj=output,
+                mode="wb",
+                compresslevel=6,
+                mtime=0,
+            ) as gzip_stream:
+                # Key order is not significant. /recover's streaming reader
+                # accepts the tables object before the metadata keys.
+                gzip_stream.write(b'{"tables":{')
 
-        if invalid:
-            raise ValueError(
-                "Backup requested unknown public table(s): "
-                + ", ".join(invalid)
-            )
+                for table_index, table in enumerate(tables_to_export, start=1):
+                    table_started = time.monotonic()
+                    safe_table = table.replace('"', '""')
+                    query = f'SELECT * FROM "{safe_table}";'
+                    table_rows = 0
+                    first_row = True
 
-        tables: dict[str, list[dict]] = {}
-        row_counts: dict[str, int] = {}
+                    if table_index > 1:
+                        gzip_stream.write(b",")
+                    write_json(gzip_stream, table)
+                    gzip_stream.write(b":[")
+                    print(
+                        f"[backup_repo] exporting table {table_index}/{len(tables_to_export)}: {table}"
+                    )
+                    try:
+                        cursor = conn.cursor(
+                            query,
+                            prefetch=prefetch,
+                            timeout=query_timeout,
+                        )
+                        async for record in cursor:
+                            if not first_row:
+                                gzip_stream.write(b",")
+                            first_row = False
+                            write_json(gzip_stream, dict(record))
+                            table_rows += 1
+                            total_rows += 1
+                            if table_rows % 500 == 0:
+                                await asyncio.sleep(0)
+                    except Exception as exc:
+                        elapsed = time.monotonic() - table_started
+                        print(
+                            f"[backup_repo] table export failed: {table} "
+                            f"after {table_rows} rows / {elapsed:.1f}s: "
+                            f"{type(exc).__name__}: {exc!r}"
+                        )
+                        raise
 
-        for table in tables_to_export:
-            rows = await conn.fetch(
-                f'SELECT * FROM "{table}";'
-            )
+                    gzip_stream.write(b"]")
+                    row_counts[table] = table_rows
+                    print(
+                        f"[backup_repo] exported table {table_index}/{len(tables_to_export)}: "
+                        f"{table} rows={table_rows} elapsed={time.monotonic() - table_started:.1f}s"
+                    )
 
-            tables[table] = [
-                dict(row)
-                for row in rows
-            ]
+                metadata = {
+                    "backup_format_version": BACKUP_FORMAT_VERSION,
+                    "backup_type": backup_type,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "schema_tables": tables_to_export if backup_type == "sync" else None,
+                    "table_count": len(tables_to_export),
+                    "row_counts": row_counts,
+                }
+                gzip_stream.write(b"},")
+                for metadata_index, (key, value) in enumerate(metadata.items()):
+                    if metadata_index:
+                        gzip_stream.write(b",")
+                    write_json(gzip_stream, key)
+                    gzip_stream.write(b":")
+                    write_json(gzip_stream, value)
+                gzip_stream.write(b"}")
 
-            row_counts[table] = len(rows)
-
-    payload = {
-        "backup_format_version": BACKUP_FORMAT_VERSION,
-        "backup_type": backup_type,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "schema_tables": (
-            tables_to_export
-            if backup_type == "sync"
-            else None
-        ),
-        "table_count": len(tables_to_export),
-        "row_counts": row_counts,
-        "tables": tables,
-    }
-
-                                                                                                                  
-                                                                                                                   
-                                                                                         
-    compressed = await _encode_gzip_json(payload)
-
+    compressed = output.getvalue()
     print(
         f"[backup_repo] export_tables({backup_type}) -> "
-        f"{len(tables_to_export)} tables, "
-        f"{sum(row_counts.values())} rows, "
-        f"{len(compressed)} bytes gzip"
+        f"{len(tables_to_export)} tables, {total_rows} rows, "
+        f"{len(compressed)} bytes gzip, elapsed={time.monotonic() - export_started:.1f}s"
     )
-
     return compressed
-
 
 def _parse_datetime(
     value,

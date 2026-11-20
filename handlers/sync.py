@@ -3,6 +3,7 @@ from __future__ import annotations
 print("sync.py loaded")
 
 from datetime import datetime, timezone
+import traceback
 
 from handlers.registry import register
 from app import app
@@ -35,12 +36,18 @@ async def sync_command(message):
                                             
         backup_bytes = await export_tables(None, backup_type="sync")
     except Exception as exc:
-        print(f"[sync] Backup failed: {exc!r}")
-        await app.send_message(
-            chat_id,
-            f"❌ *Backup failed.*\n`{exc}`",
-            parse_mode="Markdown",
-        )
+        print(f"[sync] Backup failed: {type(exc).__name__}: {exc!r}")
+        traceback.print_exc()
+        if isinstance(exc, TimeoutError):
+            detail = (
+                "The database export timed out while reading a table. "
+                "The exporter now streams rows and allows longer per-table reads. "
+                "If this persists, the database provider may be throttling or blocking "
+                "egress because its quota is exhausted."
+            )
+        else:
+            detail = str(exc).strip() or type(exc).__name__
+        await app.send_message(chat_id, f"❌ Backup failed: {detail}")
         return
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
