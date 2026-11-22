@@ -283,7 +283,7 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
         except Exception:
             pass
         await send_match_summary(
-            app, chat_id, cards, winner=winner_name or "MATCH TIED",
+            app, chat_id, cards, winner=winner_name or "MATCH DRAWN",
             margin=margin, potm=player_details(cards, potm_name),
         )
     except Exception as exc:
@@ -299,7 +299,7 @@ async def _finish_match(chat_id: int, challenge: dict[str, Any], session):
     if winner_name and loser_name:
         winner_id = session.meta.get("batting_team_id") if str(winner_name) == str(batting_display) else session.meta.get("bowling_team_id")
         loser_id = session.meta.get("bowling_team_id") if winner_id == session.meta.get("batting_team_id") else session.meta.get("batting_team_id")
-    plain_result = (f"{winner_name} won by {margin}" if winner_name and loser_name else "Match tied" if margin == "a tie" else str(result_text).replace("*", "").replace("_", ""))
+    plain_result = (f"{winner_name} won by {margin}" if winner_name and loser_name else "Match drawn" if margin == "a tie" else str(result_text).replace("*", "").replace("_", ""))
     session.stage = "completed"
     session.meta.update({
         "result_plain": plain_result,

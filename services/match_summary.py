@@ -127,7 +127,7 @@ def _rows(draw, box, snap, kind, color):
             _text(draw, value, (x1 - 105, y, x1, y + row_h), COLORS["white"], FONT_SIZES["value"], align="right")
 
 
-def render_match_summary(innings: list[dict], *, winner: str = "MATCH TIED",
+def render_match_summary(innings: list[dict], *, winner: str = "MATCH DRAWN",
                          margin: str = "", potm: dict | None = None,
                          match_number: int = 0, result_text: str | None = None) -> bytes:
     image = Image.open(TEMPLATE_PATH).convert("RGB")

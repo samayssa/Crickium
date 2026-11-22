@@ -105,7 +105,7 @@ async def _handle(payload: dict) -> None:
             margin = tc.match_margin(ext["innings"], int(winner_team["team_no"]), super_over)
             res["result_text"] = f"{tx.team_short(winner_team)} won {margin}".strip()
         else:
-            res.update(result_type="tie", result_text="Match tied")
+            res.update(result_type="tie", result_text="Match drawn")
     else:                                                                                              
         if winner_team is None:
             res.update(result_type="no_result", result_text="No result")

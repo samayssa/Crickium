@@ -44,7 +44,7 @@ def build_draw_result_text(innings_1: dict, innings_2: dict, top_batters_fn, top
         f"{_block(innings_1)}\n\n"
         f"{_block(innings_2)}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ The match is tied. A Super Over will decide the winner.\n\n"
+        "⚡ Scores are level - the match is a DRAW. A Super Over will decide the winner.\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
 
@@ -291,7 +291,7 @@ async def _finish_as_tie(engine: str, match_id: int, chat_id: int, origin_match:
     session = await _load_origin_session(engine, match_id)
     record_stats, award_stats, result_builder = _helpers(engine)
     try:
-        await app.send_message(chat_id, "<b>⚠️ The Super Over could not be started, so this match is recorded as a tie.</b>", parse_mode="HTML")
+        await app.send_message(chat_id, "<b>⚠️ The Super Over could not be started, so this match is recorded as a draw.</b>", parse_mode="HTML")
     except Exception:
         pass
     if session is not None:
@@ -357,7 +357,8 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
     )
     try:
         base = result_builder(innings_1, innings_2)
-        base = base.replace("🤝 Match Tied!", f"🎉 {html.escape(str(winner_team))} XI won in Super Over!")
+        for _draw_headline in ("🤝 Match Drawn!", "🤝 Match Tied!"):
+            base = base.replace(_draw_headline, f"🎉 {html.escape(str(winner_team))} XI won in Super Over!")
         so1 = so_history[0] if so_history else {}
         so2 = so_history[1] if len(so_history) > 1 else {}
         rounds = list(state.get("super_over_rounds") or [])

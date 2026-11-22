@@ -11,7 +11,7 @@ from database.playso_repo import get_match, set_state, set_basic
 from engines.playso_probability import deliveries_for_family, shots_for
 from engines.playso_engine import resolve_ball
 from services.match_analysis import collect_playso_match, send_report
-from handlers.playso.common import persist_keys, sync_clock, cancel_inactivity_match, match_lock, bowling_family, bowling_family_label, role_emoji, mention_html, callback_message_is_current
+from handlers.playso.common import persist_keys, sync_clock, cancel_inactivity_match, match_lock, bowling_family, bowling_family_label, role_emoji, mention_html, callback_message_is_current, _innings_score, send_prompt, edit_prompt, self_heal
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -22,10 +22,6 @@ def _state(match: dict) -> dict:
 
 def _player(state: dict, key: str, pid: int) -> dict | None:
     return next((p for p in state.get(key) or [] if int(p.get("player_id") or 0)==int(pid)), None)
-
-
-def _innings_score(state: dict) -> str:
-    return f"{int(state.get('runs') or 0)}/{int(state.get('wickets') or 0)}  ({int(state.get('legal_balls') or 0)//6}.{int(state.get('legal_balls') or 0)%6} ov)"
 
 
 def _bowler_flow_text(match: dict, state: dict, title: str, body: list[str]) -> str:
@@ -53,13 +49,12 @@ def _score_lines(state: dict) -> list[str]:
 
 async def send_bowler_length(chat_id: int, match: dict, state: dict):
     text=_bowler_flow_text(match,state,"CHOOSE LENGTH",_score_lines(state)+["<b>Where will the ball pitch?</b>"])
-    sent=await app.send_message(chat_id,text,parse_mode="HTML",reply_markup=length_keyboard(int(match["match_id"])))
-    from database.playso_repo import set_message_id
-    await set_message_id(int(match["match_id"]),int(sent["message_id"]))
+    await send_prompt(chat_id,int(match["match_id"]),text,length_keyboard(int(match["match_id"])))
     await sync_clock(int(match["match_id"]))
 
 
 @register_callback("playso_length")
+@self_heal
 async def playso_length(callback_query):
     _,mid,length=callback_query["data"].split(":"); mid=int(mid); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -78,10 +73,11 @@ async def playso_length(callback_query):
         deliveries=deliveries_for_family(family, str(state.get("length") or "full"))
         await sync_clock(mid,uid)
         await app.answer_callback_query(callback_query["id"],"Length selected!")
-        await app.edit_message_text(msg["chat"]["id"],msg["message_id"],_bowler_flow_text(match,state,"CHOOSE DELIVERY",_score_lines(state)+[f"<b>📏 Length ➤ {length.replace('_',' ').upper()}</b>","<b>How do you want to attack?</b>"]),parse_mode="HTML",reply_markup=delivery_keyboard(mid,deliveries))
+        await edit_prompt(msg["chat"]["id"],msg["message_id"],mid,_bowler_flow_text(match,state,"CHOOSE DELIVERY",_score_lines(state)+[f"<b>📏 Length ➤ {length.replace('_',' ').upper()}</b>","<b>How do you want to attack?</b>"]),delivery_keyboard(mid,deliveries))
 
 
 @register_callback("playso_delivery")
+@self_heal
 async def playso_delivery(callback_query):
     _,mid,index=callback_query["data"].split(":"); mid=int(mid); index=int(index); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -99,10 +95,11 @@ async def playso_delivery(callback_query):
         state["delivery"]=deliveries[index]; state["stage"]="line"; await set_state(mid,state,"live")
         await sync_clock(mid,uid)
         await app.answer_callback_query(callback_query["id"],"Delivery selected!")
-        await app.edit_message_text(msg["chat"]["id"],msg["message_id"],_bowler_flow_text(match,state,"CHOOSE LINE",_score_lines(state)+[f"<b>📏 Length ➤ {state['length'].replace('_',' ').upper()}</b>",f"<b>🥎 Delivery ➤ {html.escape(state['delivery'])}</b>","<b>Where will you target the ball?</b>"]),parse_mode="HTML",reply_markup=line_keyboard(mid))
+        await edit_prompt(msg["chat"]["id"],msg["message_id"],mid,_bowler_flow_text(match,state,"CHOOSE LINE",_score_lines(state)+[f"<b>📏 Length ➤ {state['length'].replace('_',' ').upper()}</b>",f"<b>🥎 Delivery ➤ {html.escape(state['delivery'])}</b>","<b>Where will you target the ball?</b>"]),line_keyboard(mid))
 
 
 @register_callback("playso_line")
+@self_heal
 async def playso_line(callback_query):
     _,mid,line=callback_query["data"].split(":"); mid=int(mid); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -130,13 +127,12 @@ async def send_batter_foot(chat_id:int, match:dict, state:dict):
         "", "<b>Choose your foot movement.</b>",
     ]
     text=_batter_flow_text(match,state,"CHOOSE FOOT MOVEMENT",body)
-    sent=await app.send_message(chat_id,text,parse_mode="HTML",reply_markup=foot_keyboard(int(match["match_id"])))
-    from database.playso_repo import set_message_id
-    await set_message_id(int(match["match_id"]),int(sent["message_id"]))
+    await send_prompt(chat_id,int(match["match_id"]),text,foot_keyboard(int(match["match_id"])))
     await sync_clock(int(match["match_id"]))
 
 
 @register_callback("playso_foot")
+@self_heal
 async def playso_foot(callback_query):
     _,mid,foot=callback_query["data"].split(":"); mid=int(mid); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -150,10 +146,11 @@ async def playso_foot(callback_query):
         state["foot"]=foot; state["stage"]="intent"; await set_state(mid,state,"live")
         await sync_clock(mid,uid)
         await app.answer_callback_query(callback_query["id"],"Foot movement selected!")
-        await app.edit_message_text(msg["chat"]["id"],msg["message_id"],_batter_flow_text(match,state,"CHOOSE INTENT",_score_lines(state)+[f"<b>🥎 {html.escape(str(state.get('delivery')))} • {str(state.get('line')).replace('_',' ').upper()} • {str(state.get('length')).replace('_',' ').upper()}</b>",f"<b>👣 Foot ➤ {foot.upper()}</b>","<b>Choose your batting intent.</b>"]),parse_mode="HTML",reply_markup=intent_keyboard(mid))
+        await edit_prompt(msg["chat"]["id"],msg["message_id"],mid,_batter_flow_text(match,state,"CHOOSE INTENT",_score_lines(state)+[f"<b>🥎 {html.escape(str(state.get('delivery')))} • {str(state.get('line')).replace('_',' ').upper()} • {str(state.get('length')).replace('_',' ').upper()}</b>",f"<b>👣 Foot ➤ {foot.upper()}</b>","<b>Choose your batting intent.</b>"]),intent_keyboard(mid))
 
 
 @register_callback("playso_intent")
+@self_heal
 async def playso_intent(callback_query):
     _,mid,intent=callback_query["data"].split(":"); mid=int(mid); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -168,10 +165,11 @@ async def playso_intent(callback_query):
         shots=shots_for(state.get("foot") or "front",intent)
         await sync_clock(mid,uid)
         await app.answer_callback_query(callback_query["id"],"Intent selected!")
-        await app.edit_message_text(msg["chat"]["id"],msg["message_id"],_batter_flow_text(match,state,"CHOOSE SHOT",_score_lines(state)+[f"<b>👣 Foot ➤ {str(state.get('foot')).upper()}</b>",f"<b>🔥 Intent ➤ {intent.upper()}</b>","<b>Choose your shot.</b>"]),parse_mode="HTML",reply_markup=shot_keyboard(mid,shots))
+        await edit_prompt(msg["chat"]["id"],msg["message_id"],mid,_batter_flow_text(match,state,"CHOOSE SHOT",_score_lines(state)+[f"<b>👣 Foot ➤ {str(state.get('foot')).upper()}</b>",f"<b>🔥 Intent ➤ {intent.upper()}</b>","<b>Choose your shot.</b>"]),shot_keyboard(mid,shots))
 
 
 @register_callback("playso_shot")
+@self_heal
 async def playso_shot(callback_query):
     _,mid,index=callback_query["data"].split(":"); mid=int(mid); index=int(index); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -293,7 +291,7 @@ async def playso_shot(callback_query):
                     state["current_striker_id"]=next((x for x in sel if x not in {current_striker_id, int(state.get('current_non_striker_id') or 0)}), remaining[0])
                 else:
                     state["current_striker_id"]=remaining[0] if remaining else current_striker_id
-        elif result.runs % 2 == 1:
+        elif result.legal and result.runs % 2 == 1:
             a=state.get("current_striker_id") or current_striker_id; n=state.get("current_non_striker_id") or (sel[1] if len(sel)>1 else a)
             state["current_striker_id"]=n; state["current_non_striker_id"]=a
         if not state.get("current_non_striker_id") and len(sel)>1: state["current_non_striker_id"]=sel[1]
@@ -309,19 +307,47 @@ async def playso_shot(callback_query):
             "",f"<b>💥 RESULT ➤ {('WICKET' if result.wicket else result.outcome.replace('_',' '))}</b>",
             f"<i>🎙 {html.escape(commentary)}</i>",
         ])
-        await app.edit_message_text(msg["chat"]["id"],msg["message_id"],text,parse_mode="HTML",reply_markup=NO_KEYBOARD)
+        try: await app.edit_message_text(msg["chat"]["id"],msg["message_id"],text,parse_mode="HTML",reply_markup=NO_KEYBOARD)
+        except Exception as exc: print(f"[playso] ball-result card could not be shown for match {mid}: {exc!r}")
         await asyncio.sleep(1.2)
         try: await app.delete_message(msg["chat"]["id"],msg["message_id"])
         except Exception: pass
-                                         
-        end = int(state.get("legal_balls") or 0)>=6 or int(state.get("wickets") or 0)>=2
-        if state.get("target") is not None and int(state.get("runs") or 0)>=int(state["target"]): end=True
-        if end:
-            await finish_innings(msg["chat"]["id"],match,state)
-            return
-        state["stage"]="length"; state["length"]=state["delivery"]=state["line"]=state["foot"]=state["intent"]=state["shot"]=None
-        await set_state(mid,state,"live")
-        await send_bowler_length(msg["chat"]["id"],match,state)
+        await advance_after_ball(msg["chat"]["id"],match,state)
+
+
+async def advance_after_ball(chat_id:int, match:dict, state:dict):
+    """After a resolved ball: end the innings (6 legal balls / 2 wickets / target chased) or ask for the next length."""
+    mid=int(match["match_id"])
+    end = int(state.get("legal_balls") or 0)>=6 or int(state.get("wickets") or 0)>=2
+    if state.get("target") is not None and int(state.get("runs") or 0)>=int(state["target"]): end=True
+    if end:
+        await finish_innings(chat_id,match,state)
+        return
+    state["stage"]="length"; state["length"]=state["delivery"]=state["line"]=state["foot"]=state["intent"]=state["shot"]=None
+    await set_state(mid,state,"live")
+    await send_bowler_length(chat_id,match,state)
+
+
+async def start_repeat_round(chat_id:int, match_id:int):
+    """Level Super Over: begin the next Super Over (the side that batted second now bats first)."""
+    fresh=await get_match(int(match_id))
+    st=dict(fresh.get("state") or {})
+    st["innings_history"]=[]; st["analysis_balls"]=[]; st["ball_no"]=0
+    await set_state(int(match_id),st,status="lineup"); await set_basic(int(match_id),innings_no=1)
+    stmatch=await get_match(int(match_id))
+    from .setup import start_setup
+    await start_setup(chat_id,dict(stmatch),1)
+
+
+async def advance_from_break(chat_id:int, match:dict):
+    """Continue a Super Over that is parked in 'innings_break' (used when the automatic continuation was interrupted)."""
+    state=dict(match.get("state") or {})
+    history=list(state.get("innings_history") or [])
+    if state.get("is_repeat_super_over") and len(history)>=2:
+        await start_repeat_round(chat_id,int(match["match_id"]))
+        return
+    from .setup import start_setup
+    await start_setup(chat_id,dict(match),2)
 
 
 async def finish_innings(chat_id:int, match:dict, state:dict):
@@ -334,7 +360,8 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
         first_bowler=int(state.get("selected_bowler") or 0)
         new_state={**persist_keys(state),"is_repeat_super_over":bool(state.get("is_repeat_super_over")),"innings_history":history,"target":target,"first_batting_user":first_bat,"first_bowling_user":first_bowl,"first_bowler_id":first_bowler,"second_batting_user":first_bowl,"second_bowling_user":first_bat,"previous_bowlers":dict(state.get("previous_bowlers") or {}),"innings_no":2}
         await set_state(int(match["match_id"]),new_state,"innings_break")
-        await app.send_message(chat_id,f"<b>╭━━〔 🔄 PLAYSO • INNINGS BREAK 〕━━╮\n\n🏏 First Innings ➤ {snap['runs']}/{snap['wickets']} ({snap['over_text']})\n🎯 Target ➤ {target}\n\n🔥 Best Batter ➤ {max((snap['batters'] or [{"name":"—","runs":0}]), key=lambda x:int(x.get('runs') or 0)).get('name')}\n🎯 Best Bowler ➤ {max((snap['bowlers'] or [{"name":"—","wickets":0}]), key=lambda x:int(x.get('wickets') or 0)).get('name')}\n\n<b>Second Super Over innings begins.</b>\n\n╰━━━━━━━━━━━━━━━━━━━━╯</b>",parse_mode="HTML")
+        try: await app.send_message(chat_id,f"<b>╭━━〔 🔄 PLAYSO • INNINGS BREAK 〕━━╮\n\n🏏 First Innings ➤ {snap['runs']}/{snap['wickets']} ({snap['over_text']})\n🎯 Target ➤ {target}\n\n🔥 Best Batter ➤ {max((snap['batters'] or [{"name":"—","runs":0}]), key=lambda x:int(x.get('runs') or 0)).get('name')}\n🎯 Best Bowler ➤ {max((snap['bowlers'] or [{"name":"—","wickets":0}]), key=lambda x:int(x.get('wickets') or 0)).get('name')}\n\n<b>Second Super Over innings begins.</b>\n\n╰━━━━━━━━━━━━━━━━━━━━╯</b>",parse_mode="HTML")
+        except Exception as exc: print(f"[playso] innings-break notice failed for match {match['match_id']}: {exc!r}")
         await asyncio.sleep(1.5)
         from .setup import start_setup
         fresh=await get_match(int(match["match_id"]))
@@ -359,17 +386,10 @@ async def finish_innings(chat_id:int, match:dict, state:dict):
             "is_repeat_super_over": True,
             "super_over_rounds": rounds,
         }, "innings_break")
-        await app.send_message(chat_id,"<b>⚖️ PLAYSO TIED\n\nBoth sides finished level.\n\n⚡ The second Super Over starts in 5 seconds.</b>",parse_mode="HTML")
+        try: await app.send_message(chat_id,"<b>⚖️ SUPER OVER DRAW\n\nBoth sides finished level - the Super Over is a DRAW.\n\n⚡ Another Super Over starts in 5 seconds.</b>",parse_mode="HTML")
+        except Exception as exc: print(f"[playso] draw notice failed for match {match['match_id']}: {exc!r}")
         await asyncio.sleep(5)
-        fresh=await get_match(int(match["match_id"]))
-                                                                                                                          
-        st=dict(fresh.get("state") or {}); st["previous_bowlers"]=previous_bowlers; st["innings_history"]=[]; st["analysis_balls"]=[]; st["ball_no"]=0
-        st["next_super_over_batting_user"]=int(second["batting_team_id"]); st["next_super_over_bowling_user"]=int(second["bowling_team_id"])
-        await set_state(int(match["match_id"]),st,status="lineup"); await set_basic(int(match["match_id"]),innings_no=1)
-        stmatch=await get_match(int(match["match_id"]))
-                                                                  
-        from .setup import start_setup
-        await start_setup(chat_id,dict(stmatch),1)
+        await start_repeat_round(chat_id,int(match["match_id"]))
         return
     winner=int(second["batting_team_id"] if second_runs>first_runs else history_first["batting_team_id"])
     if state.get("origin_engine") and state.get("origin_match_id"):

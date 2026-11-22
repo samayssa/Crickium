@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import time
+import traceback
 from typing import Any
 
 from app import app
@@ -41,6 +43,112 @@ def persist_keys(state: dict[str, Any] | None) -> dict[str, Any]:
 def mode_title(state: dict[str, Any] | None) -> str:
     origin = str((state or {}).get("origin_engine") or "PLAYSO")
     return origin if origin in {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"} else "PLAYSO"
+
+
+def _innings_score(state: dict[str, Any]) -> str:
+    """Score line shown on every Super Over prompt (also imported by /resume)."""
+    balls = int(state.get("legal_balls") or 0)
+    return f"{int(state.get('runs') or 0)}/{int(state.get('wickets') or 0)}  ({balls // 6}.{balls % 6} ov)"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Self-healing prompts.
+#
+# Every Super Over step first saves the NEXT stage to the database and only then edits / sends the Telegram message
+# that carries the next buttons.  If that single Telegram call failed (timeout, flood-wait, a deleted message ...) the
+# match stayed in the new stage with no live buttons - the "Super Over got stuck in between" bug.  The helpers below
+# retry the call, fall back to a brand-new prompt, and as a last resort re-send the current stage prompt.
+# ---------------------------------------------------------------------------------------------------------------------
+async def _retry(factory, *, attempts: int = 3, base_delay: float = 0.7):
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return await factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:                                      # noqa: BLE001 - any Telegram/network failure
+            last = exc
+            if i + 1 < attempts:
+                await asyncio.sleep(base_delay * (i + 1))
+    assert last is not None
+    raise last
+
+
+async def send_prompt(chat_id: int, match_id: int, text: str, markup) -> int:
+    """Send a NEW prompt message (with retries) and make it the live message of this Super Over."""
+    sent = await _retry(lambda: app.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup), attempts=4)
+    new_id = int((sent or {}).get("message_id") or 0)
+    if not new_id:
+        raise RuntimeError("Telegram returned no message id for the Super Over prompt")
+    await set_message_id(int(match_id), new_id)
+    return new_id
+
+
+async def edit_prompt(chat_id: int, message_id: int, match_id: int, text: str, markup) -> int:
+    """Edit the live prompt in place.  If Telegram refuses, replace it with a fresh prompt so buttons never go dead."""
+    try:
+        await _retry(lambda: app.edit_message_text(chat_id, message_id, text, parse_mode="HTML", reply_markup=markup),
+                     attempts=2, base_delay=0.5)
+        return int(message_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:                                          # noqa: BLE001
+        print(f"[playso] could not edit prompt {message_id} of match {match_id} ({exc!r}); sending a fresh prompt instead")
+    try:
+        await app.delete_message(chat_id, message_id)
+    except Exception:                                                 # noqa: BLE001
+        pass
+    return await send_prompt(chat_id, match_id, text, markup)
+
+
+async def recover_prompt(match_id: int) -> bool:
+    """Re-send whatever the Super Over is waiting for.  Used by the callback safety net and by /resume."""
+    async with match_lock(int(match_id)):
+        match = await get_match(int(match_id))
+        if not match:
+            return False
+        status = str(match.get("status") or "")
+        state = match.get("state") or {}
+        chat_id = int(match["chat_id"])
+        from handlers.playso.live import advance_after_ball, advance_from_break
+        if status == "innings_break":
+            await advance_from_break(chat_id, dict(match))
+            return True
+        if status == "live" and str(state.get("stage") or "") == "result":
+            await advance_after_ball(chat_id, dict(match), dict(state))
+            return True
+        if status not in {"lineup", "live"}:
+            return False
+        from handlers.resume import _render_resume_scorecard, _resume_markup
+        old_id = match.get("message_id")
+        if old_id:
+            try:
+                await app.delete_message(chat_id, int(old_id))
+            except Exception:                                         # noqa: BLE001
+                pass
+        await send_prompt(chat_id, int(match["match_id"]), _render_resume_scorecard("PLAYSO", match), _resume_markup("PLAYSO", match))
+        await sync_clock(int(match["match_id"]))
+        return True
+
+
+def self_heal(fn):
+    """Decorator for Super Over callbacks: a half-finished step re-sends the current prompt instead of leaving the
+    match without buttons.  The traceback is still printed so the real error stays visible in the logs."""
+    @functools.wraps(fn)
+    async def wrapper(callback_query, *args, **kwargs):
+        try:
+            return await fn(callback_query, *args, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:                                      # noqa: BLE001
+            print(f"[playso] callback {callback_query.get('data')!r} failed half-way: {exc!r}")
+            traceback.print_exc()
+            try:
+                mid = int(str(callback_query.get("data") or "").split(":")[1])
+                await recover_prompt(mid)
+            except Exception as exc2:                                 # noqa: BLE001
+                print(f"[playso] could not re-send the Super Over prompt: {exc2!r}")
+    return wrapper
 
 
 async def sync_clock(match_id: int, actor_id: int | None = None) -> None:

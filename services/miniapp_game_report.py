@@ -280,7 +280,7 @@ def analysis_html(game: dict, match_number: int = 0, when: str | None = None) ->
 <div class="hero"><small>CRICKIUM · MATCH ANALYSIS{f" · GAME #{match_number}" if match_number else ""}</small>
 <h1>{E(t["user"]["name"])} vs {E(t["ai"]["name"])}</h1><p>{E(when)}</p>
 <div class="chips"><span class="chip">{E(cfg["difficulty_label"])} difficulty</span><span class="chip">{cfg["overs"]} overs</span><span class="chip">{cfg["pitch_emoji"]} {E(cfg["pitch_label"])} pitch</span><span class="chip">{"Ball by ball" if cfg["sim"] == "ball" else "Over by over"}</span></div>
-<div class="result"><b>{E(res.get("text") or "Match complete")}</b><span>{"🏆 Victory" if won else ("🤝 Tied" if res.get("type") == "tie" else "Defeat")} · Toss: {toss}</span></div></div>
+<div class="result"><b>{E(res.get("text") or "Match complete")}</b><span>{"🏆 Victory" if won else ("🤝 Drawn" if res.get("type") == "tie" else "Defeat")} · Toss: {toss}</span></div></div>
 <h2>Match at a glance</h2><div class="grid">{"".join(tiles)}</div>
 {f'<div class="panel" style="margin-top:12px"><h3>Player of the match<span>{E(pom.get("name") or "")}</span></h3><div style="color:var(--mut)">{E(pom.get("line") or "")}</div></div>' if pom else ""}
 <h2>Key insights</h2>{ins or '<div class="ins">Not enough deliveries for insights.</div>'}
@@ -305,7 +305,7 @@ def _caption(game: dict, link: dict) -> str:
     uid = int(link["user_id"])
     name = E(str(link.get("user_name") or game["teams"]["user"]["name"] or "Player"))
     won = res.get("winner") == "user"
-    head = "🏆 <b>VICTORY VS AI</b>" if won else ("🤝 <b>MATCH TIED VS AI</b>" if res.get("type") == "tie" else "🏏 <b>MATCH COMPLETE VS AI</b>")
+    head = "🏆 <b>VICTORY VS AI</b>" if won else ("🤝 <b>MATCH DRAWN VS AI</b>" if res.get("type") == "tie" else "🏏 <b>MATCH COMPLETE VS AI</b>")
     return (f'<blockquote>{head}\n\n<a href="tg://user?id={uid}">{name}</a> <b>vs</b> {E(game["teams"]["ai"]["name"])}\n'
             f'🎯 <b>{E(res.get("text") or "")}</b>\n'
             f'⚙️ {E(game["cfg"]["difficulty"].title())} · {game["cfg"]["overs"]} overs\n'

@@ -7,7 +7,7 @@ from app import app
 from buttons.playso_buttons import bowler_selection_keyboard, batter_selection_keyboard
 from database.playso_repo import get_match, update_locked, set_message_id, set_basic
 from engines.lineup_engine import load_current_xi
-from handlers.playso.common import mode_title as _mode_title, eligible_bowlers, sync_clock, current_xi, bowling_family, player_line, mention_html, role_emoji, match_lock, callback_message_is_current, dedup_selection_click, bowling_family_label
+from handlers.playso.common import mode_title as _mode_title, eligible_bowlers, sync_clock, current_xi, bowling_family, player_line, mention_html, role_emoji, match_lock, callback_message_is_current, dedup_selection_click, bowling_family_label, send_prompt, edit_prompt, self_heal
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -71,8 +71,7 @@ async def start_setup(chat_id: int, match: dict, innings_no: int = 1):
                   "selected_batters": [], "locked_bowler": locked, "stage": "bowler_select"})
     await set_basic(int(match["match_id"]), innings_no=innings_no)
     await from_update_state(int(match["match_id"]), state, "lineup")
-    sent = await app.send_message(chat_id, _bowler_text(match, batting_id, bowling_id, bowling_xi, None, locked), parse_mode="HTML", reply_markup=bowler_selection_keyboard(int(match["match_id"]), bowling_xi, None, locked))
-    await set_message_id(int(match["match_id"]), int(sent["message_id"]))
+    await send_prompt(chat_id, int(match["match_id"]), _bowler_text(match, batting_id, bowling_id, bowling_xi, None, locked), bowler_selection_keyboard(int(match["match_id"]), bowling_xi, None, locked))
     await sync_clock(int(match["match_id"]))
 
 async def from_update_state(match_id: int, state: dict, status: str):
@@ -81,6 +80,7 @@ async def from_update_state(match_id: int, state: dict, status: str):
 
 
 @register_callback("playso_bowler")
+@self_heal
 async def playso_bowler(callback_query):
     _, mid, pid = callback_query["data"].split(":"); mid=int(mid); pid=int(pid); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -105,10 +105,11 @@ async def playso_bowler(callback_query):
         state["selected_bowler"] = None if state.get("selected_bowler") == pid else pid
         await from_update_state(mid, state, "lineup")
         await app.answer_callback_query(callback_query["id"], "Bowler selected." if state["selected_bowler"] else "Bowler unselected.")
-        await app.edit_message_text(msg["chat"]["id"], msg["message_id"], _bowler_text(match, int(state["batting_user"]), uid, xi, state.get("selected_bowler"), state.get("locked_bowler")), parse_mode="HTML", reply_markup=bowler_selection_keyboard(mid, xi, state.get("selected_bowler"), state.get("locked_bowler")))
+        await edit_prompt(msg["chat"]["id"], msg["message_id"], mid, _bowler_text(match, int(state["batting_user"]), uid, xi, state.get("selected_bowler"), state.get("locked_bowler")), bowler_selection_keyboard(mid, xi, state.get("selected_bowler"), state.get("locked_bowler")))
 
 
 @register_callback("playso_bowler_confirm")
+@self_heal
 async def playso_bowler_confirm(callback_query):
     mid=int(callback_query["data"].split(":")[1]); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -126,11 +127,11 @@ async def playso_bowler_confirm(callback_query):
         try: await app.delete_message(msg["chat"]["id"], msg["message_id"])
         except Exception: pass
         xi=state.get("batting_xi") or []
-        sent=await app.send_message(msg["chat"]["id"], _bat_text(match, int(state["batting_user"]), uid, xi, []), parse_mode="HTML", reply_markup=batter_selection_keyboard(mid, xi, []))
-        await set_message_id(mid, int(sent["message_id"]))
+        await send_prompt(msg["chat"]["id"], mid, _bat_text(match, int(state["batting_user"]), uid, xi, []), batter_selection_keyboard(mid, xi, []))
 
 
 @register_callback("playso_batter")
+@self_heal
 async def playso_batter(callback_query):
     _, mid, pid = callback_query["data"].split(":"); mid=int(mid); pid=int(pid); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):
@@ -155,10 +156,11 @@ async def playso_batter(callback_query):
         await from_update_state(mid, state, "lineup")
         await sync_clock(mid, uid)
         await app.answer_callback_query(callback_query["id"], "Selection updated.")
-        await app.edit_message_text(msg["chat"]["id"], msg["message_id"], _bat_text(match, uid, int(state["bowling_user"]), xi, selected), parse_mode="HTML", reply_markup=batter_selection_keyboard(mid, xi, selected))
+        await edit_prompt(msg["chat"]["id"], msg["message_id"], mid, _bat_text(match, uid, int(state["bowling_user"]), xi, selected), batter_selection_keyboard(mid, xi, selected))
 
 
 @register_callback("playso_batter_confirm")
+@self_heal
 async def playso_batter_confirm(callback_query):
     mid=int(callback_query["data"].split(":")[1]); uid=int(callback_query["from"]["id"]); msg=callback_query["message"]
     async with match_lock(mid):

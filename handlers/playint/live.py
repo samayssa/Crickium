@@ -315,7 +315,7 @@ def _innings_break_text(innings_1: dict) -> str:
 def _match_result_text(innings_1: dict, innings_2: dict) -> str:
     winner_id, margin = match_winner(innings_1, innings_2)
     if winner_id is None:
-        headline = "🤝 Match Tied!"
+        headline = "🤝 Match Drawn!"
     else:
         winner_display = innings_1["batting_team_display"] if winner_id == innings_1["batting_team_id"] else innings_2["batting_team_display"]
         headline = f"🎉 {winner_display} XI won {margin}!"
@@ -636,7 +636,7 @@ async def _finish_over_and_prompt_next(session) -> None:
                             match.get("opponent_name") if int(winner_id) == int(challenger_id) else match.get("challenger_name"),
                         ),
                     )
-                    if winner_id is not None else "<b>🏏 MATCH REWARDS</b>\n\nMatch tied. No winner/loser reward applied."
+                    if winner_id is not None else "<b>🏏 MATCH REWARDS</b>\n\nMatch drawn. No winner/loser reward applied."
                 ),
             )
         except Exception as exc:

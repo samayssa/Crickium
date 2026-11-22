@@ -468,6 +468,11 @@ async def resume_command(message):
         if user_id not in participants:
             await app.send_message(chat_id, NO_GAME_MESSAGE, parse_mode="HTML")
             return
+        if str(match.get("status") or "") == "innings_break" or str((match.get("state") or {}).get("stage") or "") == "result":
+            # Parked between two Super Over steps: continue the flow instead of showing a button-less card.
+            from handlers.playso.common import recover_prompt
+            if await recover_prompt(int(match["match_id"])):
+                return
         old_live_message_id = match.get("message_id")
         if old_live_message_id:
             try: await app.delete_message(int(match["chat_id"]), int(old_live_message_id))

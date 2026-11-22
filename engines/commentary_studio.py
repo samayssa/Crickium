@@ -473,7 +473,7 @@ def render_ball(c: Ctx, rnd: random.Random | None = None) -> str:
         ending = f"{c.team} win it by {_plural(s['wih'], 'wicket')}!" if c.team else "The chase is complete!"
     elif c.innings_over and c.target is not None:
         short = max(0, (c.target or 0) - 1 - c.score)
-        ending = (f"The chase ends {short} runs short, and {c.opp} win it." if short else f"It is a tie at {c.score}!") if c.opp else ""
+        ending = (f"The chase ends {short} runs short, and {c.opp} win it." if short else f"It is a draw at {c.score}!") if c.opp else ""
     elif c.innings_over and k == "wicket" and c.wkts >= c.max_wkts - 0 and c.mode != "so":
         opt.append(_fill(_pick("ao", B.ALL_OUT, rnd, mem), {"score": str(c.score)}))
                                                                                        

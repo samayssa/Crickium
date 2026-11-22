@@ -924,7 +924,7 @@ def _finish_match(g: dict) -> None:
         text = f"{names[winner]} won by {margin} wicket{'s' if margin != 1 else ''}"
     elif b["runs"] == (b["target"] or 0) - 1:
         winner, mtype, margin = "tie", "tie", 0
-        text = "Match tied"
+        text = "Match drawn"
     else:
         winner, mtype, margin = a["bat"], "runs", a["runs"] - b["runs"]
         text = f"{names[winner]} won by {margin} run{'s' if margin != 1 else ''}"

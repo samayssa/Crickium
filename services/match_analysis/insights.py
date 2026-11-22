@@ -306,7 +306,7 @@ def _winner_and_margin(payload: dict[str, Any], inns: list[dict[str, Any]]) -> d
             res.update(winner=a["team"], kind="defend", text=f"{a['team']} won by {a['runs'] - b['runs']} run{'s' if a['runs'] - b['runs'] != 1 else ''}")
         else:
             name = payload.get("winner_name")
-            res.update(winner=name, kind="tie", text="Match tied" + (f" — {name} won the decider" if name else ""))
+            res.update(winner=name, kind="tie", text="Match drawn" + (f" — {name} won the decider" if name else ""))
         return res
     if payload.get("winner_name"):
         res.update(winner=payload["winner_name"], kind="forfeit", text=f"{payload['winner_name']} won ({str(term).replace('_', ' ')})")

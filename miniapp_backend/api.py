@@ -1768,7 +1768,7 @@ def _result_text_from_scorecard(innings: list[dict[str, Any]], winner_name: str 
     second_runs = int(innings[1].get("runs") or 0)
     winner_row = next((row for row in rows if bool(row.get("won"))), None)
     if not winner_row and first_runs == second_runs:
-        return "Match tied"
+        return "Match drawn"
     if winner_row and bool(winner_row.get("defending")) and first_runs > second_runs:
         margin = first_runs - second_runs
         return f"{winner_name or 'The defending team'} won by {margin} run{'s' if margin != 1 else ''}"

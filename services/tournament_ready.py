@@ -45,7 +45,7 @@ def build_html(t: dict, fx: dict, home: dict, away: dict, match: dict, total_fix
     t1 = owner.get(ch, home) if ch in owner else home
     t2 = owner.get(op, away) if op in owner else away
     rules = [
-        f"Win = {tc.POINTS_WIN} points · tie → Super Over · no result = {tc.POINTS_NO_RESULT} point each" if stage == "league" else "Knockout — the winner goes through; a tie is settled by a Super Over",
+        f"Win = {tc.POINTS_WIN} points · draw → Super Over · no result = {tc.POINTS_NO_RESULT} point each" if stage == "league" else "Knockout — the winner goes through; a draw is settled by a Super Over",
         "3-minute clock on every decision — miss it and the match is lost",
         "Run-rate (NRR) from the first 20 overs counts for the table",
     ]
