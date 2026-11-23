@@ -144,6 +144,7 @@ def _pyro_message_to_dict(message: Any | None) -> dict:
 
     data = {
         "message_id": int(getattr(message, "id", 0) or 0),
+        "message_thread_id": int(getattr(message, "message_thread_id", 0) or 0) or None,
         "date": int(getattr(message, "date", 0).timestamp()) if getattr(message, "date", None) else None,
         "chat": _pyro_chat_to_dict(getattr(message, "chat", None)),
         "from": _pyro_user_to_dict(getattr(message, "from_user", None)),

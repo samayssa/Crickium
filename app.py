@@ -659,6 +659,29 @@ class App:
         )
         return _wrap_message(msg)
 
+    async def send_rich_message(self, chat_id, html, *, message_thread_id=None, disable_notification=False, reply_markup=None):
+        """Send a Bot API Rich Message (Bot API 10.1+).
+
+        The project uses the direct HTTP adapter for Bot API features that may
+        not yet be exposed by the pinned Pyrogram/Kurigram client version.
+        """
+        payload = {
+            "chat_id": int(chat_id),
+            "rich_message": {"html": str(html)},
+        }
+        if message_thread_id is not None:
+            payload["message_thread_id"] = int(message_thread_id)
+        if disable_notification:
+            payload["disable_notification"] = True
+        markup_json = _reply_markup_to_json(reply_markup)
+        if markup_json is not None:
+            payload["reply_markup"] = markup_json
+        result = await _resilient(
+            lambda: self._call_bot_api("sendRichMessage", json_payload=payload),
+            label="send_rich_message",
+        )
+        return _wrap_http_message(result)
+
     async def edit_message_text(self, chat_id, message_id, text, parse_mode=None, reply_markup=None):
         print(f"[app.py] edit_message_text -> chat_id={chat_id} message_id={message_id} text={text!r}")
 
