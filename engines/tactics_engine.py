@@ -43,17 +43,27 @@ the layer before it:
      as layers 1-6 produced them and reshapes only 2s/3s/4s/6s/W/extras.
      Nothing in it depends on batting first vs chasing, or on which
      side is defending - both innings and both teams run on the same
-     rules, so only the teams' own quality decides a match.  It also
-     carries the batting resources (a side with wickets in hand launches,
-     a side that has lost them rebuilds, and a long stand without a wicket
-     slowly invites one - so innings rarely end only 3-4 down and chases
-     stay alive into the last over) and the tail-ender intent risk (a slog
-     gets a number 10 out quickly, rotating keeps him in).
+     rules, so only the teams' own quality decides a match.  The old
+     "batting resources" loop (a side with wickets in hand launched, a side
+     that had lost them rebuilt - which kept every innings near 6 down and
+     every chase alive into the last over, i.e. the forced "intense match"
+     feel) is switched OFF (MATCH_FEEDBACK_ENABLED = False): no ball's odds
+     depend on the score, the target or the wickets left.  What stays is a
+     gentle partnership-age factor (balls since the last wicket only) and the
+     tail-ender intent risk (a slog gets a number 10 out quickly, rotating
+     keeps him in).
   8. OVER-RUN GOVERNOR (_apply_over_run_rarity) - replaces the old hard
      per-over run caps (which turned the rest of an over into forced
      dots).  A hot over just gets smoothly harder to push further, the
-     ceiling rises with the required run rate in a chase, and the freed
-     mass goes to 2s, never to dots.  The last two overs are never capped.
+     freed mass goes to 2s, never to dots, and the last two overs are never
+     capped.  The ceiling no longer rises with the required run rate in a
+     chase (CHASE_ASSIST_ENABLED = False).
+  9. TAIL ENVELOPE (_apply_tail_envelope, runs very last) - every ball faced
+     by a batter under level 52 is held to a graded floor/ceiling per
+     batting-level band and mindset: 50-51, 45-49, 40-44, 35-39, 30-34,
+     25-29, 20-24, 15-19, below 15.  The lower the batting level the higher
+     the wicket chance (highest when aggressive / ultra aggressive), the
+     higher the dot share and the lower the boundary share.
 
 engines/play_runtime.py owns the batter's confidence VALUE and the
 consecutive-boundary streak (that's per-batter state, tracked on
@@ -283,7 +293,7 @@ def _over_run_ceiling(over_number: int, balls_faced: int, mindset: str,
             ceiling += 2.0
     if mindset in ("aggressive", "ultra_aggressive"):
         ceiling += 1.5
-    if required_rpo is not None and required_rpo > 10.0:
+    if CHASE_ASSIST_ENABLED and required_rpo is not None and required_rpo > 10.0:
                                                                          
         ceiling += (required_rpo - 10.0) * 1.7
     return ceiling
@@ -435,6 +445,14 @@ SECOND_INNINGS_OVER_RUN_HOLD = 16
 SECOND_INNINGS_EXTENSION_THROUGH_OVER = 15
 SECOND_INNINGS_LAST_OVER = 20
 
+# "Intense match" chase assist - DISABLED.  When the required run rate was above
+# 13 the second-innings scoring target was lifted to RRR + 2 (and the per-over
+# big-shot ceiling rose with the RRR), which silently helped the side that was
+# behind and kept chases alive into the last over.  With this OFF a chase runs on
+# exactly the same rules as the first innings; only the two teams' quality, the
+# pitch and the user's tactics decide the result.
+CHASE_ASSIST_ENABLED = False
+
 
 def _effective_second_innings_rpo_cap(
     pitch: str,
@@ -451,6 +469,8 @@ def _effective_second_innings_rpo_cap(
     exactly the same rule and boundary testing is easy.
     """
     base_cap = min(SECOND_INNINGS_BASE_RPO_CAP, pitch_target_rpo(pitch))
+    if not CHASE_ASSIST_ENABLED:
+        return base_cap
     required = max(0.0, float(required_rpo or 0.0))
     over = max(1, int(over_number or 1))
     current_over_runs = max(0, int(over_runs or 0))
@@ -830,27 +850,41 @@ def _apply_realism_caps(weights: dict, pitch: str, batter_level: int, bowler_lev
                                                                              
 
 TAILENDER_BAND_RULES: dict[str, dict[str, float]] = {
-    "soft_tail": {"min_level": 50, "dot": 0.035, "wicket": 0.010, "single": 0.018, "boundary": 0.020},
-    "lower_order": {"min_level": 45, "dot": 0.14, "wicket": 0.028, "single": 0.060, "boundary": 0.050},
-    "tailender": {"min_level": 40, "dot": 0.19, "wicket": 0.045, "single": 0.080, "boundary": 0.035},
-    "deep_tail": {"min_level": 35, "dot": 0.25, "wicket": 0.075, "single": 0.110, "boundary": 0.025},
-    "extreme_tail": {"min_level": -10**9, "dot": 0.31, "wicket": 0.090, "single": 0.125, "boundary": 0.012},
+    # Existing layers (50 -> 35) made a little stricter, plus new layers below 35 so
+    # the batting-level ladder keeps getting harder all the way down to 15 and
+    # below.  "dot"/"wicket" are funded from singles and boundaries only.
+    "soft_tail": {"min_level": 50, "dot": 0.045, "wicket": 0.014, "single": 0.022, "boundary": 0.022},
+    "lower_order": {"min_level": 45, "dot": 0.16, "wicket": 0.034, "single": 0.068, "boundary": 0.052},
+    "tailender": {"min_level": 40, "dot": 0.22, "wicket": 0.052, "single": 0.090, "boundary": 0.038},
+    "deep_tail": {"min_level": 35, "dot": 0.27, "wicket": 0.082, "single": 0.115, "boundary": 0.028},
+    "late_tail": {"min_level": 30, "dot": 0.30, "wicket": 0.090, "single": 0.125, "boundary": 0.022},
+    "rabbit": {"min_level": 25, "dot": 0.33, "wicket": 0.098, "single": 0.135, "boundary": 0.018},
+    "rabbit_deep": {"min_level": 20, "dot": 0.36, "wicket": 0.105, "single": 0.145, "boundary": 0.015},
+    "number_eleven": {"min_level": 15, "dot": 0.39, "wicket": 0.112, "single": 0.155, "boundary": 0.012},
+    "extreme_tail": {"min_level": -10**9, "dot": 0.42, "wicket": 0.120, "single": 0.165, "boundary": 0.010},
 }
+
+# Batting-level ladder (batter level >= floor -> band).  52+ is not a tail-ender.
+TAIL_LEVEL_STEPS: tuple[tuple[int, str], ...] = (
+    (50, "soft_tail"),        # 50-51
+    (45, "lower_order"),      # 45-49
+    (40, "tailender"),        # 40-44
+    (35, "deep_tail"),        # 35-39
+    (30, "late_tail"),        # 30-34
+    (25, "rabbit"),           # 25-29
+    (20, "rabbit_deep"),      # 20-24
+    (15, "number_eleven"),    # 15-19
+)
 
 
 def _tailender_band(batter_level: int) -> str | None:
     level = int(batter_level or 0)
     if level >= 52:
         return None
-    if level >= 50:
-        return "soft_tail"
-    if level >= 45:
-        return "lower_order"
-    if level >= 40:
-        return "tailender"
-    if level >= 35:
-        return "deep_tail"
-    return "extreme_tail"
+    for floor, name in TAIL_LEVEL_STEPS:
+        if level >= floor:
+            return name
+    return "extreme_tail"                                    # below 15
 
 
 def _move_probability_mass(weights: dict, source_key, target_key, amount: float) -> None:
@@ -971,12 +1005,16 @@ def _apply_tailender_micro(weights: dict, batter_level: int) -> None:
                                                                          
                               
     boundary_cap = {
-        "soft_tail": 0.10,
-        "lower_order": 0.075,
-        "tailender": 0.055,
-        "deep_tail": 0.040,
-        "extreme_tail": 0.025,
-    }.get(band, 0.025)
+        "soft_tail": 0.090,
+        "lower_order": 0.065,
+        "tailender": 0.048,
+        "deep_tail": 0.034,
+        "late_tail": 0.028,
+        "rabbit": 0.023,
+        "rabbit_deep": 0.019,
+        "number_eleven": 0.015,
+        "extreme_tail": 0.012,
+    }.get(band, 0.012)
     final_total = sum(max(0.0, float(v)) for v in weights.values())
     boundary_mass = max(0.0, float(weights.get(4, 0.0))) + max(0.0, float(weights.get(6, 0.0)))
     cap_mass = final_total * boundary_cap
@@ -1618,6 +1656,12 @@ MINDSET_W_RISK = {
                                                                              
                                                                               
 WICKET_FINE_TUNE = 0.93
+# The wicket odds used to be kept near ~6.2 lost per innings by the (now disabled)
+# wickets-in-hand loops, which at their strongest multiplied the odds by x2.3.  With
+# those loops off, the natural per-ball wicket rate is re-centred by this factor so a
+# normal innings still ends around 6-7 down, but now with a realistic spread
+# (some 3-4 down, some 9-10 down) instead of being forced to the same number.
+W_RECENTRE = 1.15
                                                                             
                                                                                
 TWOS_ABSORB_MAX = 1.6
@@ -1815,8 +1859,9 @@ TAIL_SINGLE_GIVE = {
     "rotate": 0.04, "neutral": 0.04,
 }
 TAIL_BAND_STRENGTH = {
-    "soft_tail": 0.25, "lower_order": 0.55, "tailender": 0.85,
-    "deep_tail": 1.00, "extreme_tail": 1.10,
+    "soft_tail": 0.30, "lower_order": 0.62, "tailender": 0.90,
+    "deep_tail": 1.00, "late_tail": 1.05, "rabbit": 1.10, "rabbit_deep": 1.15,
+    "number_eleven": 1.20, "extreme_tail": 1.25,
 }
 
 
@@ -1825,12 +1870,139 @@ def _tail_strength(batter_level: int) -> float:
     return TAIL_BAND_STRENGTH.get(band, 0.0) if band else 0.0
 
 
+# ---------------------------------------------------------------------------
+# TAIL ENVELOPE - the last word on every ball faced by a batter under level 52.
+#
+# The micro layer, the realism layer, boundary tuning and the upgrade layer all
+# run before this, and between them they used to let a bowler / number 10-11
+# settle in, bat on at 80+ strike rate and (rarely, but in a big sample often
+# enough) make a fifty.  This envelope fixes, per batting-level band and per
+# batting mindset, the minimum wicket chance, the minimum dot-ball share and the
+# maximum boundary share of a delivery.  Severity climbs one rung every ~5
+# levels:  50-51 -> 45-49 -> 40-44 -> 35-39 -> 30-34 -> 25-29 -> 20-24 ->
+# 15-19 -> below 15.  Attacking intent (aggressive / ultra) carries the highest
+# wicket risk; defending keeps a tail-ender in longest but scores almost nothing.
+# Each anchor is (value at severity 0, value at severity 1).
+# ---------------------------------------------------------------------------
+TAIL_ENVELOPE_ENABLED = True
+TAIL_SEVERITY = {
+    "soft_tail": 0.10, "lower_order": 0.22, "tailender": 0.36, "deep_tail": 0.50,
+    "late_tail": 0.62, "rabbit": 0.74, "rabbit_deep": 0.85, "number_eleven": 0.94,
+    "extreme_tail": 1.00,
+}
+TAIL_W_ANCHOR = {                                   # minimum wicket chance per ball
+    "defensive": (0.060, 0.085), "rotate": (0.066, 0.097), "neutral": (0.080, 0.128),
+    "aggressive": (0.095, 0.205), "ultra_aggressive": (0.105, 0.255),
+}
+TAIL_DOT_ANCHOR = {                                 # minimum dot-ball share
+    "defensive": (0.50, 0.66), "rotate": (0.15, 0.40), "neutral": (0.19, 0.48),
+    "aggressive": (0.16, 0.46), "ultra_aggressive": (0.165, 0.44),
+}
+TAIL_BND_CAP_ANCHOR = {                             # maximum share of 4s + 6s
+    "defensive": (0.008, 0.001), "rotate": (0.027, 0.004), "neutral": (0.100, 0.012),
+    "aggressive": (0.170, 0.026), "ultra_aggressive": (0.170, 0.042),
+}
+TAIL_CLUSTER_W_SCALE = {0: 1.0, 1: 0.80, 2: 0.60}   # wickets already in this over
+
+
+def _tail_layer_params(batter_level: int, mindset: str):
+    """(band, wicket floor, dot floor, boundary cap) for a sub-52 batter, else None."""
+    band = _tailender_band(batter_level)
+    if band is None:
+        return None
+    sev = TAIL_SEVERITY.get(band, 1.0)
+    m = mindset if mindset in TAIL_W_ANCHOR else "neutral"
+
+    def _lerp(anchor):
+        lo, hi = anchor[m]
+        return lo + (hi - lo) * sev
+
+    return band, _lerp(TAIL_W_ANCHOR), _lerp(TAIL_DOT_ANCHOR), _lerp(TAIL_BND_CAP_ANCHOR)
+
+
+def _take_mass(probs: dict, keys: tuple, amount: float) -> float:
+    """Remove up to `amount` probability from `keys` pro rata; returns what was taken."""
+    pool = sum(max(0.0, probs.get(k, 0.0)) for k in keys)
+    take = min(max(0.0, amount), pool)
+    if take <= 0.0 or pool <= 0.0:
+        return 0.0
+    keep = 1.0 - take / pool
+    for k in keys:
+        probs[k] = max(0.0, probs.get(k, 0.0)) * keep
+    return take
+
+
+def _apply_tail_envelope(weights: dict, batter_level: int, mindset: str,
+                         wickets_this_over: int = 0, balls_since_wicket: int | None = None,
+                         upgraded: bool = False) -> None:
+    if not TAIL_ENVELOPE_ENABLED:
+        return
+    params = _tail_layer_params(batter_level, mindset)
+    if params is None:
+        return
+    _band, w_floor, dot_floor, bnd_cap = params
+    in_over = max(0, int(wickets_this_over or 0))
+    if in_over >= 3:
+        w_floor = 0.0                                        # never a 4th wicket in an over
+    else:
+        w_floor *= TAIL_CLUSTER_W_SCALE.get(in_over, 0.60)
+        if in_over >= 2 and balls_since_wicket is not None and int(balls_since_wicket) <= 0:
+            w_floor *= HAT_TRICK_GUARD
+    if upgraded:                                             # a real batting upgrade still counts
+        bnd_cap *= 1.35
+
+    total = sum(max(0.0, float(v)) for v in weights.values())
+    if total <= 0.0:
+        return
+    p = {k: max(0.0, float(v)) / total for k, v in weights.items()}
+
+    # 1) boundary ceiling - the excess becomes dot balls (a miss / a dot, not a single)
+    bnd = p.get(4, 0.0) + p.get(6, 0.0)
+    if bnd > bnd_cap and bnd > 0.0:
+        scale = bnd_cap / bnd
+        excess = bnd - bnd_cap
+        p[4] = p.get(4, 0.0) * scale
+        p[6] = p.get(6, 0.0) * scale
+        p[0] = p.get(0, 0.0) + excess
+
+    # 2) wicket floor + dot floor, funded from the bat-scoring outcomes
+    need_w = max(0.0, w_floor - p.get("W", 0.0))
+    need_d = max(0.0, dot_floor - p.get(0, 0.0))
+    need = need_w + need_d
+    if need > 0.0:
+        sources = (1, 2, 3, 4, 6)
+        pool = sum(p.get(k, 0.0) for k in sources)
+        take = _take_mass(p, sources, min(need, pool * 0.80))      # always leave some scoring
+        if take > 0.0:
+            share_w = need_w / need
+            p["W"] = p.get("W", 0.0) + take * share_w
+            p[0] = p.get(0, 0.0) + take * (1.0 - share_w)
+
+    new_total = sum(max(0.0, v) for v in p.values())
+    if new_total <= 0.0:
+        return
+    for k in list(weights):
+        weights[k] = max(0.0, p.get(k, 0.0)) * total / new_total
+
+
                                                                                
                                                                                
                                                                            
                                                                       
                                                               
-RESOURCE_EXPECTED_LOST = 6.2                                                  
+# "Intense match" feedback loops - DISABLED.
+# These two rules looked at the SCORE SITUATION (wickets lost so far / balls since
+# the last wicket) and bent the wicket odds back towards a fixed ~6 wickets per
+# innings: a side with wickets in hand got up to x2.3 wicket odds, a side that had
+# collapsed got as little as x0.4, and a long stand slowly invited a wicket.  That
+# is what produced matches that "had to" go to the last over, the same batter
+# getting out at wildly different rates depending on the scoreboard, and a weaker
+# XI being dragged back into the game.  With the flag OFF every ball depends only
+# on who is batting, who is bowling, the pitch, the over, the batter's own set-ness
+# and the user's tactic / mindset.
+MATCH_FEEDBACK_ENABLED = False
+
+RESOURCE_EXPECTED_LOST = 6.2
 RESOURCE_CURVE = 1.3
 RESOURCE_SCALE = 1.6
 RESOURCE_RAMP_START, RESOURCE_RAMP_LEN = 2, 6                           
@@ -1853,13 +2025,20 @@ def _resource_surplus(balls_remaining, wickets_in_hand) -> float | None:
                                                                                  
                                                                            
                                                                            
-DROUGHT_W = 0.80
+# Partnership age: the longer a pair has gone without a wicket the more likely the
+# next one is (bowling changes, set batters taking risks).  This depends ONLY on the
+# number of balls since the last wicket - it never looks at the score, the target
+# or how many wickets are left - so it is not a "keep the match close" rule.  It
+# used to be a strong x1.8; it is now a gentle x1.35 at most, just enough that a
+# normal innings does not end 2-3 down.
+PARTNERSHIP_AGE_ENABLED = True
+DROUGHT_W = 0.35
 DROUGHT_START, DROUGHT_LEN = 12, 30
 
 
 def _drought_factor(balls_since_wicket, balls_remaining, tail_s: float,
                     wickets_in_hand=None) -> float:
-    if DROUGHT_W <= 0.0 or tail_s > 0.0:
+    if not PARTNERSHIP_AGE_ENABLED or DROUGHT_W <= 0.0 or tail_s > 0.0:
         return 1.0
     try:
         if balls_since_wicket is None:
@@ -1940,7 +2119,7 @@ def _apply_realism_layer(
     mom_w, mom_4, mom_6 = _momentum_factors(ball_in_over, over_runs)
     col_w, col_4, col_6 = _collapse_factors(recent_wickets, balls_since_wicket, phase)
     bnd_scale = MINDSET_BND_SCALE.get(mindset, 1.0)
-    surplus = _resource_surplus(balls_remaining, wickets_in_hand)
+    surplus = _resource_surplus(balls_remaining, wickets_in_hand) if MATCH_FEEDBACK_ENABLED else None
     tail_s = _tail_strength(batter_level)
     lau_w, lau_b = _launch_factors(over, surplus, tail_s)
     m_w *= (_settle_wicket_factor(balls) * mom_w * col_w * lau_w
@@ -1982,7 +2161,7 @@ def _apply_realism_layer(
         floor = (WICKET_FLOOR_BY_MINDSET.get(mindset, 0.034)
                  * PITCH_WICKET_FLOOR_SCALE.get(pitch_name, 1.0)
                  * PHASE_WICKET_FLOOR_SCALE.get(phase, 1.0) * level_scale * cluster)
-        new["W"] = min(max(wk, floor), tail_w_cap) * WICKET_FINE_TUNE
+        new["W"] = min(max(wk, floor), tail_w_cap) * WICKET_FINE_TUNE * (1.0 if MATCH_FEEDBACK_ENABLED else W_RECENTRE)
         if tail_floor4 or tail_floor6:
                                                                                   
             room_w = (mass - (new["WD"] + new["NB"] + new["LB"] + new["BY"])
@@ -2241,6 +2420,15 @@ def resolve_weights(
         weights, over_runs, high_run_overs, very_high_run_overs, over_number,
         batsman_balls_faced, mindset=mindset, required_rpo=required_rpo,
         runs_needed=runs_needed,
+    )
+
+    # Tail-enders / bowlers (batter level < 52): final, graded, per-mindset
+    # envelope - high wicket risk, high dot share, almost no boundaries.
+    _apply_tail_envelope(
+        weights, batter_level, mindset,
+        wickets_this_over=int(wickets_this_over or 0),
+        balls_since_wicket=balls_since_wicket,
+        upgraded=bool(batting_upgrade_context),
     )
 
     return {key: max(0.0, value) for key, value in weights.items()}
