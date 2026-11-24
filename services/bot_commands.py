@@ -29,7 +29,6 @@ COMMANDS = [
     ("squad", "View your complete player squad"),
     ("team", "View any supported team roster"),
     ("mybank", "Check your coins and rubies"),
-    ("coinlb", "See the richest coin holders"),
     ("buildxl", "Build your strongest playing XI"),
     ("profile", "View your Crickium profile"),
     ("buy", "Buy player cards with coins"),
