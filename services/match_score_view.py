@@ -1,11 +1,20 @@
 import html
 import math
+import re
 
 TOTAL_BALLS = 120
 
 
 def esc(value) -> str:
     return html.escape(str(value if value is not None else ""))
+
+
+_EMOJI_TAG = re.compile(r"(<tg-emoji\s+emoji-id=\"\d+\">.*?</tg-emoji>)", re.S)
+
+
+def label_html(value) -> str:
+    parts = _EMOJI_TAG.split(str(value if value is not None else ""))
+    return "".join(part if _EMOJI_TAG.fullmatch(part) else html.escape(part) for part in parts)
 
 
 def overs_text(balls: int) -> str:
@@ -122,66 +131,43 @@ def build_session_view(session, engine_label: str, paused: bool = False) -> Bloc
     balls_left = max(0, TOTAL_BALLS - balls)
     first = session.innings_history[0] if session.innings_history else None
     chasing = innings.target is not None and first is not None
+    batting = label_html(session.batting_team_display)
+    bowling = label_html(session.bowling_team_display)
     view = Blocks()
-    view.h1("🏏 LIVE MATCH SCORE")
-    status = "⏸ Paused" if paused else ("🔥 Second Innings" if chasing else "⚡ First Innings")
-    view.p(f"🎮 <b>{esc(engine_label)}</b> · {status} · 🏟 {esc(session.stadium)} · {esc(str(session.pitch).title())} pitch")
-    view.h2(f"{esc(session.batting_team_display)}  vs  {esc(session.bowling_team_display)}")
-    view.hr()
+    view.h1("🏏 LIVE SCORE")
+    status = "⏸ Paused" if paused else ("2nd Innings" if chasing else "1st Innings")
+    view.p(f"{esc(engine_label)} · {status} · {esc(str(session.pitch).title())} pitch")
     if chasing:
-        view.h2("📋 First Innings")
-        view.p(
-            f"<b>{esc(first['batting_team_display'])}</b> {int(first['runs'])}/{int(first['wickets'])} "
-            f"({esc(first['over_text'])} ov)"
-        )
-        view.p(f"🎯 <b>Target to win: {int(innings.target)}</b>")
-        view.hr()
-    view.h2(f"🏏 {esc(session.batting_team_display)} Batting")
-    view.p(f"<b>{runs}/{wickets}</b> ({overs_text(balls)} ov) · CRR <b>{crr:.2f}</b>")
+        view.p(f"📋 {label_html(first['batting_team_display'])} <b>{int(first['runs'])}/{int(first['wickets'])}</b> ({esc(first['over_text'])}) · 🎯 Target <b>{int(innings.target)}</b>")
+    view.h2(f"{batting} {runs}/{wickets} ({overs_text(balls)})")
     if chasing:
         need = max(0, int(innings.target) - runs)
         rrr = need * 6 / balls_left if balls_left else 0.0
-        view.p(f"🎯 RRR <b>{rrr:.2f}</b> · Need <b>{need}</b> runs from <b>{balls_left}</b> balls")
-        view.details("📊 Chase Details", [
-            f"Runs left: <b>{need}</b>",
-            f"Balls left: <b>{balls_left}</b> ({overs_text(balls_left)} ov)",
-            f"Runs to win: <b>{need}</b> · Target <b>{int(innings.target)}</b>",
-            f"Wickets in hand: <b>{10 - wickets}</b>",
-        ])
+        view.p(f"CRR <b>{crr:.2f}</b> · RRR <b>{rrr:.2f}</b>")
+        view.p(f"Need <b>{need}</b> runs in <b>{balls_left}</b> balls")
     else:
-        view.p(f"📈 Projected score at current rate: <b>{projected(runs, balls, crr)}</b>")
-        view.details("📊 Projection Scenarios", [
-            f"At {rate} RPO: <b>{projected(runs, balls, float(rate))}</b>" for rate in (6, 8, 10, 12)
-        ])
-    view.hr()
-    view.h2("🧢 At The Crease")
+        view.p(f"CRR <b>{crr:.2f}</b> · Projected <b>{projected(runs, balls, crr)}</b>")
     view.p(_batter_line(innings.striker, True))
     view.p(_batter_line(innings.non_striker, False))
-    view.p(f"🤝 Partnership: <b>{int(session.partnership_runs or 0)}</b> runs off <b>{int(session.partnership_balls or 0)}</b> balls")
-    view.hr()
-    view.h2(f"🎯 {esc(session.bowling_team_display)} Bowling")
+    view.p(f"🤝 Partnership <b>{int(session.partnership_runs or 0)}</b> ({int(session.partnership_balls or 0)})")
     current = session.current_bowler
+    view.h2(f"🎯 {bowling}")
     if current:
         pid = int(current.get("player_id") or 0)
         view.p(_bowler_line(current.get("name") or "Bowler", session.bowler_stats.get(pid, {})))
-    else:
-        view.p("🥎 Bowler being chosen")
     others = [
         _bowler_line(data.get("name") or "Bowler", data)
         for pid, data in session.bowler_stats.items()
         if not current or int(pid) != int(current.get("player_id") or 0)
     ]
     if others:
-        view.details("🥎 Other Bowlers", others)
+        view.details("Other bowlers", others)
     if chasing:
         pct = chase_probability(int(first["runs"]), runs, wickets, balls)
-        view.hr()
         view.h2("🎲 Win Probability")
-        view.p(
-            f"<b>{esc(session.batting_team_display)}</b> {pct:.0f}%  {win_bar(pct)}  "
-            f"{100 - pct:.0f}% <b>{esc(session.bowling_team_display)}</b>"
-        )
-    view.footer("Live snapshot · updates every time you send /matchscore")
+        view.p(f"{batting} <b>{pct:.0f}%</b>")
+        view.p(f"{win_bar(pct)}")
+        view.p(f"{bowling} <b>{100 - pct:.0f}%</b>")
     return view
 
 
@@ -215,5 +201,4 @@ def build_so_view(match: dict, state: dict) -> Blocks:
     if bowler:
         view.h2("🎯 Bowling")
         view.p(_bowler_line(bowler.get("name") or "Bowler", bowler))
-    view.footer("Live snapshot · updates every time you send /matchscore")
-    return view
+        return view

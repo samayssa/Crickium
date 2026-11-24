@@ -84,11 +84,6 @@ def build_pitch_view(pitch: str, innings: dict, results: dict) -> Blocks:
     view.h1(f"{info['emoji']} {info['title'].upper()} PITCH REPORT")
     view.p(f"<i>{esc(info['tagline'])}</i>")
     view.hr()
-    view.h2("📖 Pitch Behaviour")
-    view.p(esc(info["story"]))
-    view.p(f"✅ <b>Favours:</b> {esc(info['favours'])}")
-    view.p(f"💡 <b>Strategy:</b> {esc(info['tip'])}")
-    view.hr()
     first, second = innings.get(1, {}), innings.get(2, {})
     view.h2("📊 Averages")
     view.p(
@@ -106,6 +101,11 @@ def build_pitch_view(pitch: str, innings: dict, results: dict) -> Blocks:
         view.p(f"🎯 <b>Chasing teams</b> · Won {chase} ({_pct(chase, decided)}) · Lost {defend} ({_pct(defend, decided)})")
     else:
         view.p("No completed results recorded yet.")
+    view.hr()
+    view.h2("📖 Pitch Behaviour")
+    view.p(esc(info["story"]))
+    view.p(f"✅ <b>Favours:</b> {esc(info['favours'])}")
+    view.p(f"💡 <b>Strategy:</b> {esc(info['tip'])}")
     matches = max(int(first.get("n") or 0), int(second.get("n") or 0))
     view.footer(f"Based on {matches} completed match{'es' if matches != 1 else ''} on this pitch")
     return view
