@@ -2043,6 +2043,7 @@
       player_already_in_xi: "That substitute is already in the Playing XI.",
       squad_too_small: "You need at least eleven squad players to manage the Playing XI.",
       minimum_squad_size: "Keep at least eleven players in your squad for a complete Playing XI.",
+      match_in_progress: "You can’t sell players while you are in a match. Finish your match first.",
       card_not_owned: "This collection card is no longer available.",
       card_data_unavailable: "This card’s saved details could not be loaded.",
       playing_xi_player_selected: "Only substitute players can be sold in Sell Multiple.",

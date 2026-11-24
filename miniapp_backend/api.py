@@ -21,6 +21,7 @@ from services.card_identity import (
     owned_same_card,
     showcase_squad_player_id,
 )
+from services.match_guard import SELL_BLOCKED_TEXT, user_in_match
 from utils.price_chart import get_price
 from utils.rarity import get_rarity
 
@@ -1432,6 +1433,8 @@ async def update_playing_xi_order(viewer: TelegramViewer, player_ids: list[Any])
 
 async def sell_squad_players(viewer: TelegramViewer, player_ids: list[Any]) -> dict[str, Any]:
     """Atomically sell selected substitutes at the bot's resale prices."""
+    if await user_in_match(int(viewer.id)):
+        return {"status": "match_in_progress", "detail": SELL_BLOCKED_TEXT}
     try:
         selected_ids = [int(value) for value in player_ids]
     except (TypeError, ValueError):
@@ -1504,6 +1507,8 @@ async def sell_squad_players(viewer: TelegramViewer, player_ids: list[Any]) -> d
 
 async def sell_squad_player(viewer: TelegramViewer, player_id: int) -> dict[str, Any]:
     """Sell an owned squad card atomically, using the same price chart as /sell."""
+    if await user_in_match(int(viewer.id)):
+        return {"status": "match_in_progress", "detail": SELL_BLOCKED_TEXT}
     player_id = int(player_id)
     if not player_id:
         return {"status": "invalid_selection"}

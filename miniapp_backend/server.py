@@ -655,7 +655,7 @@ class CrickiumMiniApp:
                 await _send_json(send, {"status": "invalid_selection", "detail": "Select one or more substitute players."}, 400)
                 return
             result = await api.sell_squad_players(viewer, raw_ids)
-            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"invalid_selection", "player_not_owned", "playing_xi_player_selected", "minimum_squad_size"} else 404 if result.get("status") == "user_missing" else 400
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"invalid_selection", "player_not_owned", "playing_xi_player_selected", "minimum_squad_size", "match_in_progress"} else 404 if result.get("status") == "user_missing" else 400
             await _send_json(send, result, status)
             return
         if path == "/api/squad/lineup/swap":
@@ -689,7 +689,7 @@ class CrickiumMiniApp:
             except (TypeError, ValueError):
                 player_id = 0
             result = await api.sell_squad_player(viewer, player_id)
-            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "minimum_squad_size"} else 404 if result.get("status") == "user_missing" else 400
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "minimum_squad_size", "match_in_progress"} else 404 if result.get("status") == "user_missing" else 400
             await _send_json(send, result, status)
             return
         if path in ("/api/packs/card/release", "/api/packs/card/replace"):

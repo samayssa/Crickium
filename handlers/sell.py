@@ -6,6 +6,7 @@ import html
 import secrets
 import string
 
+from services.match_guard import SELL_BLOCKED_TEXT, user_in_match
 from handlers.registry import register, register_callback
 from app import app
 from database.query import execute, fetchrow, transaction
@@ -298,6 +299,10 @@ async def sell_command(message):
 
     print(f"[sell] /sell invoked by user_id={user_id}")
 
+    if await user_in_match(user_id):
+        await app.send_message(chat_id, f"<b>⚠️ {SELL_BLOCKED_TEXT}</b>", parse_mode="HTML")
+        return
+
     range_args = _parse_numeric_range(message.get("text", ""))
     if range_args:
         start, end = range_args
@@ -405,6 +410,9 @@ async def on_sell_search(callback_query):
     if user_id != int(state["seller_id"]):
         await app.answer_callback_query(callback_query["id"], "This search is not yours.", show_alert=True)
         return
+    if action == "sell" and await user_in_match(user_id):
+        await app.answer_callback_query(callback_query["id"], SELL_BLOCKED_TEXT, show_alert=True)
+        return
 
     players = state["players"]
     current = int(state.get("page", 0))
@@ -450,6 +458,10 @@ async def on_sell_confirm(callback_query):
 
     if int(presser["id"]) != seller_id:
         await app.answer_callback_query(callback_query["id"], "This isn't your sale prompt!", show_alert=True)
+        return
+
+    if await user_in_match(seller_id):
+        await app.answer_callback_query(callback_query["id"], SELL_BLOCKED_TEXT, show_alert=True)
         return
 
     pid = int(player_id_str)
@@ -519,6 +531,10 @@ async def on_sell_range_confirm(callback_query):
     seller_id = int(pending["seller_id"])
     if int(presser.get("id") or 0) != seller_id:
         await app.answer_callback_query(callback_query["id"], "This isn't your sale prompt!", show_alert=True)
+        return
+
+    if await user_in_match(seller_id):
+        await app.answer_callback_query(callback_query["id"], SELL_BLOCKED_TEXT, show_alert=True)
         return
 
     squad = await get_team_squad(seller_id) or []
