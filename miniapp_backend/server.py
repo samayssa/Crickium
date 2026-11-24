@@ -347,6 +347,20 @@ class CrickiumMiniApp:
             if path == "/api/home" or path == "/api/profile":
                 await _send_json(send, await api.build_home_response(viewer))
                 return
+            if path == "/api/squad/evolve/preview":
+                kind = (query.get("kind") or "").lower()
+                try:
+                    evolve_player_id = int(query.get("player_id") or 0)
+                    evolve_entity_id = int(query.get("id") or 0)
+                except ValueError:
+                    evolve_player_id = evolve_entity_id = 0
+                if kind not in {"global", "special", "showcase"} or not evolve_player_id or evolve_entity_id <= 0:
+                    await _send_json(send, {"status": "invalid_selection", "detail": "Choose a valid card."}, 400)
+                    return
+                result = await api.build_evolve_preview(viewer, evolve_player_id, kind, evolve_entity_id)
+                status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "not_same_player", "not_an_upgrade", "already_owned"} else 404
+                await _send_json(send, result, status)
+                return
             if path == "/api/players/search":
                 q = (query.get("q") or "").strip().lstrip("@")[:100]
                 try:
@@ -653,6 +667,20 @@ class CrickiumMiniApp:
                 return
             result = await api.swap_playing_xi_players(viewer, playing_player_id, substitute_player_id)
             status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "squad_too_small", "player_not_in_xi", "player_already_in_xi"} else 404 if result.get("status") == "user_missing" else 400
+            await _send_json(send, result, status)
+            return
+        if path == "/api/squad/evolve":
+            kind = str(payload.get("kind") or "").lower()
+            try:
+                evolve_player_id = int(payload.get("player_id") or 0)
+                evolve_entity_id = int(payload.get("id") or 0)
+            except (TypeError, ValueError):
+                evolve_player_id = evolve_entity_id = 0
+            if kind not in {"global", "special", "showcase"} or not evolve_player_id or evolve_entity_id <= 0:
+                await _send_json(send, {"status": "invalid_selection", "detail": "Choose a valid card."}, 400)
+                return
+            result = await api.evolve_squad_card(viewer, evolve_player_id, kind, evolve_entity_id)
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "not_same_player", "not_an_upgrade", "already_owned", "insufficient_balance"} else 404
             await _send_json(send, result, status)
             return
         if path == "/api/squad/sell":

@@ -593,3 +593,29 @@ select.field { color: var(--text); }
 @media (max-width: 360px) {
   .reward-timer-line { gap: 5px; padding: 8px 6px; font-size: 8px; }
 }
+
+.button.evolve-button { background: linear-gradient(135deg,#d9b95a,#9c7a2a); color: #17140a; border: 0; font-weight: 800; }
+.sheet-scrim { position: fixed; z-index: 75; inset: 0; display: flex; align-items: flex-end; justify-content: center; background: #000a; backdrop-filter: blur(4px); animation: fade .15s; }
+.evolve-sheet { position: relative; display: flex; flex-direction: column; width: min(560px,100%); max-height: 92vh; border: 1px solid #42513f; border-bottom: 0; border-radius: 24px 24px 0 0; background: #101c17; box-shadow: 0 -20px 80px #000a; animation: sheet-up .26s cubic-bezier(.2,.8,.2,1); }
+.evolve-sheet.closing { transform: translateY(100%); transition: transform .18s ease-in; }
+.evolve-sheet .close-button { position: absolute; top: 12px; right: 14px; z-index: 2; }
+.evolve-sheet-grip { width: 42px; height: 4px; margin: 10px auto 2px; border-radius: 4px; background: #44574a; }
+.evolve-sheet-scroll { overflow-y: auto; padding: 8px 18px 14px; }
+.evolve-route { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 8px 0 12px; font-size: 11px; color: var(--muted); }
+.evolve-route b { color: var(--lime); }
+.evolve-route i { font-style: normal; color: var(--gold); }
+.evolve-card { display: grid; place-items: center; }
+.evolve-card-image { width: min(230px,62vw); border-radius: 16px; box-shadow: 0 14px 40px #0008; }
+.evolve-title { text-align: center; }
+.evolve-title h2 { margin: 12px 0 2px; font-size: 21px; }
+.evolve-title p { margin: 0 0 12px; color: #bdc7bb; font-size: 10px; }
+.evolve-stats { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
+.evolve-price { display: grid; gap: 7px; margin-top: 12px; padding: 12px; border-radius: 14px; background: #0a1511; border: 1px solid var(--line); }
+.evolve-price > div { display: flex; justify-content: space-between; font-size: 11px; }
+.evolve-price span { color: var(--muted); }
+.evolve-price-total { padding-top: 7px; border-top: 1px solid var(--line); }
+.evolve-price-total b { color: var(--gold); }
+.evolve-price small { color: var(--muted); font-size: 9px; }
+.evolve-note { margin: 10px 2px 0; color: #b4bfb5; font-size: 10px; line-height: 1.6; }
+.evolve-sheet-footer { padding: 10px 18px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #101c17; }
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }

@@ -549,6 +549,10 @@ async def main():
         print("[main.py] Claim maintenance worker started.")
         await start_quest_maintenance()
         print("[main.py] Crickium Quest maintenance worker started.")
+        from services import game_pause
+        await game_pause.restore_state()
+        game_pause.start_worker()
+        print("[main.py] Game pause state restored.")
     except Exception:
         print("!! Database setup failed. Bot will still start, but DB-dependent features won't work until this is fixed. !!")
         traceback.print_exc()

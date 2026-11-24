@@ -466,6 +466,24 @@ TABLES = {
                                                                     
                                                                      
                                                                       
+    "game_pauses": """
+        CREATE TABLE IF NOT EXISTS game_pauses(
+            engine TEXT NOT NULL,
+            match_id BIGINT NOT NULL,
+            chat_id BIGINT NOT NULL,
+            challenger_id BIGINT NOT NULL,
+            opponent_id BIGINT NOT NULL,
+            requested_by BIGINT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'requested',
+            linked_engine TEXT,
+            linked_match_id BIGINT,
+            request_message_id BIGINT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            paused_at TIMESTAMPTZ,
+            queued_at TIMESTAMPTZ,
+            PRIMARY KEY (engine, match_id)
+        );
+    """,
     "stadium_images": """
         CREATE TABLE IF NOT EXISTS stadium_images(
             stadium_name TEXT PRIMARY KEY,
@@ -492,6 +510,8 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_playipl_matches_user_status ON playipl_matches(challenger_id,opponent_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_wpl_matches_chat_status ON wpl_matches(chat_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_wpl_matches_user_status ON wpl_matches(challenger_id,opponent_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_game_pauses_chat_state ON game_pauses(chat_id,state);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_game_pauses_players ON game_pauses(challenger_id,opponent_id);")
     print("[migrate] Runtime match indexes OK.")
 
     print("[migrate] Ensuring 'users.claim_attempt_at' column exists...")

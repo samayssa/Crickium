@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from database.game_pause_repo import hidden_clause
 from database.query import execute, fetch, fetchrow, transaction
 
 _SCHEMA_READY = False
@@ -60,7 +61,12 @@ async def get_match(match_id: int):
 
 async def get_active_match_in_chat(chat_id: int):
     await ensure_schema()
-    row = await fetchrow("SELECT * FROM playso_matches WHERE chat_id=$1 AND status = ANY($2::text[]) ORDER BY match_id DESC LIMIT 1;", chat_id, list(ACTIVE))
+    row = await fetchrow(
+        "SELECT * FROM playso_matches WHERE chat_id=$1 AND status = ANY($2::text[])"
+        + hidden_clause("PLAYSO", "playso_matches")
+        + " ORDER BY match_id DESC LIMIT 1;",
+        chat_id, list(ACTIVE),
+    )
     return await _normalized_row(row)
 
 

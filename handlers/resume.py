@@ -437,6 +437,13 @@ async def _update_live_message_id(engine: str, session: Any, message_id: int) ->
 
 @register("resume")
 async def resume_command(message):
+    from services.game_pause import handle_resume_command
+    if await handle_resume_command(message):
+        return
+    await resume_active(message)
+
+
+async def resume_active(message):
     user = message.get("from") or {}
     chat = message.get("chat") or {}
     user_id = int(user.get("id") or 0)

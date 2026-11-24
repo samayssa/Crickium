@@ -1,4 +1,5 @@
 from database.query import execute, fetchrow
+from database.game_pause_repo import hidden_clause
 
                                                                        
                                                                           
@@ -36,6 +37,7 @@ async def get_active_match_in_chat(chat_id):
         """
         SELECT * FROM play_matches
         WHERE chat_id = $1 AND status = ANY($2::text[])
+        """ + hidden_clause("PLAY", "play_matches") + """
         ORDER BY match_id DESC LIMIT 1;
         """,
         chat_id, list(ACTIVE_STATUSES),

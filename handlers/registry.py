@@ -41,6 +41,19 @@ def register_callback(action):
 
             actor_id = int((callback_query.get("from") or {}).get("id") or 0)
             if engine and match_id is not None:
+                from utils.pause_state import is_paused
+                if is_paused(engine, match_id):
+                    try:
+                        from app import app
+                        await app.answer_callback_query(
+                            callback_query.get("id"),
+                            "⏸ This game is paused. Players can send /resume to continue.",
+                            show_alert=True,
+                        )
+                    except Exception as exc:
+                        print(f"[registry] paused-game notice failed for {action}: {exc!r}")
+                    return None
+
                 try:
                     from services.game_session_recovery import ensure_background_saver, restore_session
                     ensure_background_saver()

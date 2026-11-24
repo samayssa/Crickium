@@ -4,6 +4,7 @@ from database.recent_lineups_repo import get_recent_xi as _get_recent_xi, save_r
 
 import re
 from database.query import execute, fetch, fetchrow, fetchval
+from database.game_pause_repo import hidden_clause
 
 ENGINE_KEY = 'WPL'
 
@@ -142,7 +143,8 @@ async def get_active_match_in_chat(chat_id):
     await ensure_schema()
     return await fetchrow(
         """SELECT * FROM wpl_matches WHERE chat_id=$1 AND status IN
-        ('pending','accepted','team_selection','pitch_selected','toss_done','lineup','live')
+        ('pending','accepted','team_selection','pitch_selected','toss_done','lineup','live')"""
+        + hidden_clause("PLAYWPL", "wpl_matches") + """
         ORDER BY match_id DESC LIMIT 1;""",
         chat_id,
     )

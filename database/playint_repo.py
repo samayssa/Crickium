@@ -3,6 +3,7 @@ from __future__ import annotations
 from database.recent_lineups_repo import get_recent_xi as _get_recent_xi, save_recent_xi as _save_recent_xi
 
 from database.query import execute, fetch, fetchrow, fetchval
+from database.game_pause_repo import hidden_clause
 import re
 
 
@@ -113,7 +114,8 @@ async def set_decision(match_id, decision):
 
 async def get_active_match_in_chat(chat_id):
     return await fetchrow(
-        """SELECT * FROM playint_matches WHERE chat_id=$1 AND status IN ('pending','accepted','team_selection','pitch_selected','toss_done','lineup','live') ORDER BY match_id DESC LIMIT 1;""",
+        """SELECT * FROM playint_matches WHERE chat_id=$1 AND status IN ('pending','accepted','team_selection','pitch_selected','toss_done','lineup','live')"""
+        + hidden_clause("PLAYINT", "playint_matches") + """ ORDER BY match_id DESC LIMIT 1;""",
         chat_id,
     )
 

@@ -1,6 +1,7 @@
 """Runtime state and simulation helpers for the /playipl mode."""
 from __future__ import annotations
 
+from utils.pause_state import is_paused
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -133,8 +134,8 @@ def get_playipl_session(match_id: int) -> PlaySession | None:
 def get_playipl_session_in_chat(chat_id: int) -> PlaySession | None:
     """Return the live in-memory session currently occupying a group."""
     target = int(chat_id)
-    for session in _PLAYIPL_SESSIONS.values():
-        if int(session.chat_id) == target:
+    for match_id, session in _PLAYIPL_SESSIONS.items():
+        if int(session.chat_id) == target and not is_paused("PLAYIPL", match_id):
             return session
     return None
 

@@ -802,6 +802,7 @@
       <div class="managed-player-state ${inXi ? "active-xi" : "bench-player"}">${inXi ? "✓ PLAYING XI" : "SUBSTITUTE"}</div>
       <div class="managed-actions">
         <button class="button secondary full" data-action="lineup-swap-start" data-player-id="${squadPlayerId}" data-mode="${inXi ? "remove" : "add"}" ${disabledXI ? "disabled" : ""}>${inXi ? "Move to substitutes" : "Add to Playing XI"}</button>
+        ${(player.evolve_targets || []).map((target) => `<button class="button evolve-button full" data-action="open-card-evolve" data-player-id="${squadPlayerId}" data-kind="${esc(target.kind)}" data-id="${Number(target.entity_id)}">⇪ Evolve to ${esc(target.name)} OVR ${number(target.overall)}</button>`).join("")}
         <button class="button sell-button full" data-action="sell-squad-player" data-player-id="${squadPlayerId}" data-name="${esc(player.name || "player")}" data-sell-price="${Number(player.sell_price || 0)}" ${disabledSell ? "disabled" : ""}>Sell · ${number(player.sell_price)} coins</button>
       </div>
     </div>`;
@@ -1046,6 +1047,86 @@
     } catch (error) {
       toast(claimError(error.payload || { status: error.message }), true);
       if (button) { button.disabled = false; button.textContent = "Sell failed · Retry"; }
+    }
+  }
+
+  function closeEvolveSheet() {
+    const sheet = document.getElementById("evolve-sheet-scrim");
+    if (!sheet) return;
+    const panel = sheet.querySelector(".evolve-sheet");
+    if (panel) panel.classList.add("closing");
+    setTimeout(() => sheet.remove(), 180);
+  }
+
+  function evolveSheetBody(data, query) {
+    const target = data.target || {};
+    const current = data.current || {};
+    const quote = data.quote || {};
+    const upgrades = data.equipped_upgrades || [];
+    const affordable = Boolean(data.can_afford);
+    return `<div class="evolve-sheet-grip"></div>
+      <button class="close-button" data-action="close-evolve-sheet" aria-label="Close">×</button>
+      <div class="evolve-sheet-scroll">
+        <span class="eyebrow">CARD EVOLVE</span>
+        <div class="evolve-route"><span>${esc(current.name)} <b>${number(current.overall)}</b></span><i>➜</i><span>${esc(target.name)} <b>${number(target.overall)}</b></span></div>
+        <div class="evolve-card">${image(target.card_image_url, target.name, "evolve-card-image")}</div>
+        <div class="evolve-title"><h2>${esc(target.name)}</h2><p>${esc(target.description || target.role || "")}</p></div>
+        <div class="detail-grid evolve-stats">
+          <div class="detail-stat"><span>Bat level</span><b>${number(target.bat_level)}</b></div>
+          <div class="detail-stat"><span>Ball level</span><b>${number(target.bowl_level)}</b></div>
+          <div class="detail-stat"><span>Overall</span><b>${number(target.overall)} · +${number(target.overall_gain)}</b></div>
+          <div class="detail-stat"><span>Rarity</span><b>${esc(target.rarity || "—")}</b></div>
+          <div class="detail-stat"><span>Role</span><b>${esc(target.role_icon || "")} ${esc(target.role || "—")}</b></div>
+          <div class="detail-stat"><span>Version</span><b>${esc(target.version || "Standard")}</b></div>
+          <div class="detail-stat"><span>Batting hand</span><b>${esc(target.batting_hand || "—")}</b></div>
+          <div class="detail-stat"><span>Bowling hand</span><b>${esc(target.bowling_hand || "—")}</b></div>
+          <div class="detail-stat"><span>Country</span><b>${esc(target.country || "—")}</b></div>
+        </div>
+        <div class="evolve-price">
+          <div><span>New card price</span><b>${number(quote.buy_price)}</b></div>
+          <div><span>Your card returns</span><b>− ${number(quote.sell_value)}</b></div>
+          <div class="evolve-price-total"><span>You pay</span><b>${number(quote.cost)} coins</b></div>
+          <small>Your balance · ${number(data.balance)} coins</small>
+        </div>
+        <p class="evolve-note">Your Playing XI spot, captaincy${upgrades.length ? ` and ${esc(upgrades.join(" + "))}` : " and equipped upgrades"} move to the new card. The old card leaves your squad.</p>
+      </div>
+      <div class="evolve-sheet-footer"><button class="button primary full" data-action="confirm-card-evolve" data-player-id="${Number(query.playerId)}" data-kind="${esc(query.kind)}" data-id="${Number(query.id)}" ${affordable ? "" : "disabled"}>${affordable ? `Confirm evolve · ${number(quote.cost)} coins` : "Not enough coins"}</button></div>`;
+  }
+
+  async function openCardEvolve(playerId, kind, id) {
+    closeEvolveSheet();
+    const scrim = document.createElement("div");
+    scrim.className = "sheet-scrim";
+    scrim.id = "evolve-sheet-scrim";
+    scrim.innerHTML = `<section class="evolve-sheet"><div class="evolve-sheet-grip"></div><button class="close-button" data-action="close-evolve-sheet" aria-label="Close">×</button><div class="loading-line">Loading the new card…</div></section>`;
+    document.body.append(scrim);
+    scrim.addEventListener("click", (event) => { if (event.target === scrim) closeEvolveSheet(); });
+    const panel = scrim.querySelector(".evolve-sheet");
+    try {
+      const data = await api(`/api/squad/evolve/preview?player_id=${encodeURIComponent(playerId)}&kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
+      if (data.status !== "success") throw Object.assign(new Error(data.status), { payload: data });
+      panel.innerHTML = evolveSheetBody(data, { playerId, kind, id });
+      hydrateImages(panel);
+    } catch (error) {
+      closeEvolveSheet();
+      toast(claimError(error.payload || { status: error.message }), true);
+    }
+  }
+
+  async function confirmCardEvolve(playerId, kind, id, button) {
+    if (button) { button.disabled = true; button.textContent = "Swapping…"; }
+    try {
+      const result = await api("/api/squad/evolve", { method: "POST", body: JSON.stringify({ player_id: Number(playerId), kind, id: Number(id) }) });
+      if (result.status !== "success") throw Object.assign(new Error(result.status), { payload: result });
+      if (state.home?.wallet) state.home.wallet.coins = result.balance;
+      closeEvolveSheet();
+      await loadSquad();
+      const dropped = (result.upgrades_dropped || []).length ? ` ${result.upgrades_dropped.join(", ")} could not be kept on this edition.` : "";
+      toast(`${result.previous?.name || "Card"} is now ${result.player?.name || "upgraded"} (${number(result.player?.overall)} OVR) for ${number(result.cost)} coins.${dropped}`);
+      ping("medium");
+    } catch (error) {
+      toast(claimError(error.payload || { status: error.message }), true);
+      if (button) { button.disabled = false; button.textContent = "Try again"; }
     }
   }
 
@@ -1948,6 +2029,9 @@
       debut_required: "Complete your debut match before claiming the daily streak reward.",
       insufficient_balance: "You don’t have enough coins for this player.",
       already_owned: "You already own this player.",
+      not_an_upgrade: "That edition is not a higher-rated card.",
+      not_same_player: "Cards can only evolve into another edition of the same player.",
+      target_not_found: "That edition is not available any more.",
       user_missing: "Your Crickium account could not be found. Open the bot and try again.",
       squad_full: "Your squad has reached its 25-player capacity.",
       replacement_pending: "A Kit Bag player is waiting for you to replace a squad card.",
@@ -2098,6 +2182,9 @@
       if (action === "set-playing-order") navigate("lineup-order");
       if (action === "move-playing-order") movePlayingOrder(actionButton.dataset.playerId, actionButton.dataset.direction);
       if (action === "save-playing-order") savePlayingOrder(actionButton);
+      if (action === "open-card-evolve") openCardEvolve(actionButton.dataset.playerId, actionButton.dataset.kind, actionButton.dataset.id);
+      if (action === "close-evolve-sheet") closeEvolveSheet();
+      if (action === "confirm-card-evolve") confirmCardEvolve(actionButton.dataset.playerId, actionButton.dataset.kind, actionButton.dataset.id, actionButton);
       if (action === "open-sell-multiple") navigate("sell-multiple");
       if (action === "toggle-bulk-player") toggleBulkSellPlayer(actionButton.dataset.playerId);
       if (action === "confirm-sell-multiple") {

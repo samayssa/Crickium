@@ -1153,6 +1153,7 @@ async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
     pack_cards = await _pack_owned_cards(int(viewer.id))
     lineup_ids = await _effective_lineup_ids(int(viewer.id), squad)
     lineup_set = set(lineup_ids)
+    evolve_map = await _evolve_targets_for_squad(squad)
     players = []
     for player in squad:
         squad_player_id = int(player.get("player_id") or 0)
@@ -1162,6 +1163,7 @@ async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
                 "squad_player_id": squad_player_id,
                 "in_playing_xi": squad_player_id in lineup_set,
                 "is_captain": squad_player_id == int(player.get("captain_player_id") or 0),
+                "evolve_targets": [_evolve_target_payload(player, option) for option in evolve_map.get(squad_player_id, [])],
             }
         )
     return {
@@ -1173,6 +1175,97 @@ async def build_squad_response(viewer: TelegramViewer) -> dict[str, Any]:
         "substitute_count": max(0, len(squad) - len(lineup_ids)),
         "pack_cards": pack_cards,
         "pack_card_count": len(pack_cards),
+    }
+
+
+async def _evolve_targets_for_squad(squad: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    try:
+        from services.card_evolve import targets_for_squad
+        return await targets_for_squad(squad)
+    except Exception as exc:
+        print(f"[miniapp_backend] card evolve lookup failed: {type(exc).__name__}")
+        return {}
+
+
+def _evolve_target_payload(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    from services.card_evolve import evolve_quote
+    quote = evolve_quote(old, new)
+    payload = _player_payload(new)
+    return {
+        "kind": payload["kind"],
+        "entity_id": payload["entity_id"],
+        "name": payload["name"],
+        "version": payload["version"],
+        "overall": quote["new_ovr"],
+        "cost": quote["cost"],
+    }
+
+
+async def _equipped_upgrade_names(user_id: int, player: dict[str, Any]) -> list[str]:
+    try:
+        row = await fetchrow(
+            """
+            SELECT b.name AS batting_name, o.name AS bowling_name
+            FROM user_player_loadouts l
+            LEFT JOIN upgrade_catalog b ON b.upgrade_id=l.batting_upgrade_id
+            LEFT JOIN upgrade_catalog o ON o.upgrade_id=l.bowling_upgrade_id
+            WHERE l.user_id=$1 AND l.player_id=$2 AND l.player_kind=$3;
+            """,
+            int(user_id), int(player.get("player_id") or 0), _kind(player),
+        )
+    except Exception as exc:
+        print(f"[miniapp_backend] evolve loadout lookup failed: {type(exc).__name__}")
+        return []
+    return [str(name) for name in ((row or {}).get("batting_name"), (row or {}).get("bowling_name")) if name]
+
+
+async def build_evolve_preview(viewer: TelegramViewer, player_id: int, kind: str, entity_id: int) -> dict[str, Any]:
+    from services.card_evolve import load_card, evolve_quote
+    squad = await _owned_squad(viewer.id)
+    old = next((item for item in squad if int(item.get("player_id") or 0) == int(player_id)), None)
+    if old is None:
+        return {"status": "player_not_owned"}
+    new = await load_card(kind, int(entity_id))
+    if new is None:
+        return {"status": "target_not_found"}
+    if str(new.get("name") or "").strip().lower() != str(old.get("name") or "").strip().lower():
+        return {"status": "not_same_player"}
+    quote = evolve_quote(old, new)
+    if quote["new_ovr"] <= quote["old_ovr"]:
+        return {"status": "not_an_upgrade"}
+    if any(owned_same_card(dict(item), new) for item in squad):
+        return {"status": "already_owned"}
+    balance = int(await fetchval("SELECT COALESCE(balance,0) FROM users WHERE user_id=$1;", int(viewer.id)) or 0)
+    target = _player_payload(new)
+    return {
+        "status": "success",
+        "current": _player_payload(old, owned=True),
+        "target": target | {
+            "description": " • ".join(filter(None, [target["role"], str(new.get("country") or ""), str(target.get("version") or "")])),
+            "overall_gain": quote["new_ovr"] - quote["old_ovr"],
+        },
+        "quote": quote,
+        "balance": balance,
+        "can_afford": balance >= quote["cost"],
+        "equipped_upgrades": await _equipped_upgrade_names(viewer.id, old),
+    }
+
+
+async def evolve_squad_card(viewer: TelegramViewer, player_id: int, kind: str, entity_id: int) -> dict[str, Any]:
+    from services.card_evolve import perform_evolve
+    result = await perform_evolve(int(viewer.id), int(player_id), kind, int(entity_id))
+    if result.get("status") != "success":
+        return {key: value for key, value in result.items() if key not in {"old", "new"}}
+    return {
+        "status": "success",
+        "player": _player_payload(result["new"], owned=True),
+        "previous": _player_payload(result["old"], owned=True),
+        "cost": result["cost"],
+        "balance": result["balance"],
+        "in_playing_xi": result["in_playing_xi"],
+        "was_captain": result["was_captain"],
+        "upgrades_moved": result["upgrades_moved"],
+        "upgrades_dropped": result["upgrades_dropped"],
     }
 
 

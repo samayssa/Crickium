@@ -300,6 +300,10 @@ async def game_signature(engine: str, match_id: int):
 
 
 async def sync_after_change(engine: str, match_id: int, actor_id: int | None = None) -> None:
+    from utils.pause_state import is_paused
+    if is_paused(engine, match_id):
+        cancel_match(engine, match_id)
+        return
     match = await _current_match(engine, match_id)
     if not match or str(match.get("status") or "") in {"timed_out", "completed", "declined", "ended", "expired"}:
         cancel_match(engine, match_id)
