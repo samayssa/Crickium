@@ -560,6 +560,12 @@ async def main():
     app_client = await _start_client_with_persistent_session()
     app.bind_client(app_client)
     try:
+        from services.bot_commands import sync_bot_commands
+        await sync_bot_commands()
+    except Exception:
+        print("[main.py] Command list sync failed:")
+        traceback.print_exc()
+    try:
         from handlers.giveaway import start_giveaway_worker
         start_giveaway_worker()
     except Exception:
