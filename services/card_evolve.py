@@ -7,6 +7,7 @@ from database.query import fetch, fetchrow, transaction
 from database.special_players_repo import as_special_player
 from database.showcase_players_repo import as_showcase_player
 from services.card_identity import card_entity_id, card_identity_key, player_kind
+from services.match_guard import EVOLVE_BLOCKED_TEXT, user_in_match
 from services.player_card import overall_rating
 from utils.price_chart import get_price
 from utils.user_locks import user_lock
@@ -195,6 +196,8 @@ async def _move_loadout(conn: Any, user_id: int, old: dict[str, Any], new: dict[
 async def perform_evolve(user_id: int, old_player_id: int, kind: str, entity_id: int) -> dict[str, Any]:
     user_id = int(user_id)
     old_player_id = int(old_player_id)
+    if await user_in_match(user_id):
+        return {"status": "match_in_progress", "detail": EVOLVE_BLOCKED_TEXT}
 
     async def _tx(conn):
         user = await conn.fetchrow("SELECT balance, captain_player_id FROM users WHERE user_id=$1 FOR UPDATE;", user_id)

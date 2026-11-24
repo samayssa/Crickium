@@ -7,6 +7,7 @@ from handlers.registry import register, register_callback
 from buttons.play_buttons import _styled_button
 from pyrogram.types import InlineKeyboardMarkup
 from database.special_players_repo import display_edition
+from services.match_guard import EVOLVE_BLOCKED_TEXT, user_in_match
 from services import card_evolve
 from services.card_identity import card_entity_id, player_kind
 from services.card_provider import get_player_card_bytes
@@ -119,6 +120,9 @@ async def _send_rich(chat_id: int, thread_id, rich_html: str, fallback: str, key
 async def evolve_command(message):
     chat_id = message["chat"]["id"]
     user_id = int((message.get("from") or {}).get("id") or 0)
+    if await user_in_match(user_id):
+        await app.send_message(chat_id, f"<b>⚠️ {EVOLVE_BLOCKED_TEXT}</b>", parse_mode="HTML")
+        return
     if not await has_completed_debut(user_id):
         await app.send_message(chat_id, "<b>⚠️ Complete your /debut first to unlock player collection.</b>", parse_mode="HTML")
         return
@@ -194,6 +198,9 @@ async def on_pick(callback_query):
     if not parts or not parts[0].lstrip("-").isdigit() or int(parts[0]) != presser:
         await _deny(callback_query, "This evolve menu belongs to another player.")
         return
+    if await user_in_match(presser):
+        await _deny(callback_query, EVOLVE_BLOCKED_TEXT)
+        return
     _owner, old_id, kind, entity_id = parts
     squad = await card_evolve.read_squad(presser)
     old = next((card for card in squad if int(card.get("player_id") or 0) == int(old_id)), None)
@@ -261,10 +268,17 @@ async def on_confirm(callback_query):
     if not parts or not parts[0].lstrip("-").isdigit() or int(parts[0]) != presser:
         await _deny(callback_query, "This card evolution belongs to another player.")
         return
+    if await user_in_match(presser):
+        await _deny(callback_query, EVOLVE_BLOCKED_TEXT)
+        return
     _owner, old_id, kind, entity_id = parts
     await _edit(callback_query, "<b>⏳ Evolving your card...</b>")
     result = await card_evolve.perform_evolve(presser, int(old_id), kind, int(entity_id))
     status = result.get("status")
+    if status == "match_in_progress":
+        await _edit(callback_query, f"<b>⚠️ {EVOLVE_BLOCKED_TEXT}</b>")
+        await app.answer_callback_query(callback_query["id"])
+        return
     if status == "success":
         await _edit(callback_query, _success_text(result))
         await app.answer_callback_query(callback_query["id"], "Card evolved.")

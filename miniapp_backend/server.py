@@ -573,10 +573,14 @@ class CrickiumMiniApp:
             return
         if path == "/api/packs/purchase-request":
             from services.pack_system import create_purchase_request
+            from services.match_guard import PACK_BLOCKED_TEXT, user_in_match
             pack_key = str(payload.get("pack_key") or "").strip().lower()
             request_key = str(payload.get("client_request_id") or "").strip()[:80]
             if not pack_key:
                 await _send_json(send, {"status": "invalid", "detail": "Choose a valid pack."}, 400)
+                return
+            if await user_in_match(int(viewer.id)):
+                await _send_json(send, {"status": "match_in_progress", "detail": PACK_BLOCKED_TEXT}, 409)
                 return
             await api._ensure_user(viewer)
             request = await create_purchase_request(int(viewer.id), pack_key, request_key or None)
@@ -587,9 +591,13 @@ class CrickiumMiniApp:
             return
         if path == "/api/packs/purchase-confirm":
             from services.pack_system import confirm_purchase
+            from services.match_guard import PACK_BLOCKED_TEXT, user_in_match
             request_id = str(payload.get("request_id") or "")
             if not request_id:
                 await _send_json(send, {"status": "invalid", "detail": "Purchase request is required."}, 400)
+                return
+            if await user_in_match(int(viewer.id)):
+                await _send_json(send, {"status": "match_in_progress", "detail": PACK_BLOCKED_TEXT}, 409)
                 return
             result = await confirm_purchase(int(viewer.id), request_id)
             status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"insufficient", "cancelled", "failed", "pending", "invalid"} else 403 if result.get("status") == "owner" else 404 if result.get("status") == "missing" else 500
@@ -680,7 +688,7 @@ class CrickiumMiniApp:
                 await _send_json(send, {"status": "invalid_selection", "detail": "Choose a valid card."}, 400)
                 return
             result = await api.evolve_squad_card(viewer, evolve_player_id, kind, evolve_entity_id)
-            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "not_same_player", "not_an_upgrade", "already_owned", "insufficient_balance"} else 404
+            status = 200 if result.get("status") == "success" else 409 if result.get("status") in {"player_not_owned", "not_same_player", "not_an_upgrade", "already_owned", "insufficient_balance", "match_in_progress"} else 404
             await _send_json(send, result, status)
             return
         if path == "/api/squad/sell":

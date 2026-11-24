@@ -8,6 +8,7 @@ from handlers.registry import register, register_callback
 from app import app
 from database.query import execute, fetchrow
 from services.card_provider import get_player_card_bytes
+from services.match_guard import PACK_BLOCKED_TEXT, user_in_match
 from services.pack_system import (PACK_CATALOG, create_purchase_request, confirm_purchase, inventory, normalize_pack_key, open_pack, get_opening,
                                   pack_shop_text, pending_cards, squad_choices, release_card, replace_card, MAX_SQUAD_SIZE)
 from services.quest_engine import record_quest_event
@@ -176,6 +177,9 @@ async def buypack_command(message):
     chat_id = int(message["chat"]["id"])
     user_id = int((message.get("from") or {}).get("id") or 0)
     parts = str(message.get("text") or "").split(maxsplit=1)
+    if await user_in_match(user_id):
+        await app.send_message(chat_id, f"<b>⚠️ {PACK_BLOCKED_TEXT}</b>", parse_mode="HTML")
+        return
     key = normalize_pack_key(parts[1] if len(parts) == 2 else None)
     if not key:
         await app.send_message(chat_id, "<b>⚠️ Use /buypack bronze|silver|gold|diamond|platinum</b>", parse_mode="HTML")
@@ -210,6 +214,9 @@ async def pack_confirm_callback(callback_query):
     uid = int((callback_query.get("from") or {}).get("id") or 0)
     if uid != int(owner_id):
         await app.answer_callback_query(callback_query["id"], "This purchase request is not yours.", show_alert=True)
+        return
+    if await user_in_match(uid):
+        await app.answer_callback_query(callback_query["id"], PACK_BLOCKED_TEXT, show_alert=True)
         return
     result = await confirm_purchase(uid, request_id)
     if result.get("status") == "success":

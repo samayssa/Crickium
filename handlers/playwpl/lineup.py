@@ -9,6 +9,7 @@ from utils.WPLPremiumEmoji import wpl_team_emoji_html
 from buttons.playwpl_challenger_buttons import challenger_xi_keyboard
 from buttons.playwpl_opponent_buttons import opponent_xi_keyboard
 from utils.mentions import mention_html
+from services.lineup_rich import build_rich, build_fallback, send_lineup
 from utils.overseas import MAX_OVERSEAS_PLAYERS, count_overseas, within_overseas_limit
 
 NO_KEYBOARD={'inline_keyboard':[]}
@@ -152,20 +153,14 @@ async def playwpl_xi_confirm(callback_query):
     await set_xi_confirmed(mid,uid); await save_recent_playing_xi(uid,code,selected)
     await app.answer_callback_query(callback_query['id'],'Playing XI confirmed!')
     await app.delete_message(callback_query['message']['chat']['id'],callback_query['message']['message_id'])
-    role_emoji={'Batsman':'🏏','Bowler':'⚡','AllRounder':'🔄','Wicketkeeper':'🧤'}
-    preview='<b>🏏 PLAYING XI</b>\n\n'+'\n'.join(f"{i+1}. {role_emoji.get(str(p.get('role')),'🏏')} {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for i,p in enumerate(chosen))
-    await app.send_message(callback_query['message']['chat']['id'],preview,parse_mode='HTML')
-    await asyncio.sleep(1)
     player_mention=mention_html(uid, callback_query['from'].get('username'), callback_query['from'].get('first_name'))
-    team_display=f"{wpl_team_emoji_html(code)} {team_name(code).upper()}"; bench=[]
-    for p in players:
-        if int(p.get('player_id') or 0) not in selected: bench.append(p)
-        if len(bench)>=5: break
-    final=("<b>╭━━〔 🏏 PLAYING XI CONFIRMED 〕━━╮</b>\n\n"
-           f"🏏 <b>{player_mention} • {team_display} ({team_short(code)})</b>\n\n"
-           "<blockquote><b>🏏 PLAYING XI</b>\n"+"\n".join(f"{i+1}. {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for i,p in enumerate(chosen))+"</blockquote>\n\n"
-           "<blockquote><b>🪑 BENCH / SUBSTITUTES</b>\n"+"\n".join(f"• {p.get('name')} • OVR {max(int(p.get('bat_level') or 0),int(p.get('bowl_level') or 0))}" for p in bench)+"</blockquote>\n\n🔒 <b>Playing XI Locked</b>\n\n╰━━━━━━━━━━━━━━━━━━╯")
-    await app.send_message(callback_query['message']['chat']['id'],final,parse_mode='HTML')
+    bench=[p for p in players if int(p.get('player_id') or 0) not in selected][:5]
+    display_team=team_name(code)
+    await send_lineup(
+        callback_query['message']['chat']['id'],
+        build_rich(display_team, callback_query['from'].get('first_name') or 'Player', chosen, bench),
+        build_fallback(display_team, player_mention, chosen, bench),
+    )
     m=await get_match(mid)
     if m.get('challenger_xi_confirmed') and m.get('opponent_xi_confirmed'):
         from .pitch import send_pitch_selection

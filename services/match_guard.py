@@ -2,6 +2,8 @@ from database import play_repo, playint_repo, playipl_repo, playso_repo, playwpl
 from database.query import fetchval
 
 SELL_BLOCKED_TEXT = "You can't sell players while you are in a match. Finish or end your match first, then try again."
+EVOLVE_BLOCKED_TEXT = "You can't evolve cards while you are in a match. Finish or end your match first, then try again."
+PACK_BLOCKED_TEXT = "You can't buy packs while you are in a match. Finish or end your match first, then try again."
 
 _LOOKUPS = (
     play_repo.get_active_match_for_user,

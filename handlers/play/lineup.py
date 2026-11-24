@@ -10,7 +10,8 @@ from database.play_repo import get_match, set_message_id
 from engines.lineup_engine import load_current_xi
 from utils.mentions import mention_html
 from buttons.play_buttons import start_match_keyboard
-from services.card_identity import display_card_name
+from services.lineup_rich import build_fallback, build_rich, send_lineup
+from utils.user_identity import get_user_identity
 from .live import begin_match_flow
 from utils.background import spawn
 
@@ -22,25 +23,6 @@ NO_KEYBOARD = {"inline_keyboard": []}
                                                                  
                                                                       
 _STARTING: set[int] = set()
-
-
-def _xi_block(xi: list[dict]) -> str:
-    if not xi:
-        return "No players in squad yet."
-    return "\n".join(f"{i + 1}. {display_card_name(p)}" for i, p in enumerate(xi))
-
-
-def _playing_xi_text(match: dict, challenger_xi: list[dict], opponent_xi: list[dict]) -> str:
-    challenger_mention = mention_html(match["challenger_id"], match["challenger_username"], match["challenger_name"])
-    opponent_mention = mention_html(match["opponent_id"], match["opponent_username"], match["opponent_name"])
-    return (
-        "<b>📋 PLAYING XI\n\n"
-        f"🏏 {challenger_mention} XI</b>\n"
-        f"<blockquote>{_xi_block(challenger_xi)}</blockquote>\n"
-        "<b>\n              ⚔️ VS ⚔️\n\n"
-        f"🎯 {opponent_mention} XI</b>\n"
-        f"<blockquote>{_xi_block(opponent_xi)}</blockquote>"
-    )
 
 
 async def _xis(match: dict) -> tuple[list[dict], list[dict]]:
@@ -56,13 +38,32 @@ async def _xis(match: dict) -> tuple[list[dict], list[dict]]:
     return (await load_current_xi(match["challenger_id"]) or []), (await load_current_xi(match["opponent_id"]) or [])
 
 
+async def _team_card(match: dict, side: str, xi: list[dict]) -> tuple[str, str]:
+    uid = int(match[f"{side}_id"])
+    owner = match.get(f"{side}_name") or "Player"
+    identity = await get_user_identity(uid, owner)
+    owner_html = mention_html(uid, match.get(f"{side}_username"), owner)
+    team = identity["team_name"]
+    return build_rich(team, owner, xi), build_fallback(team, owner_html, xi)
+
+
 async def send_playing_xi(chat_id, match: dict) -> None:
     challenger_xi, opponent_xi = await _xis(match)
-
-    text = _playing_xi_text(match, challenger_xi, opponent_xi)
-    keyboard = start_match_keyboard(match["match_id"])
-    sent = await app.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
+    first_rich, first_plain = await _team_card(match, "challenger", challenger_xi)
+    second_rich, second_plain = await _team_card(match, "opponent", opponent_xi)
+    await send_lineup(chat_id, first_rich, first_plain)
+    sent = await send_lineup(chat_id, second_rich, second_plain, reply_markup=start_match_keyboard(match["match_id"]))
     await set_message_id(match["match_id"], sent["message_id"])
+
+
+async def _lock_start_button(chat_id, message_id) -> None:
+    try:
+        await app._call_bot_api(
+            "editMessageReplyMarkup",
+            json_payload={"chat_id": int(chat_id), "message_id": int(message_id), "reply_markup": NO_KEYBOARD},
+        )
+    except Exception as exc:
+        print(f"[play] could not lock start button: {exc!r}")
 
 
 @register_callback("play_start")
@@ -88,15 +89,6 @@ async def on_play_start(callback_query):
 
     await app.answer_callback_query(callback_query["id"], "🏁 Match starting soon!", show_alert=True)
 
-    challenger_xi, opponent_xi = await _xis(match)
-    text = _playing_xi_text(match, challenger_xi, opponent_xi)
-
-    await app.edit_message_text(
-        callback_query["message"]["chat"]["id"],
-        callback_query["message"]["message_id"],
-        text,
-        parse_mode="HTML",
-        reply_markup=NO_KEYBOARD,
-    )
+    await _lock_start_button(callback_query["message"]["chat"]["id"], callback_query["message"]["message_id"])
 
     spawn(begin_match_flow(callback_query["message"]["chat"]["id"], match), name='begin-match-flow')
