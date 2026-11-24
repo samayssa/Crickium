@@ -50,9 +50,9 @@ def _player_block(player: dict) -> str:
     )
 
 
-def build_rich(team_name: str, owner_name: str, xi: list[dict], bench: list[dict] | None = None) -> str:
+def build_rich(team_name: str, owner_name: str, xi: list[dict], bench: list[dict] | None = None, emoji_html: str = "") -> str:
     parts = [
-        f"<h2>{_esc(team_name)}</h2>",
+        f"<h2>{emoji_html + ' ' if emoji_html else ''}{_esc(team_name)}</h2>",
         f"<p>👤 <b>{_esc(owner_name)}</b> · 📋 Playing XI · ⭐ Avg OVR <b>{average_ovr(xi)}</b></p>",
         "<hr/>",
     ]
@@ -65,9 +65,9 @@ def build_rich(team_name: str, owner_name: str, xi: list[dict], bench: list[dict
     return "\n".join(parts)
 
 
-def build_fallback(team_name: str, owner_html: str, xi: list[dict], bench: list[dict] | None = None) -> str:
+def build_fallback(team_name: str, owner_html: str, xi: list[dict], bench: list[dict] | None = None, emoji_html: str = "") -> str:
     lines = [
-        f"<b>📋 {_esc(team_name)} — PLAYING XI</b>",
+        f"<b>📋 {emoji_html + ' ' if emoji_html else ''}{_esc(team_name)} — PLAYING XI</b>",
         f"👤 {owner_html} · ⭐ Avg OVR <b>{average_ovr(xi)}</b>",
         "",
         "<blockquote>" + "\n".join(
@@ -83,9 +83,9 @@ def build_fallback(team_name: str, owner_html: str, xi: list[dict], bench: list[
     return "\n".join(lines)
 
 
-async def send_lineup(chat_id, rich_html: str, fallback_html: str, reply_markup=None):
+async def send_lineup(chat_id, rich_html: str, fallback_html: str, reply_markup=None, message_thread_id=None):
     try:
-        return await app.send_rich_message(chat_id, rich_html, reply_markup=reply_markup)
+        return await app.send_rich_message(chat_id, rich_html, message_thread_id=message_thread_id, reply_markup=reply_markup)
     except Exception as exc:
         print(f"[lineup_rich] rich message failed, using HTML fallback: {exc!r}")
         return await app.send_message(chat_id, fallback_html, parse_mode="HTML", reply_markup=reply_markup)

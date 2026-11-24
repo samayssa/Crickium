@@ -144,8 +144,8 @@ async def playint_xi_confirm(callback_query):
     display_team=team_name(code)
     await send_lineup(
         callback_query['message']['chat']['id'],
-        build_rich(display_team, callback_query['from'].get('first_name') or 'Player', chosen, bench),
-        build_fallback(display_team, player_mention, chosen, bench),
+        build_rich(display_team, callback_query['from'].get('first_name') or 'Player', chosen, bench, team_label(code).split(' ',1)[0]),
+        build_fallback(display_team, player_mention, chosen, bench, team_label(code).split(' ',1)[0]),
     )
     m=await get_match(mid)
     if m.get('challenger_xi_confirmed') and m.get('opponent_xi_confirmed'):

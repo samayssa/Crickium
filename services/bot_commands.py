@@ -17,6 +17,8 @@ COMMANDS = [
     ("playso", "Play a one-over Super Over"),
     ("playai", "Play a quick match against the AI"),
     ("h2h", "Compare head-to-head cricket records"),
+    ("matchscore", "Show the live score of your running match"),
+    ("pitchreport", "View pitch behaviour and match records"),
     ("pause", "Pause your running game session"),
     ("resume", "Resume your stuck game session"),
     ("pshop", "Browse the player card shop"),

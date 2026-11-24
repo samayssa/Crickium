@@ -158,8 +158,8 @@ async def playwpl_xi_confirm(callback_query):
     display_team=team_name(code)
     await send_lineup(
         callback_query['message']['chat']['id'],
-        build_rich(display_team, callback_query['from'].get('first_name') or 'Player', chosen, bench),
-        build_fallback(display_team, player_mention, chosen, bench),
+        build_rich(display_team, callback_query['from'].get('first_name') or 'Player', chosen, bench, wpl_team_emoji_html(code)),
+        build_fallback(display_team, player_mention, chosen, bench, wpl_team_emoji_html(code)),
     )
     m=await get_match(mid)
     if m.get('challenger_xi_confirmed') and m.get('opponent_xi_confirmed'):

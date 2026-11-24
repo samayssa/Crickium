@@ -307,6 +307,9 @@ async def record_result(game: dict) -> bool:
         row["user_runs"], row["user_wkts"], row["user_balls"], row["ai_runs"], row["ai_wkts"], row["ai_balls"],
         row["batted_first"], row["target"], row["opponent"], json.dumps(row["summary"], default=str),
     )
+    if got is not None:
+        from services.pitch_stats import record_ai_result
+        await record_ai_result(row)
     return got is not None
 
 

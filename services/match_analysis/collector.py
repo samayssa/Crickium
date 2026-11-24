@@ -43,6 +43,7 @@ def record_runtime_ball(session: Any, context: Any, outcome: Any) -> None:
             "batting_approach": str(getattr(context, "strategy", None) or "Balanced").strip(),
             "bowling_plan": str(session.current_tactic or getattr(context, "bowler_tactic", None) or "Mixed").strip(),
             "pitch": str(session.pitch or "even"),
+            "bowler_family": "spin" if str(bowler.get("bowling_hand") or "").upper().endswith(("O", "L")) else "pace",
             "commentary": None,
         }
     )

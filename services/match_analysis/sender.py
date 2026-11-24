@@ -34,6 +34,8 @@ def build_caption(payload: dict[str, Any], match_number: int) -> str:
 
 
 async def send_report(app: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
+    from services.pitch_stats import record_completed_match
+    await record_completed_match(payload)
     try:                                                                                                 
         from services.tournament_hooks import on_match_report
         await on_match_report(payload)

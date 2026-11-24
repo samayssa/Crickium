@@ -484,6 +484,41 @@ TABLES = {
             PRIMARY KEY (engine, match_id)
         );
     """,
+    "pitch_innings_stats": """
+        CREATE TABLE IF NOT EXISTS pitch_innings_stats(
+            pitch TEXT NOT NULL,
+            innings SMALLINT NOT NULL,
+            n BIGINT NOT NULL DEFAULT 0,
+            runs BIGINT NOT NULL DEFAULT 0,
+            wickets BIGINT NOT NULL DEFAULT 0,
+            detail_n BIGINT NOT NULL DEFAULT 0,
+            pace_wkts BIGINT NOT NULL DEFAULT 0,
+            spin_wkts BIGINT NOT NULL DEFAULT 0,
+            pp_runs BIGINT NOT NULL DEFAULT 0,
+            pp_wkts BIGINT NOT NULL DEFAULT 0,
+            mid_runs BIGINT NOT NULL DEFAULT 0,
+            mid_wkts BIGINT NOT NULL DEFAULT 0,
+            death_runs BIGINT NOT NULL DEFAULT 0,
+            death_wkts BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (pitch, innings)
+        );
+    """,
+    "pitch_results": """
+        CREATE TABLE IF NOT EXISTS pitch_results(
+            pitch TEXT PRIMARY KEY,
+            matches BIGINT NOT NULL DEFAULT 0,
+            defend_wins BIGINT NOT NULL DEFAULT 0,
+            chase_wins BIGINT NOT NULL DEFAULT 0
+        );
+    """,
+    "pitch_recorded": """
+        CREATE TABLE IF NOT EXISTS pitch_recorded(
+            source TEXT NOT NULL,
+            match_id BIGINT NOT NULL,
+            recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (source, match_id)
+        );
+    """,
     "stadium_images": """
         CREATE TABLE IF NOT EXISTS stadium_images(
             stadium_name TEXT PRIMARY KEY,
