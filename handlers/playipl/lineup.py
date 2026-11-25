@@ -163,5 +163,5 @@ async def playipl_xi_confirm(callback_query):
     )
     m=await get_match(mid)
     if m.get('challenger_xi_confirmed') and m.get('opponent_xi_confirmed'):
-        from .pitch import send_pitch_selection
-        await send_pitch_selection(callback_query['message']['chat']['id'],m)
+        from .toss import send_toss_call
+        await send_toss_call(callback_query['message']['chat']['id'],m)

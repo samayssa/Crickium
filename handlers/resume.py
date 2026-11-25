@@ -337,12 +337,12 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
         if status in {"accepted", "team_selection"} and match.get("challenger_team_code") and match.get("opponent_team_code"):
             if status == "team_selection":
                 if engine == "PLAYINT":
-                    from handlers.playint.lineup import send_build_messages
+                    from handlers.playint.pitch import send_pitch_selection
                 elif engine == "PLAYWPL":
-                    from handlers.playwpl.lineup import send_build_messages
+                    from handlers.playwpl.pitch import send_pitch_selection
                 else:
-                    from handlers.playipl.lineup import send_build_messages
-                await send_build_messages(chat_id, match)
+                    from handlers.playipl.pitch import send_pitch_selection
+                await send_pitch_selection(chat_id, match)
                 return True
         if status in {"accepted", "team_selection"} and not (match.get("challenger_team_code") and match.get("opponent_team_code")):
             if engine == "PLAYINT":
@@ -375,6 +375,15 @@ async def _resume_db_stage(engine: str, match: dict, user_id: int) -> bool:
                                                                               
                                                                 
             return False
+        if status == "pitch_selected" and not (match.get("challenger_xi_confirmed") and match.get("opponent_xi_confirmed")):
+            if engine == "PLAYINT":
+                from handlers.playint.lineup import send_build_messages
+            elif engine == "PLAYWPL":
+                from handlers.playwpl.lineup import send_build_messages
+            else:
+                from handlers.playipl.lineup import send_build_messages
+            await send_build_messages(chat_id, match)
+            return True
         if status == "pitch_selected":
             if engine == "PLAYINT":
                 from handlers.playint.toss import send_toss_call

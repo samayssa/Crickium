@@ -183,8 +183,8 @@ async def launch(t: dict, fx: dict, home: dict, away: dict, home_user: dict, awa
         await tg.send(chat_id, match_card(t, fx, home, away, home_user, away_user), tx.markup([tx.hub_button(int(t["tid"]))]))
         match = dict(await rp.get_match(match_id))
         if engine in FRANCHISE_ENGINES:
-            lineup = importlib.import_module(_LINEUP_MODULE[engine])
-            await lineup.send_build_messages(chat_id, match)
+            pitch = importlib.import_module(_LINEUP_MODULE[engine].rsplit(".", 1)[0] + ".pitch")
+            await pitch.send_pitch_selection(chat_id, match)
         else:
             from handlers.play.pitch import send_pitch_selection
             await send_pitch_selection(chat_id, match)

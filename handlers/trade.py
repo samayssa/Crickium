@@ -14,7 +14,7 @@ from database.playint_repo import get_active_match_for_user as get_playint_activ
 from database.playipl_repo import get_active_match_for_user as get_playipl_active
 from database.playwpl_repo import get_active_match_for_user as get_playwpl_active
 from utils.mentions import mention_html
-from services.card_identity import player_kind, card_identity_key
+from services.card_identity import player_kind, card_identity_key, collection_icon, collection_label
 from buttons.social_trade_buttons import (
     squad_player_keyboard,
     confirm_selected_player_keyboard,
@@ -168,10 +168,10 @@ def _complete_text(sender: dict, recipient: dict, sent: dict, received: dict) ->
         f"👤 <b>{_mention(sender)}</b>\n        ⇄\n👤 <b>{_mention(recipient)}</b></blockquote>\n\n"
         f"<b>📤 {_mention(sender)} GAVE</b>\n\n"
         f"<blockquote>🏏 <b>{_pname(sent)}</b>\n⭐ OVR : <b>{_ovr(sent)}</b>\n"
-        f"{'✨ Special Edition' if _kind(sent) == 'special' else ('🏆 Showcase • ' + str(sent.get('showcase_name') or 'Showcase') if _kind(sent) == 'showcase' else '🏏 Standard Card')}</blockquote>\n\n"
+        f"{'✨ Special Edition' if _kind(sent) == 'special' else (collection_icon(sent) + ' ' + collection_label(sent) + ' • ' + str(sent.get('showcase_name') or collection_label(sent)) if _kind(sent) == 'showcase' else '🏏 Standard Card')}</blockquote>\n\n"
         f"<b>📥 {_mention(sender)} RECEIVED</b>\n\n"
         f"<blockquote>🏏 <b>{_pname(received)}</b>\n⭐ OVR : <b>{_ovr(received)}</b>\n"
-        f"{'✨ Special Edition' if _kind(received) == 'special' else ('🏆 Showcase • ' + str(received.get('showcase_name') or 'Showcase') if _kind(received) == 'showcase' else '🏏 Standard Card')}</blockquote>\n\n"
+        f"{'✨ Special Edition' if _kind(received) == 'special' else (collection_icon(received) + ' ' + collection_label(received) + ' • ' + str(received.get('showcase_name') or collection_label(received)) if _kind(received) == 'showcase' else '🏏 Standard Card')}</blockquote>\n\n"
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         "<blockquote>✅ <b>Status</b> ➤ Completed\n"
         "🔄 <b>Exchange</b> ➤ 1 Player ↔ 1 Player\n"

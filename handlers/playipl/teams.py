@@ -112,8 +112,8 @@ async def playipl_team(callback_query):
         await app.delete_message(match['chat_id'],match['message_id'])
         clash=(f"<b>🔥 GET READY FOR CLASH!</b>\n\n{team_label(match['challenger_team_code'])} ({team_short(match['challenger_team_code'])}) VS {team_label(match['opponent_team_code'])} ({team_short(match['opponent_team_code'])})\n\n"
                f"👤 <b>{mention_html(match['challenger_id'],match['challenger_username'],match['challenger_name'])}</b> is representing {team_label(match['challenger_team_code'])}\n"
-               f"👤 <b>{mention_html(match['opponent_id'],match['opponent_username'],match['opponent_name'])}</b> is representing {team_label(match['opponent_team_code'])}\n\n🏏 Build your best XI!")
+               f"👤 <b>{mention_html(match['opponent_id'],match['opponent_username'],match['opponent_name'])}</b> is representing {team_label(match['opponent_team_code'])}\n\n🏟️ First, choose the pitch!")
         sent=await app.send_message(match['chat_id'],clash,parse_mode='HTML')
         await app.edit_message_text(match['chat_id'],sent['message_id'],clash,parse_mode='HTML')
-        from .lineup import send_build_messages
-        await send_build_messages(match['chat_id'],match)
+        from .pitch import send_pitch_selection
+        await send_pitch_selection(match['chat_id'],match)

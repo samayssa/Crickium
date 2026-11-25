@@ -552,6 +552,8 @@ async def main():
         from services import game_pause
         await game_pause.restore_state()
         game_pause.start_worker()
+        from database.showcase_players_repo import refresh_legacy_sets
+        await refresh_legacy_sets()
         print("[main.py] Game pause state restored.")
     except Exception:
         print("!! Database setup failed. Bot will still start, but DB-dependent features won't work until this is fixed. !!")

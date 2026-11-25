@@ -3,6 +3,7 @@ print("upload_img.py loaded")
 from handlers.registry import register
 from app import app
 from config import ADMIN_USER_ID, PLAYER_IMAGE_CHANNEL_ID
+from services.card_identity import collection_icon, collection_label
 from database.access_repo import has_upload_access
 from database.players_repo import get_player
 from database.special_players_repo import split_player_edition, get_special_player, display_edition
@@ -25,7 +26,7 @@ def _player_caption(player: dict, file_id: str | None = None) -> str:
     styles = describe_player_styles(player)
     title = "🖼 *Player Card Image*"
     if player.get("player_kind") == "showcase" or player.get("is_showcase"):
-        title = "🏆 *Showcase Player Card Image*"
+        title = f"{collection_icon(player)} *{collection_label(player)} Player Card Image*"
     lines = [
         title,
         "",
@@ -36,7 +37,7 @@ def _player_caption(player: dict, file_id: str | None = None) -> str:
         f"*🎯 Bowling Level:* {player['bowl_level']}/100 ({styles['bowling']})",
     ]
     if player.get("player_kind") == "showcase" or player.get("is_showcase"):
-        lines.insert(3, f"*🏆 Showcase:* {player.get('showcase_name') or player.get('set_name') or 'Showcase'}")
+        lines.insert(3, f"*{collection_icon(player)} {collection_label(player)}:* {player.get('showcase_name') or player.get('set_name') or collection_label(player)}")
     if file_id:
         lines.append("")
         lines.append(f"*File ID:*\n`{file_id}`")
@@ -101,7 +102,7 @@ async def upload_img_command(message):
             chat_id,
             "*⚠️ Please use /upload_img as a reply to a photo.*\n\n"
             "• `/upload_img <Player Name>` - sets a custom card image for that player\n"
-            "• `/upload_img <Player Name> [Showcase Name]` - sets a custom image for a Showcase card\n"
+            "• `/upload_img <Player Name> [Showcase/Legacy Name]` - sets a custom image for a Showcase or Legacy card\n"
             "• `/upload_img bat-card` - sets the default template for batsman/WK cards\n"
             "• `/upload_img ball-card` - sets the default template for bowler cards\n"
             "• `/upload_img <tier>` - sets the /profile card image for a level tier "
@@ -116,7 +117,7 @@ async def upload_img_command(message):
             chat_id,
             "*⚠️ Please tell me who this image is for.*\n\n"
             "• `/upload_img <Player Name>` - sets a custom card image for that player\n"
-            "• `/upload_img <Player Name> [Showcase Name]` - sets a custom image for a Showcase card\n"
+            "• `/upload_img <Player Name> [Showcase/Legacy Name]` - sets a custom image for a Showcase or Legacy card\n"
             "• `/upload_img bat-card` - sets the default template for batsman/WK cards\n"
             "• `/upload_img ball-card` - sets the default template for bowler cards\n"
             "• `/upload_img <tier>` - sets the /profile card image for a level tier "
@@ -143,7 +144,7 @@ async def upload_img_command(message):
             if not player:
                 await app.send_message(
                     chat_id,
-                    f"⚠️ No Showcase card named *{base_name} [{showcase_name}]* was found. Use the exact Showcase name from <code>/player {base_name}</code>.",
+                    f"⚠️ No Showcase/Legacy card named *{base_name} [{showcase_name}]* was found. Use the exact Showcase name from <code>/player {base_name}</code>.",
                     parse_mode="Markdown",
                 )
                 return
@@ -245,7 +246,7 @@ async def upload_img_command(message):
         if is_showcase:
             await app.send_message(
                 chat_id,
-                f"*✅ Showcase card image saved for {player['name']} [{player.get('showcase_name') or showcase_name}].*",
+                f"*✅ {collection_label(player)} card image saved for {player['name']} [{player.get('showcase_name') or showcase_name}].*",
                 parse_mode="Markdown",
             )
             print(f"[upload_img] Showcase player image saved. showcase_card_id={player['showcase_card_id']} file_id={stored_file_id} channel_message_id={channel_message_id}")

@@ -25,7 +25,7 @@ from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
 from database.player_user_stats_repo import reset_player_user_stats
 from utils.debut_gate import has_completed_debut
-from services.card_identity import owned_same_card, player_kind, card_entity_id, card_identity_key
+from services.card_identity import owned_same_card, player_kind, card_entity_id, card_identity_key, collection_icon, collection_label
 
 NO_KEYBOARD = {"inline_keyboard": []}
 DEFAULT_FOOTER = "🛒 Ready to sign this player?"
@@ -67,7 +67,7 @@ def _player_shop_text(player: dict, footer: str = DEFAULT_FOOTER) -> str:
     if kind == "special" and player.get("edition"):
         special_block = f"<blockquote><b>✨ Special     ➤ {_escape(display_edition(player.get('edition')))}</b></blockquote>"
     elif kind == "showcase":
-        special_block = f"<blockquote><b>🏆 Showcase   ➤ {_escape(player.get('showcase_name') or 'Showcase')}</b></blockquote>"
+        special_block = f"<blockquote><b>{collection_icon(player)} {collection_label(player)}   ➤ {_escape(player.get('showcase_name') or collection_label(player))}</b></blockquote>"
     details_block = (
         "<blockquote><b><i>"
         f"├ ⚡ Bat Lv.     : {bat_level}\n"

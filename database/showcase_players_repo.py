@@ -7,9 +7,10 @@ from typing import Iterable
 
 from database.query import execute, fetch, fetchrow, transaction
 from database.players_repo import parse_player_line
-from services.card_identity import showcase_squad_player_id
+from services.card_identity import set_legacy_set_names, showcase_squad_player_id
 
 SHOWCASE_HEADER_RE = re.compile(r"^\s*SHOWCASE\s*:\s*(.+?)\s*$", re.IGNORECASE)
+LEGACY_HEADER_RE = re.compile(r"^\s*LEGACY\s*:\s*(.+?)\s*$", re.IGNORECASE)
 SHOWCASE_IMAGE_RE = re.compile(r"^\s*(.+?)\s*\[([^\[\]]+)\]\s*$")
 
 
@@ -19,6 +20,19 @@ def parse_showcase_header(line: str) -> str | None:
         return None
     name = match.group(1).strip()
     return name or None
+
+
+def parse_legacy_header(line: str) -> str | None:
+    match = LEGACY_HEADER_RE.match(str(line or ""))
+    if not match:
+        return None
+    name = match.group(1).strip()
+    return name or None
+
+
+async def refresh_legacy_sets() -> None:
+    rows = await fetch("SELECT set_name FROM showcase_sets WHERE collection_kind='legacy';")
+    set_legacy_set_names(r["set_name"] for r in rows)
 
 
 def parse_showcase_image_target(value: str) -> tuple[str, str] | None:
@@ -62,22 +76,26 @@ async def get_showcase_set_by_id(showcase_set_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-async def _get_or_create_set(conn, showcase_name: str, uploaded_by: int) -> dict:
+async def _get_or_create_set(conn, showcase_name: str, uploaded_by: int, kind: str = "showcase") -> dict:
     clean_name = showcase_name.strip()
     slug_base = re.sub(r"[^a-z0-9]+", "-", clean_name.lower()).strip("-")[:72] or "showcase"
     slug_suffix = hashlib.sha1(clean_name.casefold().encode("utf-8")).hexdigest()[:10]
     slug = f"{slug_base}-{slug_suffix}"[:100]
     row = await conn.fetchrow(
         """
-        INSERT INTO showcase_sets(set_name, set_slug, uploaded_by)
-        VALUES($1, $2, $3)
+        INSERT INTO showcase_sets(set_name, set_slug, uploaded_by, collection_kind)
+        VALUES($1, $2, $3, $4)
         ON CONFLICT (LOWER(set_name)) DO UPDATE SET updated_at=NOW()
         RETURNING *;
         """,
-        clean_name, slug, int(uploaded_by),
+        clean_name, slug, int(uploaded_by), kind,
     )
     if row:
-        return dict(row)
+        existing = dict(row)
+        if str(existing.get("collection_kind") or "showcase") != kind:
+            other = "Legacy" if kind == "showcase" else "Showcase"
+            raise ValueError(f'"{clean_name}" already exists as a {other} set. Use a different name.')
+        return existing
     row = await conn.fetchrow(
         "SELECT * FROM showcase_sets WHERE LOWER(set_name)=LOWER($1) LIMIT 1;", showcase_name.strip()
     )
@@ -86,7 +104,7 @@ async def _get_or_create_set(conn, showcase_name: str, uploaded_by: int) -> dict
     return dict(row)
 
 
-async def upload_showcase_sections(sections: dict[str, list[str]], uploaded_by: int) -> dict:
+async def upload_showcase_sections(sections: dict[str, list[str]], uploaded_by: int, kind: str = "showcase") -> dict:
     """Atomically import several named Showcase sections.
 
     Each section is parsed with the same canonical player-line parser used by
@@ -97,7 +115,7 @@ async def upload_showcase_sections(sections: dict[str, list[str]], uploaded_by: 
 
     async def _tx(conn):
         for showcase_name, lines in sections.items():
-            set_row = await _get_or_create_set(conn, showcase_name, uploaded_by)
+            set_row = await _get_or_create_set(conn, showcase_name, uploaded_by, kind)
             set_id = int(set_row["showcase_set_id"])
             bucket = {"name": showcase_name, "uploaded": 0, "already_exists": 0, "failed": 0, "details": []}
 
@@ -140,6 +158,10 @@ async def upload_showcase_sections(sections: dict[str, list[str]], uploaded_by: 
         cache.invalidate_tag("catalog")      # new showcase sets/cards were committed
     except Exception:
         pass
+    try:
+        await refresh_legacy_sets()
+    except Exception as exc:
+        print(f"[showcase_repo] legacy set refresh failed: {exc!r}")
     return summary
 
 

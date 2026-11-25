@@ -20,7 +20,7 @@ from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
 from utils.bounded_dict import BoundedDict
 from buttons.catalog_buttons import catalog_page_keyboard
-from services.card_identity import owned_same_card, card_identity_key, player_kind, version_label
+from services.card_identity import owned_same_card, card_identity_key, player_kind, version_label, collection_icon, collection_label
 
 _PLAYER_PAGE_STATE: dict[str, dict] = BoundedDict(1000)
 
@@ -61,7 +61,7 @@ def _player_bio_text(player: dict, owned: bool) -> str:
     if kind == "special" and player.get("edition"):
         version_block = f"<blockquote>✨ <b>Special</b>    ➤ {_escape(display_edition(player.get('edition')))}</blockquote>"
     elif kind == "showcase":
-        version_block = f"<blockquote>🏆 <b>Showcase</b>  ➤ {_escape(player.get('showcase_name') or 'Showcase')}</blockquote>"
+        version_block = f"<blockquote>{collection_icon(player)} <b>{collection_label(player)}</b>  ➤ {_escape(player.get('showcase_name') or collection_label(player))}</blockquote>"
 
     details_block = (
         "<blockquote>"

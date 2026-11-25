@@ -6,7 +6,7 @@ from database.playipl_repo import get_match,set_pitch,set_message_id
 from database.playipl_teams_repo import team_label
 from buttons.playipl_buttons import pitch_keyboard
 from engines.play_engine import pitch_label
-from .toss import send_toss_call
+from .lineup import send_build_messages
 
 @register_callback('playipl_pitch')
 async def playipl_pitch(callback_query):
@@ -16,8 +16,8 @@ async def playipl_pitch(callback_query):
     if uid!=int(match['challenger_id']):
         await app.answer_callback_query(callback_query['id'],'Only the challenger selects the pitch!',show_alert=True); return
     await set_pitch(mid,pitch); match=dict(await get_match(mid)); await app.answer_callback_query(callback_query['id'],'Pitch locked!')
-    await app.edit_message_text(msg['chat']['id'],msg['message_id'],f"<b>🏟️ {team_label(match['challenger_team_code'])} selected {pitch_label(pitch)} Pitch.\n\n🔒 Pitch locked. Get ready for the toss! 🏏</b>",parse_mode='HTML',reply_markup={'inline_keyboard':[]})
-    await asyncio.sleep(1); await send_toss_call(msg['chat']['id'],match)
+    await app.edit_message_text(msg['chat']['id'],msg['message_id'],f"<b>🏟️ {team_label(match['challenger_team_code'])} selected {pitch_label(pitch)} Pitch.\n\n🔒 Pitch locked. Now build your Playing XI! 🏏</b>",parse_mode='HTML',reply_markup={'inline_keyboard':[]})
+    await asyncio.sleep(1); await send_build_messages(msg['chat']['id'],match)
 
 async def send_pitch_selection(chat_id,match):
                                                          

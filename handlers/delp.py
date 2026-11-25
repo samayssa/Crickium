@@ -20,7 +20,7 @@ from database.special_players_repo import (
     get_delete_target_by_player_id,
 )
 from database.showcase_players_repo import parse_showcase_image_target, get_showcase_player_by_identity, delete_showcase_player
-from services.card_identity import player_kind
+from services.card_identity import collection_label, player_kind
 from buttons.delp_buttons import delete_confirm_keyboard
 from config import ADMIN_USER_ID
 from utils.bounded_dict import BoundedDict
@@ -105,7 +105,7 @@ async def _show_single_confirmation(chat_id: int, user_id: int, target: dict):
     if target["kind"] == "special":
         scope = "special edition"
     elif target["kind"] == "showcase":
-        scope = f"Showcase • {target.get('showcase_name') or 'unknown set'}"
+        scope = f"{collection_label(target.get('player'))} • {target.get('showcase_name') or 'unknown set'}"
     elif target["kind"] == "engine_team":
         scope = f"{target.get('engine')} • {target.get('team_code')} squad"
     else:
@@ -341,6 +341,7 @@ async def delp_command(message):
         global_count = sum(1 for x in found if x["kind"] == "global")
         special_count = sum(1 for x in found if x["kind"] == "special")
         showcase_count = sum(1 for x in found if x["kind"] == "showcase")
+        legacy_count = sum(1 for x in found if x["kind"] == "showcase" and collection_label(x.get("player")) == "Legacy")
         token = uuid.uuid4().hex[:12]
         _PENDING[token] = {"owner_id": user_id, "targets": found}
 
@@ -349,7 +350,8 @@ async def delp_command(message):
             f"Are you sure you want to delete <b>{len(found)} player(s)</b> from the database?\n\n"
             f"🌍 Global Pool ➤ <b>{global_count}</b>\n"
             f"✨ Special Edition ➤ <b>{special_count}</b>\n"
-            f"🏆 Showcase ➤ <b>{showcase_count}</b>"
+            f"🏆 Showcase ➤ <b>{showcase_count - legacy_count}</b>\n"
+            f"🕰️ Legacy ➤ <b>{legacy_count}</b>"
         )
         if missing:
             text += f"\n⚠️ Not in Database ➤ <b>{len(missing)}</b>"
@@ -416,6 +418,7 @@ async def delp_confirm(callback_query):
     deleted_global = 0
     deleted_special = 0
     deleted_showcase = 0
+    deleted_legacy = 0
     deleted_engine = 0
     missing_now = 0
     for target in state["targets"]:
@@ -440,6 +443,8 @@ async def delp_confirm(callback_query):
                     continue
                 if await delete_showcase_player(int(current["showcase_card_id"])):
                     deleted_showcase += 1
+                    if collection_label(current) == "Legacy":
+                        deleted_legacy += 1
             else:
                 current = await get_delete_targets({"name": f"{target['name']} ({target['edition']})"})
                 player = current.get("player")
@@ -459,7 +464,8 @@ async def delp_confirm(callback_query):
         f"✅ <b>Players Deleted</b>\n\n"
         f"🌍 Global Pool ➤ <b>{deleted_global}</b>\n"
         f"✨ Special Edition ➤ <b>{deleted_special}</b>\n"
-        f"🏆 Showcase ➤ <b>{deleted_showcase}</b>\n"
+        f"🏆 Showcase ➤ <b>{deleted_showcase - deleted_legacy}</b>\n"
+        f"🕰️ Legacy ➤ <b>{deleted_legacy}</b>\n"
         f"🎮 Engine Squad ➤ <b>{deleted_engine}</b>"
     )
     if missing_now:

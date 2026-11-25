@@ -24,7 +24,7 @@ from utils.price_chart import get_price
 from buttons.sell_buttons import sell_confirm_keyboard, sell_range_confirm_keyboard
 from services.player_card import overall_rating
 from database.player_user_stats_repo import reset_player_user_stats
-from services.card_identity import owned_same_card, player_kind, showcase_card_id_from_player_id
+from services.card_identity import owned_same_card, player_kind, showcase_card_id_from_player_id, collection_icon, collection_label
 
 NO_KEYBOARD = {"inline_keyboard": []}
 
@@ -200,7 +200,7 @@ def _player_sale_text(player: dict, notice: str = DEFAULT_WARNING) -> str:
     if kind == "special" and player.get("edition"):
         special_block = f"<blockquote><b>✨ Special ➤ {_escape(display_edition(player.get('edition')))}</b></blockquote>"
     elif kind == "showcase" and player.get("showcase_name"):
-        special_block = f"<blockquote><b>🏆 Showcase ➤ {_escape(player.get('showcase_name'))}</b></blockquote>"
+        special_block = f"<blockquote><b>{collection_icon(player)} {collection_label(player)} ➤ {_escape(player.get('showcase_name'))}</b></blockquote>"
 
     details_block = (
         "<blockquote><b><i>"
@@ -476,7 +476,7 @@ async def on_sell_confirm(callback_query):
         showcase_id = int(player.get("showcase_card_id") or showcase_card_id_from_player_id(pid) or 0)
         db_player = await get_showcase_player(showcase_id) if showcase_id else None
         if not db_player:
-            await app.answer_callback_query(callback_query["id"], "This Showcase card no longer exists.", show_alert=True)
+            await app.answer_callback_query(callback_query["id"], "This card no longer exists.", show_alert=True)
             await _update_prompt(callback_query, "<b>⚠️ This player is no longer available.</b>", NO_KEYBOARD)
             return
         player = db_player

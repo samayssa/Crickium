@@ -16,7 +16,7 @@ from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_
 from database.playwpl_repo import parse_playwpl_player_line, upsert_playwpl_player
 from database.playwpl_teams_repo import normalize_team_keyword as normalize_wpl_team_keyword, team_name as wpl_team_name
 from database.access_repo import has_upload_access
-from database.showcase_players_repo import parse_showcase_header, upload_showcase_sections
+from database.showcase_players_repo import parse_legacy_header, parse_showcase_header, upload_showcase_sections
 
 
 TEAM_HEADER_RE = re.compile(r"^(T20I|IPL|WPL)\s*-\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE)
@@ -97,7 +97,9 @@ def _has_showcase_sections(raw_text: str) -> bool:
     return any(parse_showcase_header(line) for line in (raw_text or "").splitlines() if line.strip())
 
 
-def _parse_showcase_sections(raw_text: str) -> tuple[dict[str, list[str]], list[str]]:
+def _parse_showcase_sections(raw_text: str, kind: str = "showcase") -> tuple[dict[str, list[str]], list[str]]:
+    parse_header = parse_legacy_header if kind == "legacy" else parse_showcase_header
+    label = "LEGACY" if kind == "legacy" else "SHOWCASE"
     sections: dict[str, list[str]] = {}
     errors: list[str] = []
     current: str | None = None
@@ -105,25 +107,26 @@ def _parse_showcase_sections(raw_text: str) -> tuple[dict[str, list[str]], list[
         line = raw_line.strip()
         if not line:
             continue
-        header = parse_showcase_header(line)
+        header = parse_header(line)
         if header:
             current = header
             sections.setdefault(header, [])
             continue
         if current is None:
-            errors.append(f"Line {line_no}: expected a SHOWCASE: <name> header before player data.")
+            errors.append(f"Line {line_no}: expected a {label}: <name> header before player data.")
             continue
         sections[current].append(line)
     if not sections:
-        errors.append("No SHOWCASE: <name> sections were found in the source.")
+        errors.append(f"No {label}: <name> sections were found in the source.")
     return sections, errors
 
 
-def _render_showcase_upload_report(summary: dict, parse_errors: list[str] | None = None) -> str:
-    lines = ["🏆 <b>SHOWCASE UPLOAD REPORT</b>", ""]
+def _render_showcase_upload_report(summary: dict, parse_errors: list[str] | None = None, kind: str = "showcase") -> str:
+    icon, title = ("🕰️", "LEGACY") if kind == "legacy" else ("🏆", "SHOWCASE")
+    lines = [f"{icon} <b>{title} UPLOAD REPORT</b>", ""]
     for bucket in summary.get("sets", []):
         lines.extend([
-            f"🏆 <b>{bucket['name']}</b>",
+            f"{icon} <b>{bucket['name']}</b>",
             f"✅ Saved: <b>{bucket['uploaded']}</b>",
             f"♻️ Existing: <b>{bucket['already_exists']}</b>",
             f"❌ Failed: <b>{bucket['failed']}</b>",
@@ -410,6 +413,9 @@ async def upload_players_command(message):
             "Showcase format (use <code>/upload_pl showcase</code>):\n"
             "<code>SHOWCASE: IPL 2026</code>\n"
             "<code>[Virat Kohli][India][Batsman][RH-BAT 98][RAF 20]</code>\n\n"
+            "Legacy format (use <code>/upload_pl legacy</code>):\n"
+            "<code>LEGACY: Retro Greats</code>\n"
+            "<code>[Sachin Tendulkar][India][Batsman][RH-BAT 99][RAO 40]</code>\n\n"
             "Multi-team format:\n"
             "<code>T20I-IND</code>\n"
             "<code>[Player Name][Country][Role][RH-BAT 96][RAF 38]</code>\n\n"
@@ -423,24 +429,27 @@ async def upload_players_command(message):
 
                                                                           
                                                                      
-    if explicit_target and explicit_target.strip().lower() == "showcase":
-        sections, parse_errors = _parse_showcase_sections(raw_text)
+    if explicit_target and explicit_target.strip().lower() in ("showcase", "legacy"):
+        kind = explicit_target.strip().lower()
+        title = "Legacy" if kind == "legacy" else "Showcase"
+        header = "LEGACY" if kind == "legacy" else "SHOWCASE"
+        sections, parse_errors = _parse_showcase_sections(raw_text, kind)
         if not sections:
             await app.send_message(
                 chat_id,
-                "⚠️ Use <code>/upload_pl showcase</code> as a reply to Showcase data.\n\n"
-                "Format: <code>SHOWCASE: IPL 2026</code> followed by normal player lines.\n"
-                "You can include multiple Showcase sections in the same message or TXT file.",
+                f"⚠️ Use <code>/upload_pl {kind}</code> as a reply to {title} data.\n\n"
+                f"Format: <code>{header}: IPL 2026</code> followed by normal player lines.\n"
+                f"You can include multiple {title} sections in the same message or TXT file.",
                 parse_mode="HTML",
             )
             return
         try:
-            summary = await upload_showcase_sections(sections, uploaded_by=user_id)
+            summary = await upload_showcase_sections(sections, uploaded_by=user_id, kind=kind)
         except Exception as exc:
-            print(f"[upload_pl] Showcase upload failed: {exc!r}")
-            await app.send_message(chat_id, f"🚫 Showcase upload failed safely: <code>{exc}</code>", parse_mode="HTML")
+            print(f"[upload_pl] {title} upload failed: {exc!r}")
+            await app.send_message(chat_id, f"🚫 {title} upload failed safely: <code>{exc}</code>", parse_mode="HTML")
             return
-        await app.send_message(chat_id, _render_showcase_upload_report(summary, parse_errors), parse_mode="HTML")
+        await app.send_message(chat_id, _render_showcase_upload_report(summary, parse_errors, kind), parse_mode="HTML")
         return
 
                                                                                            

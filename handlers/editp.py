@@ -6,6 +6,7 @@ import re
 from handlers.registry import register
 from app import app
 from config import ADMIN_USER_ID
+from services.card_identity import collection_label
 from database.access_repo import has_upload_access
 from database.players_repo import normalize_role
 from database.squads_repo import sync_player_snapshot
@@ -138,7 +139,7 @@ async def _resolve_target(identity: str, changes: dict, showcase_name: str | Non
 
 def _showcase_scope_arg(text: str) -> str | None:
     parts = str(text or "").strip().split(maxsplit=1)
-    if len(parts) < 2 or parts[0].lower() != "showcase":
+    if len(parts) < 2 or parts[0].lower() not in ("showcase", "legacy"):
         return None
     value = parts[1].strip()
     return value or None
@@ -239,14 +240,14 @@ async def editp_command(message):
                 if key in updated and updated.get(key) is not None
             }
             await sync_player_snapshot(int(updated.get("player_id") or player.get("player_id") or 0), snapshot)
-            success.append((parsed["identity"], kind, old, normalized))
+            success.append((parsed["identity"], "legacy" if kind == "showcase" and collection_label(player) == "Legacy" else kind, old, normalized))
         except Exception as exc:
             errors.append(f"{parsed['identity']}: {exc}")
 
     lines = [f"✅ <b>Player Edit Complete</b>", ""]
     if success:
         for identity, kind, old, new in success:
-            label = "✨ Special" if kind == "special" else ("🏆 Showcase" if kind == "showcase" else "🌍 Global")
+            label = "✨ Special" if kind == "special" else ("🕰️ Legacy" if kind == "legacy" else ("🏆 Showcase" if kind == "showcase" else "🌍 Global"))
             lines.append(f"{label} • <b>{identity}</b>")
             for field, value in new.items():
                 lines.append(f"• {field}: <code>{old.get(field)}</code> ➜ <code>{value}</code>")

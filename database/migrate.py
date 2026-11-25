@@ -519,6 +519,14 @@ TABLES = {
             PRIMARY KEY (source, match_id)
         );
     """,
+    "give_daily_totals": """
+        CREATE TABLE IF NOT EXISTS give_daily_totals(
+            user_id BIGINT NOT NULL,
+            day DATE NOT NULL,
+            total BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, day)
+        );
+    """,
     "stadium_images": """
         CREATE TABLE IF NOT EXISTS stadium_images(
             stadium_name TEXT PRIMARY KEY,
@@ -596,6 +604,8 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_showcase_card_images_card ON showcase_player_card_images(showcase_card_id);")
     await execute("CREATE INDEX IF NOT EXISTS idx_miniapp_news_articles_published ON miniapp_news_articles(is_published, created_at DESC);")
     print("[migrate] Mini App news table/index OK.")
+    await execute("ALTER TABLE showcase_sets ADD COLUMN IF NOT EXISTS collection_kind TEXT NOT NULL DEFAULT 'showcase';")
+    print("[migrate] showcase_sets.collection_kind OK.")
 
     print("[migrate] special-edition indexes OK.")
 

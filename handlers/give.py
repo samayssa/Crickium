@@ -39,17 +39,27 @@ def _parse_username(tokens: list[str]) -> str | None:
     return None
 
 
-async def _transfer_funds(sender_id: int, recipient_id: int, amount: int) -> tuple[int, int]:
+DAILY_GIVE_LIMIT = 200_000
+_DAY_SQL = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date"
+
+
+async def _transfer_funds(sender_id: int, recipient_id: int, amount: int) -> tuple[int, int, int]:
     async def _tx(conn):
                                                                                                        
         sender_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1 FOR UPDATE;", sender_id)
         sender_balance = int(sender_balance or 0)
+        sent_today = int(await conn.fetchval(
+            f"SELECT total FROM give_daily_totals WHERE user_id = $1 AND day = {_DAY_SQL};", sender_id
+        ) or 0)
+        remaining = max(0, DAILY_GIVE_LIMIT - sent_today)
+        if amount > remaining:
+            return sender_balance, -3, remaining
         if sender_balance < amount:
-            return sender_balance, -1
+            return sender_balance, -1, remaining
 
         recipient_exists = await conn.fetchval("SELECT 1 FROM users WHERE user_id = $1;", recipient_id)
         if not recipient_exists:
-            return sender_balance, -2
+            return sender_balance, -2, remaining
 
         await conn.execute(
             "UPDATE users SET balance = balance - $1, total_spent = COALESCE(total_spent,0) + $1 "
@@ -60,8 +70,18 @@ async def _transfer_funds(sender_id: int, recipient_id: int, amount: int) -> tup
             "UPDATE users SET balance = balance + $1 WHERE user_id = $2;",
             amount, recipient_id,
         )
+        await conn.execute(
+            f"""
+            INSERT INTO give_daily_totals(user_id, day, total) VALUES($1, {_DAY_SQL}, $2)
+            ON CONFLICT (user_id, day) DO UPDATE SET total = give_daily_totals.total + EXCLUDED.total;
+            """,
+            sender_id, amount,
+        )
+        await conn.execute(
+            f"DELETE FROM give_daily_totals WHERE user_id = $1 AND day < {_DAY_SQL} - 7;", sender_id
+        )
         new_sender_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1;", sender_id)
-        return int(new_sender_balance or 0), amount
+        return int(new_sender_balance or 0), amount, remaining - amount
 
     return await transaction(_tx)
 
@@ -133,7 +153,7 @@ async def give_command(message):
     recipient_display = mention(recipient_id, recipient_username, recipient_first_name)
 
     try:
-        new_sender_balance, status = await _transfer_funds(sender_id, recipient_id, amount)
+        new_sender_balance, status, remaining = await _transfer_funds(sender_id, recipient_id, amount)
     except Exception as exc:
         print(f"[give] !! transfer failed: {exc!r}")
         await app.send_message(
@@ -141,6 +161,22 @@ async def give_command(message):
             "*⚠️ Transfer failed due to a database error.*\n\nPlease try again.",
             parse_mode="Markdown",
         )
+        return
+
+    if status == -3:
+        if remaining <= 0:
+            limit_text = (
+                "*🚫 Daily transfer limit reached.*\n\n"
+                f"You can send up to 🪙 {DAILY_GIVE_LIMIT:,} coins per day and have already used all of it.\n"
+                "Your limit resets at 12:00 AM IST."
+            )
+        else:
+            limit_text = (
+                "*🚫 Daily transfer limit exceeded.*\n\n"
+                f"You can send only 🪙 {remaining:,} more coins today (limit 🪙 {DAILY_GIVE_LIMIT:,} per day).\n"
+                "Your limit resets at 12:00 AM IST."
+            )
+        await app.send_message(chat_id, limit_text, parse_mode="Markdown")
         return
 
     if status == -1:
@@ -165,7 +201,8 @@ async def give_command(message):
         f"{sender_display}  ➜  {recipient_display}\n\n"
         f"  🪙 {amount:,}\n\n"
         "──────────────────\n"
-        f"*💼 Balance:* 🪙 {new_sender_balance:,}"
+        f"*💼 Balance:* 🪙 {new_sender_balance:,}\n"
+        f"*📅 Left today:* 🪙 {remaining:,} / {DAILY_GIVE_LIMIT:,}"
     )
     await app.send_message(chat_id, text_out, parse_mode="Markdown")
     print(f"[give] transfer ok: sender={sender_id} recipient={recipient_id} amount={amount}")

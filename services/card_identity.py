@@ -10,6 +10,28 @@ from __future__ import annotations
 
 SHOWCASE_PLAYER_ID_OFFSET = 1_000_000_000_000
 
+_LEGACY_SET_NAMES: frozenset[str] = frozenset()
+
+
+def set_legacy_set_names(names) -> None:
+    global _LEGACY_SET_NAMES
+    _LEGACY_SET_NAMES = frozenset(str(name).strip().casefold() for name in names if name)
+
+
+def is_legacy(player: dict | None) -> bool:
+    if not player or player_kind(player) != "showcase":
+        return False
+    name = player.get("showcase_name") or player.get("set_name") or ""
+    return str(name).strip().casefold() in _LEGACY_SET_NAMES
+
+
+def collection_label(player: dict | None) -> str:
+    return "Legacy" if is_legacy(player) else "Showcase"
+
+
+def collection_icon(player: dict | None) -> str:
+    return "🕰️" if is_legacy(player) else "🏆"
+
 
 def showcase_squad_player_id(showcase_card_id: int) -> int:
     return -(SHOWCASE_PLAYER_ID_OFFSET + int(showcase_card_id))
