@@ -33,7 +33,7 @@ TEAM_COLOR = {
 def normalize_team_keyword(value: str):
     raw = str(value or "").strip().upper()
     if raw.startswith("WBBL-"):
-        raw = raw[4:]
+        raw = raw[5:]
     return raw if raw in TEAM_MAP else None
 
 
