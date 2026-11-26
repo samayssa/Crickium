@@ -275,6 +275,29 @@ async def _edit_engine_team(message, engine: str, team_code: str) -> bool:
     return True
 
 
+def _chunk_report_lines(lines: list[str], max_units: int = 3500) -> list[str]:
+    """Split an HTML report into Telegram-safe messages without splitting lines."""
+    chunks: list[str] = []
+    current: list[str] = []
+
+    def telegram_units(value: str) -> int:
+        # Telegram measures message text in UTF-16 code units.
+        return len(value.encode("utf-16-le")) // 2
+
+    for line in lines:
+        candidate = "\n".join((*current, line))
+        if current and telegram_units(candidate) > max_units:
+            chunks.append("\n".join(current))
+            part_number = len(chunks) + 1
+            current = [f"📄 <b>Player Edit Report (continued {part_number})</b>", ""]
+        current.append(line)
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return chunks
+
+
 async def _send_engine_edit_report(chat_id: int, groups: list, errors: list[str]):
     lines_out = ["✅ <b>Player Edit Complete</b>", ""]
     total = sum(len(items) for _engine, _code, items in groups)
@@ -298,10 +321,18 @@ async def _send_engine_edit_report(chat_id: int, groups: list, errors: list[str]
 
     if errors:
         lines_out.extend(["", f"⚠️ <b>Not changed: {len(errors)}</b>"])
-        lines_out.extend(f"• {html.escape(str(error))}" for error in errors[:30])
+        for error in errors[:30]:
+            # Keep long source/error text from creating an oversized report line.
+            error_text = str(error)
+            if len(error_text) > 500:
+                error_text = error_text[:497] + "..."
+            lines_out.append(f"• {html.escape(error_text)}")
         if len(errors) > 30:
             lines_out.append(f"• …and {len(errors) - 30} more.")
-    await app.send_message(chat_id, "\n".join(lines_out), parse_mode="HTML")
+
+    # Large batch reports must be sent as several Telegram-safe messages.
+    for chunk in _chunk_report_lines(lines_out):
+        await app.send_message(chat_id, chunk, parse_mode="HTML")
 
 
 async def _edit_sectioned_source(chat_id: int, raw_text: str) -> bool:
