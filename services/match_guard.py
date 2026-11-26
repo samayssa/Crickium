@@ -1,4 +1,4 @@
-from database import play_repo, playint_repo, playipl_repo, playso_repo, playwpl_repo
+from database import play_repo, playint_repo, playipl_repo, playso_repo, playwpl_repo, playwbbl_repo, playbbl_repo, playilt_repo
 from database.query import fetchval
 
 SELL_BLOCKED_TEXT = "You can't sell players while you are in a match. Finish or end your match first, then try again."
@@ -10,6 +10,9 @@ _LOOKUPS = (
     playint_repo.get_active_match_for_user,
     playipl_repo.get_active_match_for_user,
     playwpl_repo.get_active_match_for_user,
+    playwbbl_repo.get_active_match_for_user,
+    playbbl_repo.get_active_match_for_user,
+    playilt_repo.get_active_match_for_user,
     playso_repo.get_active_match_for_user,
 )
 

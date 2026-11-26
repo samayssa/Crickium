@@ -14,12 +14,18 @@ from database.playint_teams_repo import normalize_team_keyword, team_name
 from database.playipl_repo import parse_playipl_player_line, upsert_playipl_player
 from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_team_keyword, team_name as ipl_team_name
 from database.playwpl_repo import parse_playwpl_player_line, upsert_playwpl_player
+from database.playwbbl_repo import parse_playwbbl_player_line, upsert_playwbbl_player
+from database.playbbl_repo import parse_playbbl_player_line, upsert_playbbl_player
+from database.playilt_repo import parse_playilt_player_line, upsert_playilt_player
 from database.playwpl_teams_repo import normalize_team_keyword as normalize_wpl_team_keyword, team_name as wpl_team_name
+from database.playwbbl_teams_repo import normalize_team_keyword as normalize_wbbl_team_keyword, team_name as wbbl_team_name
+from database.playbbl_teams_repo import normalize_team_keyword as normalize_bbl_team_keyword, team_name as bbl_team_name
+from database.playilt_teams_repo import normalize_team_keyword as normalize_ilt_team_keyword, team_name as ilt_team_name
 from database.access_repo import has_upload_access
 from database.showcase_players_repo import parse_legacy_header, parse_showcase_header, upload_showcase_sections
 
 
-TEAM_HEADER_RE = re.compile(r"^(T20I|IPL|WPL)\s*-\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE)
+TEAM_HEADER_RE = re.compile(r"^(T20I|IPL|WPL|WBBL|BBL|ILT)\s*-\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE)
 
 
 def _chat_id(message: dict) -> int:
@@ -82,6 +88,21 @@ def _team_scope(header: str):
         if not code:
             return "INVALID", None, None, f"Invalid WPL team code in section header: {header!r}"
         return "WPL", code, wpl_team_name(code), None
+    if engine == "WBBL":
+        code = normalize_wbbl_team_keyword(f"WBBL-{raw_team}")
+        if not code:
+            return "INVALID", None, None, f"Invalid WBBL team code in section header: {header!r}"
+        return "WBBL", code, wbbl_team_name(code), None
+    if engine == "BBL":
+        code = normalize_bbl_team_keyword(f"BBL-{raw_team}")
+        if not code:
+            return "INVALID", None, None, f"Invalid BBL team code in section header: {header!r}"
+        return "BBL", code, bbl_team_name(code), None
+    if engine == "ILT":
+        code = normalize_ilt_team_keyword(f"ILT-{raw_team}")
+        if not code:
+            return "INVALID", None, None, f"Invalid ILT team code in section header: {header!r}"
+        return "ILT", code, ilt_team_name(code), None
 
     code = normalize_ipl_team_keyword(f"IPL-{raw_team}")
     if not code:
@@ -166,6 +187,39 @@ async def _upload_team_line(engine: str, team_code: str, player_line: str, uploa
         ok, row = await upsert_playwpl_player(
             team_code,
             wpl_team_name(team_code),
+            player,
+            uploaded_by,
+        )
+        return bool(ok), False, None
+    if engine == "WBBL":
+        player, error = parse_playwbbl_player_line(player_line)
+        if error:
+            return False, False, error
+        ok, row = await upsert_playwbbl_player(
+            team_code,
+            wbbl_team_name(team_code),
+            player,
+            uploaded_by,
+        )
+        return bool(ok), False, None
+    if engine == "BBL":
+        player, error = parse_playbbl_player_line(player_line)
+        if error:
+            return False, False, error
+        ok, row = await upsert_playbbl_player(
+            team_code,
+            bbl_team_name(team_code),
+            player,
+            uploaded_by,
+        )
+        return bool(ok), False, None
+    if engine == "ILT":
+        player, error = parse_playilt_player_line(player_line)
+        if error:
+            return False, False, error
+        ok, row = await upsert_playilt_player(
+            team_code,
+            ilt_team_name(team_code),
             player,
             uploaded_by,
         )
@@ -421,6 +475,9 @@ async def upload_players_command(message):
             "<code>[Player Name][Country][Role][RH-BAT 96][RAF 38]</code>\n\n"
             "<code>IPL-RCB</code>\n"
             "<code>WPL-MI</code>\n"
+            "<code>WBBL-SYS</code>\n"
+            "<code>BBL-PRS</code>\n"
+            "<code>ILT-DV</code>\n"
             "<code>[Player Name][Country][Role][RH-BAT 96][RAF 38]</code>\n"
             "<code>[Player Name][Country][Role][RH-BAT 96][RAF 38]</code>",
             parse_mode="HTML",
@@ -458,6 +515,9 @@ async def upload_players_command(message):
                                         
     target_ipl = normalize_ipl_team_keyword(explicit_target) if explicit_target else None
     target_wpl = normalize_wpl_team_keyword(explicit_target) if explicit_target else None
+    target_wbbl = normalize_wbbl_team_keyword(explicit_target) if explicit_target and str(explicit_target).strip().upper().startswith("WBBL-") else None
+    target_bbl = normalize_bbl_team_keyword(explicit_target) if explicit_target and str(explicit_target).strip().upper().startswith("BBL-") else None
+    target_ilt = normalize_ilt_team_keyword(explicit_target) if explicit_target and str(explicit_target).strip().upper().startswith("ILT-") else None
     target_int = normalize_team_keyword(explicit_target) if explicit_target else None
 
     if _has_team_sections(raw_text):
@@ -493,6 +553,108 @@ async def upload_players_command(message):
         report = (
             f"📋 <b>PlayWPL Franchise Upload Report</b>\n\n"
             f"🏏 Franchise: <b>{wpl_team_name(target_wpl)} ({target_wpl})</b>\n"
+            f"✅ Saved/Updated: {uploaded}\n♻️ Existing: {existing_or_updated}\n❌ Failed: {failed}"
+        )
+        if details:
+            report += "\n\n<b>Failure details:</b>\n" + "\n".join(f"• {d}" for d in details[:20])
+        await app.send_message(chat_id, report, parse_mode="HTML")
+        return
+    if target_wbbl:
+        uploaded = failed = 0
+        details = []
+        existing_or_updated = 0
+        for line_no, line in enumerate((l for l in raw_text.splitlines() if l.strip()), start=1):
+            player, error = parse_playwbbl_player_line(line)
+            if error:
+                failed += 1
+                details.append(f"Line {line_no}: {error}")
+                continue
+            try:
+                ok, _row = await upsert_playwbbl_player(
+                    target_wbbl,
+                    wbbl_team_name(target_wbbl),
+                    player,
+                    user_id,
+                )
+                if ok:
+                    uploaded += 1
+                else:
+                    existing_or_updated += 1
+            except Exception as exc:
+                failed += 1
+                details.append(f"Line {line_no}: {player.get('name', 'Player')}: {exc}")
+
+        report = (
+            f"📋 <b>PlayWBBL Franchise Upload Report</b>\n\n"
+            f"🏏 Franchise: <b>{wbbl_team_name(target_wbbl)} ({target_wbbl})</b>\n"
+            f"✅ Saved/Updated: {uploaded}\n♻️ Existing: {existing_or_updated}\n❌ Failed: {failed}"
+        )
+        if details:
+            report += "\n\n<b>Failure details:</b>\n" + "\n".join(f"• {d}" for d in details[:20])
+        await app.send_message(chat_id, report, parse_mode="HTML")
+        return
+    if target_bbl:
+        uploaded = failed = 0
+        details = []
+        existing_or_updated = 0
+        for line_no, line in enumerate((l for l in raw_text.splitlines() if l.strip()), start=1):
+            player, error = parse_playbbl_player_line(line)
+            if error:
+                failed += 1
+                details.append(f"Line {line_no}: {error}")
+                continue
+            try:
+                ok, _row = await upsert_playbbl_player(
+                    target_bbl,
+                    bbl_team_name(target_bbl),
+                    player,
+                    user_id,
+                )
+                if ok:
+                    uploaded += 1
+                else:
+                    existing_or_updated += 1
+            except Exception as exc:
+                failed += 1
+                details.append(f"Line {line_no}: {player.get('name', 'Player')}: {exc}")
+
+        report = (
+            f"📋 <b>PlayBBL Franchise Upload Report</b>\n\n"
+            f"🏏 Franchise: <b>{bbl_team_name(target_bbl)} ({target_bbl})</b>\n"
+            f"✅ Saved/Updated: {uploaded}\n♻️ Existing: {existing_or_updated}\n❌ Failed: {failed}"
+        )
+        if details:
+            report += "\n\n<b>Failure details:</b>\n" + "\n".join(f"• {d}" for d in details[:20])
+        await app.send_message(chat_id, report, parse_mode="HTML")
+        return
+    if target_ilt:
+        uploaded = failed = 0
+        details = []
+        existing_or_updated = 0
+        for line_no, line in enumerate((l for l in raw_text.splitlines() if l.strip()), start=1):
+            player, error = parse_playilt_player_line(line)
+            if error:
+                failed += 1
+                details.append(f"Line {line_no}: {error}")
+                continue
+            try:
+                ok, _row = await upsert_playilt_player(
+                    target_ilt,
+                    ilt_team_name(target_ilt),
+                    player,
+                    user_id,
+                )
+                if ok:
+                    uploaded += 1
+                else:
+                    existing_or_updated += 1
+            except Exception as exc:
+                failed += 1
+                details.append(f"Line {line_no}: {player.get('name', 'Player')}: {exc}")
+
+        report = (
+            f"📋 <b>PlayILT Franchise Upload Report</b>\n\n"
+            f"🏏 Franchise: <b>{ilt_team_name(target_ilt)} ({target_ilt})</b>\n"
             f"✅ Saved/Updated: {uploaded}\n♻️ Existing: {existing_or_updated}\n❌ Failed: {failed}"
         )
         if details:

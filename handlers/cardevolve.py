@@ -11,7 +11,7 @@ from services.match_guard import EVOLVE_BLOCKED_TEXT, user_in_match
 from services import card_evolve
 from services.card_identity import card_entity_id, player_kind
 from services.card_provider import get_player_card_bytes
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.debut_gate import has_completed_debut
 from utils.rarity import get_rarity
 from utils.style import batting_style_text, bowling_style_text
@@ -53,7 +53,7 @@ def _confirm_keyboard(user_id: int, old: dict, new: dict) -> InlineKeyboardMarku
 
 def _preview_text(old: dict, new: dict) -> str:
     quote = card_evolve.evolve_quote(old, new)
-    flag = flag_for(new.get("country"))
+    flag = flag_html(new.get("country"))
     lines = [
         "<b>╭━━━〔 🔁 CARD EVOLVE 〕━━━╮</b>",
         f"<blockquote><b>👤 {_esc(new.get('name'))} {flag}</b></blockquote>",

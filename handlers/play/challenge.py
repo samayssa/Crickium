@@ -13,6 +13,7 @@ from database.play_repo import (
 )
 from database.playint_repo import get_active_match_in_chat as get_playint_match_in_chat, get_active_match_for_user as get_playint_match_for_user
 from database.playwpl_repo import get_active_match_in_chat as get_playwpl_match_in_chat, get_active_match_for_user as get_playwpl_match_for_user
+from services.cross_engine_guard import chat_conflict, user_conflict
 from utils.mentions import mention_html
 from buttons.play_buttons import challenge_keyboard
 from utils.debut_gate import has_minimum_team, get_playing_xi_status
@@ -96,6 +97,10 @@ async def play_command(message):
         )
         return
 
+    other_chat_game = await chat_conflict(chat_id, "", new_only=True)
+    if other_chat_game:
+        await app.send_message(chat_id, f"<b>⚠️ A {other_chat_game} game is already going on in this group. Finish it before starting a new game.</b>", parse_mode="HTML")
+        return
     active_wpl_in_chat = await get_playwpl_match_in_chat(chat_id)
     if active_wpl_in_chat:
         await app.send_message(chat_id, f"<b>⚠️ A PlayWPL game is already going on in {html.escape(str(chat_title))}. Finish it before starting a new game.</b>", parse_mode="HTML")
@@ -115,6 +120,10 @@ async def play_command(message):
         )
         return
 
+    other_user_game = await user_conflict(challenger_id, "", new_only=True)
+    if other_user_game:
+        await app.send_message(chat_id, f"<b>⚠️ You're already in a {other_user_game} game. Please finish it first.</b>", parse_mode="HTML")
+        return
     active_wpl_for_challenger = await get_playwpl_match_for_user(challenger_id)
     if active_wpl_for_challenger:
         await app.send_message(chat_id, "<b>⚠️ You're already in a PlayWPL game. Please complete it before starting a new game.</b>", parse_mode="HTML")
@@ -190,6 +199,11 @@ async def play_command(message):
         )
         return
 
+    other_opponent_game = await user_conflict(opponent_id, "", new_only=True)
+    if other_opponent_game:
+        om = mention_html(opponent_id, opponent_username, opponent_name)
+        await app.send_message(chat_id, f"<b>⚠️ {om} is already in a {other_opponent_game} game.</b>", parse_mode="HTML")
+        return
     active_wpl_for_opponent = await get_playwpl_match_for_user(opponent_id)
     if active_wpl_for_opponent:
         om = mention_html(opponent_id, opponent_username, opponent_name)
@@ -289,6 +303,10 @@ async def on_play_accept(callback_query):
         )
         return
 
+    other_presser_game = await user_conflict(int(presser["id"]), "", new_only=True)
+    if other_presser_game:
+        await app.answer_callback_query(callback_query["id"], f"You're already in a {other_presser_game} game. Finish it first.", show_alert=True)
+        return
     if await get_playwpl_match_for_user(int(presser["id"])):
         await app.answer_callback_query(callback_query["id"], "You are already in a PlayWPL game. Finish it first.", show_alert=True)
         return

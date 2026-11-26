@@ -12,7 +12,7 @@ from database.special_players_repo import get_player_variants, search_player_var
 from database.showcase_players_repo import get_showcase_player_by_identity, parse_showcase_image_target
 from database.squads_repo import get_team_squad
 from utils.style import batting_style_text, bowling_style_text
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.rarity import get_rarity
 from utils.price_chart import get_price, format_price
 from services.card_provider import get_player_card_bytes
@@ -39,7 +39,7 @@ def _parse_arg(text: str) -> str | None:
 
 def _player_bio_text(player: dict, owned: bool) -> str:
     name = _escape(player.get("name") or "Unknown")
-    flag = flag_for(player.get("country"))
+    flag = flag_html(player.get("country"))
     role = _escape(player.get("role") or "Unknown")
     bat_style = _escape(batting_style_text(player.get("batting_hand")))
     bowl_style = _escape(bowling_style_text(player.get("bowling_hand")))

@@ -8,6 +8,10 @@ from app import app
 from database.query import fetch
 from database.playint_teams_repo import TEAM_MAP as INT_TEAMS
 from database.playipl_teams_repo import TEAM_MAP as IPL_TEAMS
+from database.playwbbl_teams_repo import TEAM_MAP as WBBL_TEAMS
+from database.playbbl_teams_repo import TEAM_MAP as BBL_TEAMS
+from database.playilt_teams_repo import TEAM_MAP as ILT_TEAMS
+_PREFIXED = (('T20I-', INT_TEAMS, 'T20I'), ('IPL-', IPL_TEAMS, 'IPL'), ('WBBL-', WBBL_TEAMS, 'WBBL'), ('BBL-', BBL_TEAMS, 'BBL'), ('ILT-', ILT_TEAMS, 'ILT'))
 
 
 def _normalise(value: str) -> str:
@@ -17,12 +21,12 @@ def _normalise(value: str) -> str:
 
 def _resolve(raw: str):
     value = _normalise(raw)
-    for prefix, mapping in (("T20I-", INT_TEAMS), ("IPL-", IPL_TEAMS)):
+    for prefix, mapping, engine_key in _PREFIXED:
         if value.startswith(prefix):
             candidate = value[len(prefix):]
             for code, name in mapping.items():
                 if candidate == code or candidate == _normalise(name):
-                    return ("T20I" if mapping is INT_TEAMS else "IPL"), code, name
+                    return engine_key, code, name
             return None
     for code, name in INT_TEAMS.items():
         if value in {code, _normalise(name)}:

@@ -3,7 +3,7 @@ import time
 from database import pitch_stats_repo
 
 PITCHES = ("green", "dry", "dusty", "flat", "hard", "even", "bouncy", "slow")
-TRACKED_ENGINES = {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}
+TRACKED_ENGINES = {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT"}
 CACHE_SECONDS = 60
 
 _cache: dict[str, tuple[float, tuple[dict, dict]]] = {}

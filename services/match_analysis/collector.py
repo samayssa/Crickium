@@ -555,7 +555,7 @@ def _team_display_for(match: dict[str, Any], user_id: int) -> str:
 def _base_payload(*, engine: str, match: dict[str, Any], innings: list[dict[str, Any]], termination: str, winner_id: int | None, loser_id: int | None, ended_by_user_id: int | None, reason: str | None, overs_limit: int = 20) -> dict[str, Any]:
     payload = {
         "engine": str(engine).upper(),
-        "game_name": {"PLAY": "Play", "PLAYINT": "PlayInt", "PLAYIPL": "PlayIPL", "PLAYWPL": "PlayWPL", "PLAYSO": "PlaySO", "MATCH": "Match"}.get(str(engine).upper(), str(engine).upper()),
+        "game_name": {"PLAY": "Play", "PLAYINT": "PlayInt", "PLAYIPL": "PlayIPL", "PLAYWPL": "PlayWPL", "PLAYWBBL": "PlayWBBL", "PLAYBBL": "PlayBBL", "PLAYILT": "PlayILT", "PLAYSO": "PlaySO", "MATCH": "Match"}.get(str(engine).upper(), str(engine).upper()),
         "match_id": _safe_int(match.get("match_id") or match.get("challenge_id")),
         "chat_id": _safe_int(match.get("chat_id")),
         "format": "T20",
@@ -620,8 +620,14 @@ def collect_runtime_session(engine: str, session: Any, *, termination: str = "co
         from engines.playint_runtime import snapshot_innings
     elif str(engine).upper() == "PLAYIPL":
         from engines.playipl_runtime import snapshot_innings
-    else:
+    elif str(engine).upper() == "PLAYWPL":
         from engines.playwpl_runtime import snapshot_innings
+    elif str(engine).upper() == "PLAYWBBL":
+        from engines.playwbbl_runtime import snapshot_innings
+    elif str(engine).upper() == "PLAYBBL":
+        from engines.playbbl_runtime import snapshot_innings
+    else:
+        from engines.playilt_runtime import snapshot_innings
     all_balls = list((session.match or {}).get("_analysis_balls") or [])
     innings = []
     for historical in (session.innings_history or []):

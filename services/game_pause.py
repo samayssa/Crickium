@@ -11,12 +11,15 @@ from database import game_pause_repo as repo
 from utils import pause_state
 from utils.timers import cancel_timer, start_timer
 
-ENGINE_ORDER = ("PLAYSO", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL")
+ENGINE_ORDER = ("PLAYSO", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT")
 ENGINE_LABELS = {
     "PLAY": "PLAY",
     "PLAYINT": "PLAYINT",
     "PLAYIPL": "PLAYIPL",
     "PLAYWPL": "PLAYWPL",
+    "PLAYWBBL": "PLAYWBBL",
+    "PLAYBBL": "PLAYBBL",
+    "PLAYILT": "PLAYILT",
     "PLAYSO": "PLAYSO (Super Over)",
 }
 _REPO_MODULES = {
@@ -24,6 +27,9 @@ _REPO_MODULES = {
     "PLAYINT": "database.playint_repo",
     "PLAYIPL": "database.playipl_repo",
     "PLAYWPL": "database.playwpl_repo",
+    "PLAYWBBL": "database.playwbbl_repo",
+    "PLAYBBL": "database.playbbl_repo",
+    "PLAYILT": "database.playilt_repo",
     "PLAYSO": "database.playso_repo",
 }
 _CHALLENGE_MODULES = {
@@ -31,6 +37,9 @@ _CHALLENGE_MODULES = {
     "PLAYINT": ("handlers.playint.challenge", "buttons.playint_buttons"),
     "PLAYIPL": ("handlers.playipl.challenge", "buttons.playipl_buttons"),
     "PLAYWPL": ("handlers.playwpl.challenge", "buttons.playwpl_buttons"),
+    "PLAYWBBL": ("handlers.playwbbl.challenge", "buttons.playwbbl_buttons"),
+    "PLAYBBL": ("handlers.playbbl.challenge", "buttons.playbbl_buttons"),
+    "PLAYILT": ("handlers.playilt.challenge", "buttons.playilt_buttons"),
     "PLAYSO": ("handlers.playso.challenge", "buttons.playso_buttons"),
 }
 _LIVE_STATUSES = {

@@ -21,6 +21,21 @@ from database.playwpl_repo import (
     get_match as get_playwpl_match,
     update_status as update_playwpl_status,
 )
+from database.playwbbl_repo import (
+    get_active_match_in_chat as get_playwbbl_match_in_chat,
+    get_match as get_playwbbl_match,
+    update_status as update_playwbbl_status,
+)
+from database.playbbl_repo import (
+    get_active_match_in_chat as get_playbbl_match_in_chat,
+    get_match as get_playbbl_match,
+    update_status as update_playbbl_status,
+)
+from database.playilt_repo import (
+    get_active_match_in_chat as get_playilt_match_in_chat,
+    get_match as get_playilt_match,
+    update_status as update_playilt_status,
+)
 from database.playint_repo import (
     get_active_match_in_chat as get_playint_match_in_chat,
     get_match as get_playint_match,
@@ -36,6 +51,9 @@ from engines.play_runtime import get_session as get_play_session, get_session_in
 from engines.playint_runtime import get_playint_session, get_playint_session_in_chat, clear_playint_session
 from engines.playipl_runtime import get_playipl_session, get_playipl_session_in_chat, clear_playipl_session
 from engines.playwpl_runtime import get_playwpl_session, get_playwpl_session_in_chat, clear_playwpl_session
+from engines.playwbbl_runtime import get_playwbbl_session, get_playwbbl_session_in_chat, clear_playwbbl_session
+from engines.playbbl_runtime import get_playbbl_session, get_playbbl_session_in_chat, clear_playbbl_session
+from engines.playilt_runtime import get_playilt_session, get_playilt_session_in_chat, clear_playilt_session
 from engines.play_engine import pitch_label
 from utils.mentions import mention_html
 from utils.timers import cancel_timer
@@ -115,6 +133,12 @@ def _game_summary(
         mode = "PLAYIPL • Indian Premier League"
     elif engine == "playwpl":
         mode = "PLAYWPL • Women's Premier League"
+    elif engine == "playwbbl":
+        mode = "PLAYWBBL • Women's Big Bash League"
+    elif engine == "playbbl":
+        mode = "PLAYBBL • Big Bash League"
+    elif engine == "playilt":
+        mode = "PLAYILT • International League T20"
     else:
         mode = engine.upper()
     first_text = "Not yet played"
@@ -179,9 +203,33 @@ async def _find_active(chat_id: int):
     if session is not None:
         return dict(session.match), "playwpl"
 
+    session = get_playwbbl_session_in_chat(chat_id)
+    if session is not None:
+        return dict(session.match), "playwbbl"
+
+    session = get_playbbl_session_in_chat(chat_id)
+    if session is not None:
+        return dict(session.match), "playbbl"
+
+    session = get_playilt_session_in_chat(chat_id)
+    if session is not None:
+        return dict(session.match), "playilt"
+
     match = await get_playwpl_match_in_chat(chat_id)
     if match:
         return dict(match), "playwpl"
+
+    match = await get_playwbbl_match_in_chat(chat_id)
+    if match:
+        return dict(match), "playwbbl"
+
+    match = await get_playbbl_match_in_chat(chat_id)
+    if match:
+        return dict(match), "playbbl"
+
+    match = await get_playilt_match_in_chat(chat_id)
+    if match:
+        return dict(match), "playilt"
 
     match = await get_playso_match_in_chat(chat_id)
     if match:
@@ -232,6 +280,24 @@ async def _find_active(chat_id: int):
             ORDER BY match_id DESC LIMIT 1;""",
         chat_id, *terminal_list,
     )
+    wbbl_row = await fetchrow(
+        f"""SELECT * FROM wbbl_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
+    )
+    bbl_row = await fetchrow(
+        f"""SELECT * FROM bbl_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
+    )
+    ilt_row = await fetchrow(
+        f"""SELECT * FROM ilt_matches
+            WHERE chat_id = $1 AND status NOT IN ({placeholders})
+            ORDER BY match_id DESC LIMIT 1;""",
+        chat_id, *terminal_list,
+    )
 
     candidates = [(dict(play_row), "play")] if play_row else []
     if playint_row:
@@ -240,6 +306,12 @@ async def _find_active(chat_id: int):
         candidates.append((dict(playipl_row), "playipl"))
     if wpl_row:
         candidates.append((dict(wpl_row), "playwpl"))
+    if wbbl_row:
+        candidates.append((dict(wbbl_row), "playwbbl"))
+    if bbl_row:
+        candidates.append((dict(bbl_row), "playbbl"))
+    if ilt_row:
+        candidates.append((dict(ilt_row), "playilt"))
     if playso_row:
         candidates.append((dict(playso_row), "playso"))
     if candidates:
@@ -260,6 +332,12 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
         session = None
     elif engine == "playwpl":
         session = get_playwpl_session(match_id)
+    elif engine == "playwbbl":
+        session = get_playwbbl_session(match_id)
+    elif engine == "playbbl":
+        session = get_playbbl_session(match_id)
+    elif engine == "playilt":
+        session = get_playilt_session(match_id)
     else:
         session = get_playipl_session(match_id)
 
@@ -279,6 +357,12 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
             match = await get_playso_match(match_id)
         elif engine == "playwpl":
             match = await get_playwpl_match(match_id)
+        elif engine == "playwbbl":
+            match = await get_playwbbl_match(match_id)
+        elif engine == "playbbl":
+            match = await get_playbbl_match(match_id)
+        elif engine == "playilt":
+            match = await get_playilt_match(match_id)
         else:
             match = await get_playipl_match(match_id)
         if match:
@@ -303,6 +387,12 @@ async def _clear_live_messages(chat_id: int, match_id: int, engine: str) -> None
         return
     elif engine == "playwpl":
         clear_playwpl_session(match_id)
+    elif engine == "playwbbl":
+        clear_playwbbl_session(match_id)
+    elif engine == "playbbl":
+        clear_playbbl_session(match_id)
+    elif engine == "playilt":
+        clear_playilt_session(match_id)
     else:
         clear_playipl_session(match_id)
 
@@ -346,6 +436,12 @@ async def abond_command(message):
         session = None
     elif engine == "playwpl":
         session = get_playwpl_session(match["match_id"])
+    elif engine == "playwbbl":
+        session = get_playwbbl_session(match["match_id"])
+    elif engine == "playbbl":
+        session = get_playbbl_session(match["match_id"])
+    elif engine == "playilt":
+        session = get_playilt_session(match["match_id"])
     else:
         session = get_playipl_session(match["match_id"])
     text = _game_summary(match, engine=engine, session=session)
@@ -399,6 +495,12 @@ async def abandon_yes(callback_query):
             await force_close_origin(match.get("state") or {}, "ended")
         elif engine == "playwpl":
             await update_playwpl_status(mid, "ended")
+        elif engine == "playwbbl":
+            await update_playwbbl_status(mid, "ended")
+        elif engine == "playbbl":
+            await update_playbbl_status(mid, "ended")
+        elif engine == "playilt":
+            await update_playilt_status(mid, "ended")
         else:
             await update_playipl_status(mid, "ended")
         cancel_timer("challenge", mid)
@@ -409,6 +511,12 @@ async def abandon_yes(callback_query):
             cancel_inactivity_match("PLAYSO", mid)
         elif engine == "playwpl":
             cancel_inactivity_match("PLAYWPL", mid)
+        elif engine == "playwbbl":
+            cancel_inactivity_match("PLAYWBBL", mid)
+        elif engine == "playbbl":
+            cancel_inactivity_match("PLAYBBL", mid)
+        elif engine == "playilt":
+            cancel_inactivity_match("PLAYILT", mid)
     except Exception as exc:
         print(f"[abandon] Failed to mark {engine} match_id={mid} ended: {exc!r}")
         await app.answer_callback_query(
@@ -431,6 +539,15 @@ async def abandon_yes(callback_query):
         elif engine == "playwpl":
             session = get_playwpl_session_in_chat(chat_id)
             payload = collect_runtime_session("PLAYWPL", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYWPL", dict(match), termination="abandoned", reason="administrator abandoned the game")
+        elif engine == "playwbbl":
+            session = get_playwbbl_session_in_chat(chat_id)
+            payload = collect_runtime_session("PLAYWBBL", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYWBBL", dict(match), termination="abandoned", reason="administrator abandoned the game")
+        elif engine == "playbbl":
+            session = get_playbbl_session_in_chat(chat_id)
+            payload = collect_runtime_session("PLAYBBL", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYBBL", dict(match), termination="abandoned", reason="administrator abandoned the game")
+        elif engine == "playilt":
+            session = get_playilt_session_in_chat(chat_id)
+            payload = collect_runtime_session("PLAYILT", session, termination="abandoned", reason="administrator abandoned the game") if session else collect_match_row("PLAYILT", dict(match), termination="abandoned", reason="administrator abandoned the game")
         else:
             payload = collect_playso_match(dict(match), dict(match.get("state") or {}), termination="abandoned", reason="administrator abandoned the game")
         await send_report(app, payload)

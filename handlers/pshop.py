@@ -9,7 +9,7 @@ from handlers.registry import register, register_callback
 from app import app
 from database.query import fetch, fetchval
 from services.player_card import overall_rating
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.rarity import get_rarity
 from utils.price_chart import get_price
 from database.special_players_repo import display_edition
@@ -147,7 +147,7 @@ def _render(players: list[dict], page: int, total: int, filter_text: str) -> str
         elif kind == "showcase" and player.get("showcase_name"):
             raw_name = f"{raw_name} [{player.get('showcase_name')}]"
         name = _escape(raw_name)
-        flag = flag_for(player.get("country"))
+        flag = flag_html(player.get("country"))
         ovr = overall_rating(player.get("bat_level"), player.get("bowl_level"))
         rarity = _rarity_label(ovr)
         price, _ = get_price(ovr)

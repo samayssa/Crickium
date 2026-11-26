@@ -565,7 +565,7 @@ def play_ball_commentary(session: Any, context: Any, outcome: Any, striker_befor
     wicket = bool(outcome.wicket)
     tactic = str(getattr(context, "bowler_tactic", "") or getattr(session, "current_tactic", "") or "")
     c = Ctx(
-        mode=mode, gender="f" if mode == "wpl" else "m", kind="wicket" if wicket else kind, runs=int(outcome.runs or 0),
+        mode=mode, gender="f" if mode in ("wpl", "wbbl") else "m", kind="wicket" if wicket else kind, runs=int(outcome.runs or 0),
         free_hit=bool(getattr(context, "free_hit_next_ball", False)),
         batter=_clean(striker_before.name if striker_before else "The batter"),
         non_striker=_clean(partnership_players[1] if partnership_players and len(partnership_players) > 1 else ""),

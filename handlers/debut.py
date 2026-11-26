@@ -20,8 +20,8 @@ def _line(player: dict, number: int, icon: str, captain: bool = False) -> str:
     level = _level(player)
     country = html.escape(str(player.get("country") or ""))
     flag = ""
-    from utils.country_flags import flag_for
-    flag = flag_for(country)
+    from utils.PremiumEmoji import flag_html
+    flag = flag_html(country)
     suffix = " 🧢" if captain else ""
     return f"├ {number}. {name} • {level} {flag} {icon}{suffix}"
 
@@ -54,8 +54,8 @@ def _render_debut_message(squad: list[dict], first_name: str, user_id: int, is_n
         prefix = "╰" if i == len(keepers) else "├"
         name = html.escape(str(player.get("name") or "Player"))
         level = _level(player)
-        from utils.country_flags import flag_for
-        flag = flag_for(player.get("country"))
+        from utils.PremiumEmoji import flag_html
+        flag = flag_html(player.get("country"))
         lines.append(f"{prefix} {len(batsmen) + i}. {name} • {level} {flag} 🧤")
     lines.append("</blockquote>")
 
@@ -71,8 +71,8 @@ def _render_debut_message(squad: list[dict], first_name: str, user_id: int, is_n
         prefix = "╰" if idx == 11 else "├"
         name = html.escape(str(player.get("name") or "Player"))
         level = _level(player)
-        from utils.country_flags import flag_for
-        flag = flag_for(player.get("country"))
+        from utils.PremiumEmoji import flag_html
+        flag = flag_html(player.get("country"))
         suffix = " 🧢" if idx == 11 else ""
         lines.append(f"{prefix} {idx}. {name} • {level} {flag} ⚡{suffix}")
     lines.append("</blockquote>")

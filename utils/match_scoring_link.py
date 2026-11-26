@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 
-_SUPPORTED_ENGINES = {"PLAY", "PLAYSO", "PLAYINT", "PLAYIPL", "PLAYWPL", "MATCH"}
+_SUPPORTED_ENGINES = {"PLAY", "PLAYSO", "PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT", "MATCH"}
 
 
 def match_scoring_keyboard(engine: str, match_id: int) -> dict:

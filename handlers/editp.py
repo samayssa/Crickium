@@ -13,6 +13,9 @@ from database.squads_repo import sync_player_snapshot
 from database.playint_repo import get_engine_team_player, update_engine_team_player
 from database.playint_teams_repo import normalize_team_keyword as normalize_t20i_team
 from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_team
+from database.playwbbl_teams_repo import normalize_team_keyword as normalize_wbbl_team
+from database.playbbl_teams_repo import normalize_team_keyword as normalize_bbl_team
+from database.playilt_teams_repo import normalize_team_keyword as normalize_ilt_team
 from database.special_players_repo import (
     split_player_edition,
     get_special_player,
@@ -156,6 +159,15 @@ def _engine_team_arg(text: str):
     if raw.upper().startswith("IPL-"):
         code = normalize_ipl_team(raw)
         return ("IPL", code) if code else None
+    if raw.upper().startswith("WBBL-"):
+        code = normalize_wbbl_team(raw)
+        return ("WBBL", code) if code else None
+    if raw.upper().startswith("BBL-"):
+        code = normalize_bbl_team(raw)
+        return ("BBL", code) if code else None
+    if raw.upper().startswith("ILT-"):
+        code = normalize_ilt_team(raw)
+        return ("ILT", code) if code else None
     return None
 
 

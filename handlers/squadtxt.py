@@ -29,6 +29,9 @@ from database.players_repo import BOWLING_STYLE_LABELS
 from database.playint_teams_repo import TEAM_MAP as INT_TEAMS, TEAMS_PAGE_1, TEAMS_PAGE_2
 from database.playipl_teams_repo import TEAM_MAP as IPL_TEAMS, TEAM_ORDER as IPL_ORDER
 from database.playwpl_teams_repo import TEAM_MAP as WPL_TEAMS, TEAM_ORDER as WPL_ORDER
+from database.playwbbl_teams_repo import TEAM_MAP as WBBL_TEAMS, TEAM_ORDER as WBBL_ORDER
+from database.playbbl_teams_repo import TEAM_MAP as BBL_TEAMS, TEAM_ORDER as BBL_ORDER
+from database.playilt_teams_repo import TEAM_MAP as ILT_TEAMS, TEAM_ORDER as ILT_ORDER
 from database.query import fetch
 from handlers.registry import register
 from services.tournament_virtual import is_virtual
@@ -47,12 +50,18 @@ ENGINES = {
     "T20I": {"title": "INT (T20I)", "teams": INT_TEAMS, "order": _ordered(list(TEAMS_PAGE_1) + list(TEAMS_PAGE_2), INT_TEAMS), "nations": True},
     "IPL": {"title": "IPL", "teams": IPL_TEAMS, "order": _ordered(list(IPL_ORDER), IPL_TEAMS), "nations": False},
     "WPL": {"title": "WPL", "teams": WPL_TEAMS, "order": _ordered(list(WPL_ORDER), WPL_TEAMS), "nations": False},
+    "WBBL": {"title": "WBBL", "teams": WBBL_TEAMS, "order": _ordered(list(WBBL_ORDER), WBBL_TEAMS), "nations": False},
+    "BBL": {"title": "BBL", "teams": BBL_TEAMS, "order": _ordered(list(BBL_ORDER), BBL_TEAMS), "nations": False},
+    "ILT": {"title": "ILT", "teams": ILT_TEAMS, "order": _ordered(list(ILT_ORDER), ILT_TEAMS), "nations": False},
 }
 
 ENGINE_WORDS = {
     "int": "T20I", "t20i": "T20I", "playint": "T20I", "intl": "T20I", "international": "T20I",
     "ipl": "IPL", "playipl": "IPL",
     "wpl": "WPL", "playwpl": "WPL",
+    "wbbl": "WBBL", "playwbbl": "WBBL",
+    "bbl": "BBL", "playbbl": "BBL",
+    "ilt": "ILT", "playilt": "ILT", "ilt20": "ILT",
 }
 KIND_WORDS = {
     "global": "global", "players": "global", "play": "global", "pl": "global", "gl": "global",
@@ -77,6 +86,7 @@ USAGE = (
     "• <code>/squadtxt int-all</code> → all INT teams\n"
     "• <code>/squadtxt ipl-csk</code> · <code>/squadtxt ipl-all</code>\n"
     "• <code>/squadtxt wpl-mi</code> · <code>/squadtxt wpl-all</code>\n"
+    "• <code>/squadtxt wbbl-sys</code> · <code>/squadtxt bbl-prs</code> · <code>/squadtxt ilt-dv</code>\n"
     "• <code>/squadtxt global</code> → global players\n"
     "• <code>/squadtxt special</code> · <code>/squadtxt showcase</code>\n"
     "• <code>/squadtxt all</code> → everything\n"

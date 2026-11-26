@@ -8,7 +8,7 @@ from handlers.registry import register
 from app import app
 from engines.lineup_engine import load_current_xi
 from database.captain_repo import get_captain_id
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.debut_gate import validate_playing_xi
 from utils.PremiumEmoji import ovr_emoji_html
 from utils.user_identity import get_user_identity, inline_identity
@@ -63,7 +63,7 @@ def _line(
     )
 
     level = _overall(player)
-    flag = flag_for(
+    flag = flag_html(
         player.get("country")
     )
 

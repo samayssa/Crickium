@@ -67,7 +67,7 @@ def ensure_impact_state(session: Any, team_id: int) -> dict[str, Any]:
     state = session.impact_state.setdefault(
         _key(team_id),
         {
-            "used": False,
+            "used": bool(getattr(session, "impact_disabled", False)),
             "stage": "idle",
             "out_id": None,
             "in_id": None,

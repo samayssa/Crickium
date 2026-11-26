@@ -10,7 +10,7 @@ from database.lineups_repo import get_lineup_ids, save_lineup_ids
 from database.squads_repo import save_team_squad
 from services.player_card import overall_rating
 from services.quest_engine import record_quest_event
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.overseas import count_overseas
 
 XI_SIZE = 11
@@ -103,7 +103,7 @@ def _render(user_name: str, xi: list[dict], bench: list[dict]) -> str:
         role = _role(player)
         emoji = ROLE_EMOJI[role]
         name = html.escape(str(player.get("name") or "Player"))
-        flag = flag_for(player.get("country"))
+        flag = flag_html(player.get("country"))
         lines.append(f"{i}. {emoji} <b>{name}</b> • OVR <b>{_ovr(player)}</b> {flag}")
     lines.extend([
         "</blockquote>",

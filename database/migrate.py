@@ -433,6 +433,90 @@ TABLES = {
             created_at TIMESTAMP DEFAULT NOW()
         );
     """,
+    "wbbl_matches": """
+        CREATE TABLE IF NOT EXISTS wbbl_matches(
+            match_id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT,
+            challenger_id BIGINT NOT NULL,
+            challenger_username TEXT,
+            challenger_name TEXT,
+            opponent_id BIGINT NOT NULL,
+            opponent_username TEXT,
+            opponent_name TEXT,
+            challenger_team_code TEXT,
+            challenger_team_name TEXT,
+            opponent_team_code TEXT,
+            opponent_team_name TEXT,
+            challenger_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            opponent_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            challenger_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            opponent_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            status TEXT DEFAULT 'pending',
+            pitch TEXT,
+            toss_winner_id BIGINT,
+            toss_call TEXT,
+            toss_result TEXT,
+            decision TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
+    "bbl_matches": """
+        CREATE TABLE IF NOT EXISTS bbl_matches(
+            match_id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT,
+            challenger_id BIGINT NOT NULL,
+            challenger_username TEXT,
+            challenger_name TEXT,
+            opponent_id BIGINT NOT NULL,
+            opponent_username TEXT,
+            opponent_name TEXT,
+            challenger_team_code TEXT,
+            challenger_team_name TEXT,
+            opponent_team_code TEXT,
+            opponent_team_name TEXT,
+            challenger_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            opponent_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            challenger_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            opponent_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            status TEXT DEFAULT 'pending',
+            pitch TEXT,
+            toss_winner_id BIGINT,
+            toss_call TEXT,
+            toss_result TEXT,
+            decision TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
+    "ilt_matches": """
+        CREATE TABLE IF NOT EXISTS ilt_matches(
+            match_id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT,
+            challenger_id BIGINT NOT NULL,
+            challenger_username TEXT,
+            challenger_name TEXT,
+            opponent_id BIGINT NOT NULL,
+            opponent_username TEXT,
+            opponent_name TEXT,
+            challenger_team_code TEXT,
+            challenger_team_name TEXT,
+            opponent_team_code TEXT,
+            opponent_team_name TEXT,
+            challenger_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            opponent_xi JSONB NOT NULL DEFAULT '[]'::jsonb,
+            challenger_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            opponent_xi_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+            status TEXT DEFAULT 'pending',
+            pitch TEXT,
+            toss_winner_id BIGINT,
+            toss_call TEXT,
+            toss_result TEXT,
+            decision TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
     "match_analysis_counter": """
         CREATE TABLE IF NOT EXISTS match_analysis_counter(
             counter_id SMALLINT PRIMARY KEY,
@@ -552,7 +636,13 @@ async def migrate():
     await execute("CREATE INDEX IF NOT EXISTS idx_playipl_matches_chat_status ON playipl_matches(chat_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_playipl_matches_user_status ON playipl_matches(challenger_id,opponent_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_wpl_matches_chat_status ON wpl_matches(chat_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_wbbl_matches_chat_status ON wbbl_matches(chat_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_bbl_matches_chat_status ON bbl_matches(chat_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_ilt_matches_chat_status ON ilt_matches(chat_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_wpl_matches_user_status ON wpl_matches(challenger_id,opponent_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_wbbl_matches_user_status ON wbbl_matches(challenger_id,opponent_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_bbl_matches_user_status ON bbl_matches(challenger_id,opponent_id,status);")
+    await execute("CREATE INDEX IF NOT EXISTS idx_ilt_matches_user_status ON ilt_matches(challenger_id,opponent_id,status);")
     await execute("CREATE INDEX IF NOT EXISTS idx_game_pauses_chat_state ON game_pauses(chat_id,state);")
     await execute("CREATE INDEX IF NOT EXISTS idx_game_pauses_players ON game_pauses(challenger_id,opponent_id);")
     print("[migrate] Runtime match indexes OK.")

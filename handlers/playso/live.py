@@ -30,7 +30,7 @@ def _bowler_flow_text(match: dict, state: dict, title: str, body: list[str]) -> 
     mun = match.get("challenger_username") if user == int(match["challenger_id"]) else match.get("opponent_username")
     mention=mention_html(user, mun, mname)
     origin = str(state.get("origin_engine") or "PLAYSO")
-    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL", "PLAYWPL": "PLAYWPL"}.get(origin, "PLAYSO")
+    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL", "PLAYWPL": "PLAYWPL", "PLAYWBBL": "PLAYWBBL", "PLAYBBL": "PLAYBBL", "PLAYILT": "PLAYILT"}.get(origin, "PLAYSO")
     header=f"<b>╭━━〔 ⚡ {mode_title} • SUPER OVER • {title} 〕━━╮</b>\n\n👤 {mention}\n\n"
     return header + "\n".join(body) + "\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
 
@@ -39,7 +39,7 @@ def _batter_flow_text(match: dict, state: dict, title: str, body: list[str]) -> 
     user=int(state.get("batting_user") or 0)
     mention=mention_html(user, match.get("challenger_username") if user == int(match["challenger_id"]) else match.get("opponent_username"), match.get("challenger_name") if user == int(match["challenger_id"]) else match.get("opponent_name"))
     origin = str(state.get("origin_engine") or "PLAYSO")
-    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL", "PLAYWPL": "PLAYWPL"}.get(origin, "PLAYSO")
+    mode_title = {"PLAY": "PLAY", "PLAYINT": "PLAYINT", "PLAYIPL": "PLAYIPL", "PLAYWPL": "PLAYWPL", "PLAYWBBL": "PLAYWBBL", "PLAYBBL": "PLAYBBL", "PLAYILT": "PLAYILT"}.get(origin, "PLAYSO")
     return f"<b>╭━━〔 🏏 {mode_title} • SUPER OVER • {title} 〕━━╮</b>\n\n👤 {mention}\n\n" + "\n".join(body) + "\n\n<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"
 
 

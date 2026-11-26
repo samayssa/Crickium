@@ -1,0 +1,168 @@
+from __future__ import annotations
+import asyncio, json
+from handlers.registry import register_callback
+from app import app
+from database.playilt_repo import get_match,set_xi,set_xi_confirmed,get_recent_playing_xi,save_recent_playing_xi
+from database.playilt_repo import get_team_players
+from database.playilt_teams_repo import team_name,team_label,team_short
+from utils.ILTPremiumEmoji import ilt_team_emoji_html
+from buttons.playilt_challenger_buttons import challenger_xi_keyboard
+from buttons.playilt_opponent_buttons import opponent_xi_keyboard
+from utils.mentions import mention_html
+from services.lineup_rich import build_rich, build_fallback, send_lineup
+from utils.ilt_rules import MIN_UAE, MIN_AFGHANISTAN, country_counts, country_balance_ok
+from utils.PremiumEmoji import flag_html
+
+NO_KEYBOARD={'inline_keyboard':[]}
+
+def _decode_ids(value):
+    if isinstance(value,str):
+        try: return [int(x) for x in json.loads(value)]
+        except Exception: return []
+    return [int(x) for x in (value or [])]
+
+def _chosen_in_order(players, selected_ids):
+    by_id = {int(p.get('player_id') or 0): p for p in players}
+    return [by_id[pid] for pid in selected_ids if pid in by_id]
+
+def _xi_keyboard(match_id, code, players, selected_ids, is_challenger):
+    return (challenger_xi_keyboard if is_challenger else opponent_xi_keyboard)(match_id, code, players, selected_ids)
+
+def _role_counts(players):
+    c={'Batsman':0,'AllRounder':0,'Bowler':0,'Wicketkeeper':0}
+    for p in players:
+        role=str(p.get('role',''))
+        if role.lower() in {'wicketkeeper','wicket-keeper','wicket keeper','wk'}: role='Wicketkeeper'
+        if role in c: c[role]+=1
+    return c
+
+def _valid(players):
+    c=_role_counts(players)
+    return (
+        len(players)==11
+        and c['Batsman']>=1
+        and 2<=c['AllRounder']<=4
+        and 3<=c['Bowler']<=4
+        and c['Wicketkeeper']>=1
+        and country_balance_ok(players)
+    )
+
+def _build_text(code,players,selected):
+    c=_role_counts([p for p in players if int(p.get('player_id') or 0) in selected])
+    chosen=[p for p in players if int(p.get('player_id') or 0) in selected]
+    counts=country_counts(chosen)
+    status='✅ Team Valid' if _valid(chosen) else '⚠️ Team Invalid'
+    team_display=f"{ilt_team_emoji_html(code)} {team_name(code).upper()}"
+    lines=['<b>╭━━〔 🏏 BUILD YOUR PLAYING XI 〕━━╮</b>','',f"<b>{team_display} ({team_short(code)})</b>",'','<blockquote>',f"<b>Playing XI: {len(selected)}/11</b>",'']
+    chosen=_chosen_in_order(players, selected)
+    lines.extend([p.get('name','Player') for p in chosen])
+    lines += ['',f"🏏 Batsmen: {c['Batsman']}/1+",f"🔄 All-Rounders: {c['AllRounder']}/2–4",f"⚡ Bowlers: {c['Bowler']}/3–4",f"🧤 Wicketkeeper: {c['Wicketkeeper']}/1+",f"{flag_html('uae')} UAE: {counts['uae']}/{MIN_UAE}+",f"{flag_html('afghanistan')} Afghanistan: {counts['afghanistan']}/{MIN_AFGHANISTAN}+",'',f"{status}",'</blockquote>','', '<b>╰━━━━━━━━━━━━━━━━━━╯</b>']
+    return '\n'.join(lines)
+
+async def _players(code):
+    ps=await get_team_players(code)
+    return ps
+
+async def send_build_messages(chat_id,match):
+    for uid,field,code,is_ch in [(match['challenger_id'],'challenger_xi',match['challenger_team_code'],True),(match['opponent_id'],'opponent_xi',match['opponent_team_code'],False)]:
+        players=await _players(code)
+        if len(players) < 11 or not country_balance_ok(players):
+            await app.send_message(chat_id, f'<b>⚠️ {team_label(code)} ({team_short(code)}) does not have at least 11 uploaded players including 2 UAE and 2 Afghanistan players.</b>', parse_mode='HTML')
+            return
+        sent=await app.send_message(chat_id,_build_text(code,players,[]),parse_mode='HTML',reply_markup=_xi_keyboard(match['match_id'],code,players,[],is_ch));
+                                                                                  
+        if is_ch:
+            await app.send_message(chat_id,'<b>🏏 Select your 11 players.</b>',parse_mode='HTML')
+
+@register_callback('playilt_recent_xi')
+async def playilt_recent_xi(callback_query):
+    parts=callback_query['data'].split(':')
+    if len(parts) != 3:
+        await app.answer_callback_query(callback_query['id'],'Invalid Playing 11 request.',show_alert=True)
+        return
+    _,mid_s,code=parts
+    mid=int(mid_s)
+    uid=int(callback_query['from']['id'])
+    match=await get_match(mid)
+    if not match:
+        await app.answer_callback_query(callback_query['id'],'This match is no longer active.',show_alert=True)
+        return
+    if uid not in {int(match['challenger_id']),int(match['opponent_id'])}:
+        await app.answer_callback_query(callback_query['id'],'You are not part of this match.',show_alert=True)
+        return
+    is_ch = uid == int(match['challenger_id'])
+    expected = match.get('challenger_team_code') if is_ch else match.get('opponent_team_code')
+    if code != expected:
+        await app.answer_callback_query(callback_query['id'],'Invalid team.',show_alert=True)
+        return
+    saved = await get_recent_playing_xi(uid, code)
+    if not saved:
+        await app.answer_callback_query(callback_query['id'],"You don't have any Playing 11 record. You need to make first.",show_alert=True)
+        return
+    players=await _players(code)
+    current_ids={int(p.get('player_id') or 0) for p in players}
+    if len(saved) != 11 or len(set(saved)) != 11 or any(pid not in current_ids for pid in saved):
+        await app.answer_callback_query(callback_query['id'],'Your saved Playing 11 is no longer available. You need to make a new one.',show_alert=True)
+        return
+    chosen=_chosen_in_order(players,saved)
+    if not _valid(chosen):
+        await app.answer_callback_query(callback_query['id'],'Your saved Playing 11 is no longer valid. You need to make a new one.',show_alert=True)
+        return
+    field='challenger_xi' if is_ch else 'opponent_xi'
+    await set_xi(mid,uid,saved,is_challenger=is_ch)
+    await app.answer_callback_query(callback_query['id'],'Last Playing 11 restored.')
+    await app.edit_message_text(callback_query['message']['chat']['id'],callback_query['message']['message_id'],_build_text(code,players,saved),parse_mode='HTML',reply_markup=_xi_keyboard(mid,code,players,saved,is_ch))
+
+@register_callback('playilt_xi')
+async def playilt_xi(callback_query):
+    _,mid_s,code,pid_s=callback_query['data'].split(':'); mid=int(mid_s); pid=int(pid_s); uid=int(callback_query['from']['id']); match=await get_match(mid)
+    if not match: return
+    if uid==int(match['challenger_id']): field='challenger_xi'; is_ch=True
+    elif uid==int(match['opponent_id']): field='opponent_xi'; is_ch=False
+    else:
+        await app.answer_callback_query(callback_query['id'],'You are not part of this match.',show_alert=True); return
+    expected=match.get('challenger_team_code') if is_ch else match.get('opponent_team_code')
+    if code!=expected:
+        await app.answer_callback_query(callback_query['id'],'Invalid team.',show_alert=True); return
+    selected=_decode_ids(match.get(field))
+    players=await _players(code)
+    player_ids={int(p.get('player_id') or 0) for p in players}
+    if pid not in player_ids:
+        await app.answer_callback_query(callback_query['id'],'Player not found.',show_alert=True); return
+    if pid in selected:
+        selected.remove(pid); msg='Player unselected.'
+    elif len(selected)>=11:
+        await app.answer_callback_query(callback_query['id'],'You can select maximum 11 players.',show_alert=True); return
+    else:
+        selected.append(pid); msg='Player selected.'
+                                                                           
+                                                                          
+    await app.answer_callback_query(callback_query['id'],msg)
+    await set_xi(mid,uid,selected,is_challenger=is_ch)
+    await app.edit_message_text(callback_query['message']['chat']['id'],callback_query['message']['message_id'],_build_text(code,players,selected),parse_mode='HTML',reply_markup=_xi_keyboard(mid,code,players,selected,is_ch))
+
+@register_callback('playilt_xi_confirm')
+async def playilt_xi_confirm(callback_query):
+    _,mid_s,code=callback_query['data'].split(':'); mid=int(mid_s); uid=int(callback_query['from']['id']); match=await get_match(mid)
+    if not match: return
+    is_ch=uid==int(match['challenger_id'])
+    if not is_ch and uid!=int(match['opponent_id']):
+        await app.answer_callback_query(callback_query['id'],'You are not part of this match.',show_alert=True); return
+    field='challenger_xi' if is_ch else 'opponent_xi'; selected=_decode_ids(match.get(field)); players=await _players(code); chosen=_chosen_in_order(players, selected)
+    if not _valid(chosen):
+        await app.answer_callback_query(callback_query['id'],f'Team is invalid. Your XI needs at least {MIN_UAE} UAE and {MIN_AFGHANISTAN} Afghanistan players, with all role limits still required.',show_alert=True); return
+    await set_xi_confirmed(mid,uid); await save_recent_playing_xi(uid,code,selected)
+    await app.answer_callback_query(callback_query['id'],'Playing XI confirmed!')
+    await app.delete_message(callback_query['message']['chat']['id'],callback_query['message']['message_id'])
+    player_mention=mention_html(uid, callback_query['from'].get('username'), callback_query['from'].get('first_name'))
+    bench=[p for p in players if int(p.get('player_id') or 0) not in selected][:5]
+    display_team=team_name(code)
+    await send_lineup(
+        callback_query['message']['chat']['id'],
+        build_rich(display_team, callback_query['from'].get('first_name') or 'Player', chosen, bench, ilt_team_emoji_html(code)),
+        build_fallback(display_team, player_mention, chosen, bench, ilt_team_emoji_html(code)),
+    )
+    m=await get_match(mid)
+    if m.get('challenger_xi_confirmed') and m.get('opponent_xi_confirmed'):
+        from .toss import send_toss_call
+        await send_toss_call(callback_query['message']['chat']['id'],m)

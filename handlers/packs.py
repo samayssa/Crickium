@@ -13,7 +13,7 @@ from services.pack_system import (PACK_CATALOG, create_purchase_request, confirm
                                   pack_shop_text, pending_cards, squad_choices, release_card, replace_card, MAX_SQUAD_SIZE)
 from services.quest_engine import record_quest_event
 from utils.PremiumEmoji import coins_emoji_html, pack_emoji_html, rubies_emoji_html, sigil_emoji_html, PACK_IMAGE_FILE_IDS
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 
 
 def _button(text: str, data: str, style: str):
@@ -135,7 +135,7 @@ def _card_text(pack_key: str, cards: list[dict], page: int, coins: int, rubies: 
     return (
         f"<b>╭━━━〔 {pack_emoji_html(pack_key)} {html.escape(p['name']).upper()} 〕━━━╮</b>\n\n"
         f"🎴 <b>CARD {page+1}/{len(cards)}</b> • <b>{kind}</b>\n\n"
-        f"👤 <b>{name}</b> {flag_for(player.get('country'))}\n"
+        f"👤 <b>{name}</b> {flag_html(player.get('country'))}\n"
         f"⚡ <b>OVR:</b> {ovr} • 🏅 <b>{rarity}</b>\n"
         f"🏏 <b>{role}</b> • 🌍 <b>{country}</b>\n"
         f"├ BAT : <b>{bat}</b>\n"

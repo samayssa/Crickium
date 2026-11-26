@@ -172,6 +172,51 @@ def custom_emoji_html(custom_id: str | None, fallback: str) -> str:
     return fallback
 
 
+COUNTRY_FLAG_EMOJIS: dict[str, str | None] = {
+    "india": None,
+    "australia": None,
+    "england": None,
+    "pakistan": None,
+    "south africa": None,
+    "new zealand": None,
+    "sri lanka": None,
+    "bangladesh": None,
+    "afghanistan": None,
+    "west indies": None,
+    "zimbabwe": None,
+    "ireland": None,
+    "scotland": None,
+    "netherlands": None,
+    "usa": None,
+    "canada": None,
+    "nepal": None,
+    "uae": None,
+    "oman": None,
+    "namibia": None,
+    "papua new guinea": None,
+}
+
+_COUNTRY_FLAG_ALIASES: dict[str, str] = {
+    "united states": "usa",
+    "united arab emirates": "uae",
+}
+
+
+def country_flag_emoji_id(country: str | None) -> str | None:
+    key = str(country or "").strip().lower()
+    key = _COUNTRY_FLAG_ALIASES.get(key, key)
+    return COUNTRY_FLAG_EMOJIS.get(key) or None
+
+
+def flag_html(country: str | None) -> str:
+    from utils.country_flags import flag_for
+    fallback = flag_for(country)
+    custom_id = country_flag_emoji_id(country)
+    if custom_id:
+        return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
+    return fallback
+
+
 def quest_period_emoji_html(period_type: str) -> str:
     period = str(period_type or "").lower()
     custom_id = {

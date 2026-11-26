@@ -62,6 +62,24 @@ _GAME_TABLES = (
         "label": "PLAYWPL • Women's Premier League",
     },
     {
+        "engine": "PLAYWBBL",
+        "table": "wbbl_matches",
+        "id_col": "match_id",
+        "label": "PLAYWBBL • Women's Big Bash League",
+    },
+    {
+        "engine": "PLAYBBL",
+        "table": "bbl_matches",
+        "id_col": "match_id",
+        "label": "PLAYBBL • Big Bash League",
+    },
+    {
+        "engine": "PLAYILT",
+        "table": "ilt_matches",
+        "id_col": "match_id",
+        "label": "PLAYILT • International League T20",
+    },
+    {
         "engine": "PLAYSO",
         "table": "playso_matches",
         "id_col": "match_id",
@@ -142,6 +160,9 @@ def _runtime_sessions_for_user(user_id: int) -> list[dict[str, Any]]:
         ("PLAYINT", "engines.playint_runtime", "_PLAYINT_SESSIONS", "playint_matches", "match_id", "PLAYINT • T20 International"),
         ("PLAYIPL", "engines.playipl_runtime", "_PLAYIPL_SESSIONS", "playipl_matches", "match_id", "PLAYIPL • Indian Premier League"),
         ("PLAYWPL", "engines.playwpl_runtime", "_PLAYWPL_SESSIONS", "wpl_matches", "match_id", "PLAYWPL • Women's Premier League"),
+        ("PLAYWBBL", "engines.playwbbl_runtime", "_PLAYWBBL_SESSIONS", "wbbl_matches", "match_id", "PLAYWBBL • Women's Big Bash League"),
+        ("PLAYBBL", "engines.playbbl_runtime", "_PLAYBBL_SESSIONS", "bbl_matches", "match_id", "PLAYBBL • Big Bash League"),
+        ("PLAYILT", "engines.playilt_runtime", "_PLAYILT_SESSIONS", "ilt_matches", "match_id", "PLAYILT • International League T20"),
     )
     for engine, module_name, registry_name, table, id_col, label in runtime_specs:
         try:
@@ -450,6 +471,18 @@ async def _clear_runtime(game: dict[str, Any]) -> None:
             from engines.playwpl_runtime import clear_playwpl_session
 
             clear_playwpl_session(game_id)
+        elif engine == "PLAYWBBL":
+            from engines.playwbbl_runtime import clear_playwbbl_session
+
+            clear_playwbbl_session(game_id)
+        elif engine == "PLAYBBL":
+            from engines.playbbl_runtime import clear_playbbl_session
+
+            clear_playbbl_session(game_id)
+        elif engine == "PLAYILT":
+            from engines.playilt_runtime import clear_playilt_session
+
+            clear_playilt_session(game_id)
         elif engine == "PLAYSO":
             state = _as_dict(game.get("state"))
             from services.super_over_bridge import force_close_origin

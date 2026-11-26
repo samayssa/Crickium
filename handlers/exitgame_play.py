@@ -10,13 +10,22 @@ from database.play_repo import get_active_match_in_chat, get_match, update_statu
 from database.playint_repo import get_active_match_in_chat as get_playint_match_in_chat, get_match as get_playint_match, update_status as update_playint_status
 from database.playipl_repo import get_active_match_in_chat as get_playipl_match_in_chat, get_match as get_playipl_match, update_status as update_playipl_status
 from database.playwpl_repo import get_active_match_in_chat as get_playwpl_match_in_chat, get_match as get_playwpl_match, update_status as update_playwpl_status
+from database.playwbbl_repo import get_active_match_in_chat as get_playwbbl_match_in_chat, get_match as get_playwbbl_match, update_status as update_playwbbl_status
+from database.playbbl_repo import get_active_match_in_chat as get_playbbl_match_in_chat, get_match as get_playbbl_match, update_status as update_playbbl_status
+from database.playilt_repo import get_active_match_in_chat as get_playilt_match_in_chat, get_match as get_playilt_match, update_status as update_playilt_status
 from database.playso_repo import get_active_match_in_chat as get_playso_match_in_chat, get_match as get_playso_match, set_state as set_playso_state
 from buttons.playint_buttons import exit_confirm_keyboard as playint_exit_confirm_keyboard
 from buttons.playipl_buttons import exit_confirm_keyboard as playipl_exit_confirm_keyboard
 from buttons.playwpl_buttons import exit_confirm_keyboard as playwpl_exit_confirm_keyboard
+from buttons.playwbbl_buttons import exit_confirm_keyboard as playwbbl_exit_confirm_keyboard
+from buttons.playbbl_buttons import exit_confirm_keyboard as playbbl_exit_confirm_keyboard
+from buttons.playilt_buttons import exit_confirm_keyboard as playilt_exit_confirm_keyboard
 from engines.playint_runtime import get_playint_session, clear_playint_session
 from engines.playipl_runtime import get_playipl_session, clear_playipl_session, get_playipl_session_in_chat
 from engines.playwpl_runtime import get_playwpl_session, clear_playwpl_session, get_playwpl_session_in_chat
+from engines.playwbbl_runtime import get_playwbbl_session, clear_playwbbl_session, get_playwbbl_session_in_chat
+from engines.playbbl_runtime import get_playbbl_session, clear_playbbl_session, get_playbbl_session_in_chat
+from engines.playilt_runtime import get_playilt_session, clear_playilt_session, get_playilt_session_in_chat
 from database.user_stats_repo import add_match_xp, record_match_result, record_h2h_result
 from engines.level_engine import WIN_XP, EXIT_PENALTY_XP
 from engines.play_runtime import clear_session, get_session
@@ -82,6 +91,15 @@ async def exitgame_command(message):
         match = await get_playwpl_match_in_chat(chat_id)
         engine = "playwpl" if match else None
     if not match:
+        match = await get_playwbbl_match_in_chat(chat_id)
+        engine = "playwbbl" if match else None
+    if not match:
+        match = await get_playbbl_match_in_chat(chat_id)
+        engine = "playbbl" if match else None
+    if not match:
+        match = await get_playilt_match_in_chat(chat_id)
+        engine = "playilt" if match else None
+    if not match:
         match = await get_playso_match_in_chat(chat_id)
         engine = "playso" if match else None
     if not match:
@@ -100,6 +118,12 @@ async def exitgame_command(message):
         keyboard = playso_exit_confirm_keyboard(match["match_id"])
     elif engine == "playwpl":
         keyboard = playwpl_exit_confirm_keyboard(match["match_id"])
+    elif engine == "playwbbl":
+        keyboard = playwbbl_exit_confirm_keyboard(match["match_id"])
+    elif engine == "playbbl":
+        keyboard = playbbl_exit_confirm_keyboard(match["match_id"])
+    elif engine == "playilt":
+        keyboard = playilt_exit_confirm_keyboard(match["match_id"])
     else:
         keyboard = playipl_exit_confirm_keyboard(match["match_id"])
     await app.send_message(
@@ -489,6 +513,255 @@ async def on_playwpl_exit_yes(callback_query):
     )
 
 
+@register_callback("playwbbl_exit_yes")
+async def on_playwbbl_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    print(f"[exitgame_play] playwbbl_exit_yes clicked by user_id={presser['id']} for match_id={match_id}")
+
+    match = await get_playwbbl_match(match_id)
+    if not match or match["status"] in {"declined", "completed", "ended"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        return
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Exiting the game...")
+    try:
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayWBBL penalty failed: {exc!r}")
+
+    session = get_playwbbl_session(match_id)
+    if session:
+        try:
+            await record_session_player_stats(session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist PlayWBBL player performance before exit for match_id={match_id}: {exc!r}")
+
+    try:
+        await update_playwbbl_status(match_id, "ended")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayWBBL status update failed: {exc!r}")
+
+    try:
+        stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] PlayWBBL XP/stats failed: {exc!r}")
+
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYWBBL", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYWBBL", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYWBBL exit report failed: {exc!r}")
+    await _remove_game_option_messages(chat_id, match, session)
+    if session:
+        clear_playwbbl_session(match_id)
+
+    try:
+        cancel_inactivity_match("PLAYWBBL", match_id)
+    except Exception as exc:
+        print(f"[exitgame_play] Failed cancelling PlayWBBL inactivity timer for match_id={match_id}: {exc!r}")
+
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    await app.edit_message_text(
+        chat_id, message_id,
+        "<b>🏳️ MATCH ENDED\n\n"
+        f"{exiter_mention} exited the game.\n"
+        f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>",
+        parse_mode="HTML", reply_markup=NO_KEYBOARD,
+    )
+
+
+@register_callback("playbbl_exit_yes")
+async def on_playbbl_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    print(f"[exitgame_play] playbbl_exit_yes clicked by user_id={presser['id']} for match_id={match_id}")
+
+    match = await get_playbbl_match(match_id)
+    if not match or match["status"] in {"declined", "completed", "ended"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        return
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Exiting the game...")
+    try:
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayBBL penalty failed: {exc!r}")
+
+    session = get_playbbl_session(match_id)
+    if session:
+        try:
+            await record_session_player_stats(session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist PlayBBL player performance before exit for match_id={match_id}: {exc!r}")
+
+    try:
+        await update_playbbl_status(match_id, "ended")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayBBL status update failed: {exc!r}")
+
+    try:
+        stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] PlayBBL XP/stats failed: {exc!r}")
+
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYBBL", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYBBL", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYBBL exit report failed: {exc!r}")
+    await _remove_game_option_messages(chat_id, match, session)
+    if session:
+        clear_playbbl_session(match_id)
+
+    try:
+        cancel_inactivity_match("PLAYBBL", match_id)
+    except Exception as exc:
+        print(f"[exitgame_play] Failed cancelling PlayBBL inactivity timer for match_id={match_id}: {exc!r}")
+
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    await app.edit_message_text(
+        chat_id, message_id,
+        "<b>🏳️ MATCH ENDED\n\n"
+        f"{exiter_mention} exited the game.\n"
+        f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>",
+        parse_mode="HTML", reply_markup=NO_KEYBOARD,
+    )
+
+
+@register_callback("playilt_exit_yes")
+async def on_playilt_exit_yes(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    print(f"[exitgame_play] playilt_exit_yes clicked by user_id={presser['id']} for match_id={match_id}")
+
+    match = await get_playilt_match(match_id)
+    if not match or match["status"] in {"declined", "completed", "ended"}:
+        await app.answer_callback_query(callback_query["id"], "This match is no longer active.", show_alert=True)
+        await app.edit_message_text(chat_id, message_id, "<b>⚠️ This match is no longer active.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+        return
+    if not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+
+    await app.answer_callback_query(callback_query["id"], "Exiting the game...")
+    try:
+        await execute("UPDATE users SET balance = balance - $1, total_spent = total_spent + $1 WHERE user_id = $2;", EXIT_PENALTY, presser["id"])
+        try:
+            await record_quest_event(int(presser["id"]), "COIN_SPENT", value=int(EXIT_PENALTY), metadata={"source":"exit_penalty"})
+        except Exception as exc:
+            print(f"[exitgame] Quest event failed: {exc!r}")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayILT penalty failed: {exc!r}")
+
+    session = get_playilt_session(match_id)
+    if session:
+        try:
+            await record_session_player_stats(session)
+        except Exception as exc:
+            print(f"[exitgame_play] Failed to persist PlayILT player performance before exit for match_id={match_id}: {exc!r}")
+
+    try:
+        await update_playilt_status(match_id, "ended")
+    except Exception as exc:
+        print(f"[exitgame_play] PlayILT status update failed: {exc!r}")
+
+    try:
+        stayed_id = match["opponent_id"] if int(presser["id"]) == int(match["challenger_id"]) else match["challenger_id"]
+        await add_match_xp(presser["id"], EXIT_PENALTY_XP)
+        await add_match_xp(stayed_id, WIN_XP)
+        await record_match_result(presser["id"], won=False)
+        await record_match_result(stayed_id, won=True)
+        await record_h2h_result(int(match_id), int(match["challenger_id"]), int(match["opponent_id"]), int(stayed_id))
+    except Exception as exc:
+        print(f"[exitgame_play] PlayILT XP/stats failed: {exc!r}")
+
+    try:
+        await send_report(
+            app,
+            collect_runtime_session(
+                "PLAYILT", session, termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ) if session else collect_match_row(
+                "PLAYILT", dict(match), termination="exited",
+                winner_id=int(stayed_id), loser_id=int(presser["id"]),
+                ended_by_user_id=int(presser["id"]), reason="player exited",
+            ),
+        )
+    except Exception as exc:
+        print(f"[match_analysis] PLAYILT exit report failed: {exc!r}")
+    await _remove_game_option_messages(chat_id, match, session)
+    if session:
+        clear_playilt_session(match_id)
+
+    try:
+        cancel_inactivity_match("PLAYILT", match_id)
+    except Exception as exc:
+        print(f"[exitgame_play] Failed cancelling PlayILT inactivity timer for match_id={match_id}: {exc!r}")
+
+    exiter_mention = mention_html(presser["id"], presser.get("username"), presser.get("first_name"))
+    await app.edit_message_text(
+        chat_id, message_id,
+        "<b>🏳️ MATCH ENDED\n\n"
+        f"{exiter_mention} exited the game.\n"
+        f"Penalty applied: -{EXIT_PENALTY:,} coins 🪙</b>",
+        parse_mode="HTML", reply_markup=NO_KEYBOARD,
+    )
+
+
 @register_callback("playwpl_exit_cancel")
 async def on_playwpl_exit_cancel(callback_query):
     match_id = int(callback_query["data"].split(":")[1])
@@ -496,6 +769,48 @@ async def on_playwpl_exit_cancel(callback_query):
     chat_id = callback_query["message"]["chat"]["id"]
     message_id = callback_query["message"]["message_id"]
     match = await get_playwpl_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The match continues.")
+    await app.edit_message_text(chat_id, message_id, "<b>✅ Match continues.\nThe exit request was cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+
+
+@register_callback("playwbbl_exit_cancel")
+async def on_playwbbl_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    match = await get_playwbbl_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The match continues.")
+    await app.edit_message_text(chat_id, message_id, "<b>✅ Match continues.\nThe exit request was cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+
+
+@register_callback("playbbl_exit_cancel")
+async def on_playbbl_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    match = await get_playbbl_match(match_id)
+    if match and not _is_participant(match, presser["id"]):
+        await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
+        return
+    await app.answer_callback_query(callback_query["id"], "Cancelled. The match continues.")
+    await app.edit_message_text(chat_id, message_id, "<b>✅ Match continues.\nThe exit request was cancelled.</b>", parse_mode="HTML", reply_markup=NO_KEYBOARD)
+
+
+@register_callback("playilt_exit_cancel")
+async def on_playilt_exit_cancel(callback_query):
+    match_id = int(callback_query["data"].split(":")[1])
+    presser = callback_query["from"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    match = await get_playilt_match(match_id)
     if match and not _is_participant(match, presser["id"]):
         await app.answer_callback_query(callback_query["id"], "🚫 You're not part of this match.", show_alert=True)
         return

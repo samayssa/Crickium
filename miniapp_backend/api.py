@@ -98,6 +98,9 @@ MATCH_TABLES = (
     ("playint_matches", "PLAYINT"),
     ("playipl_matches", "PLAYIPL"),
     ("wpl_matches", "PLAYWPL"),
+    ("wbbl_matches", "PLAYWBBL"),
+    ("bbl_matches", "PLAYBBL"),
+    ("ilt_matches", "PLAYILT"),
     ("match_challenges", "MATCH"),
 )
 MATCH_SOURCE_TABLES = {
@@ -106,6 +109,9 @@ MATCH_SOURCE_TABLES = {
     "PLAYINT": ("playint_matches", "match_id"),
     "PLAYIPL": ("playipl_matches", "match_id"),
     "PLAYWPL": ("wpl_matches", "match_id"),
+    "PLAYWBBL": ("wbbl_matches", "match_id"),
+    "PLAYBBL": ("bbl_matches", "match_id"),
+    "PLAYILT": ("ilt_matches", "match_id"),
     "MATCH": ("match_challenges", "challenge_id"),
 }
                                                                                  
@@ -116,6 +122,9 @@ MATCH_HISTORY_COLUMNS = {
     "PLAYINT": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
     "PLAYIPL": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
     "PLAYWPL": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
+    "PLAYWBBL": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
+    "PLAYBBL": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
+    "PLAYILT": ("match_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "challenger_team_code", "challenger_team_name", "opponent_team_code", "opponent_team_name", "created_at"),
     "MATCH": ("challenge_id", "challenger_id", "challenger_name", "opponent_id", "opponent_name", "format", "created_at"),
 }
 _TERMINAL_MATCH_STATUSES = {"completed", "ended", "finished", "complete", "declined", "abandoned", "expired", "timed_out", "cancelled"}
@@ -533,7 +542,7 @@ async def _runtime_session(engine: str, match_id: int):
     """
     engine = str(engine or "").upper()
     numeric_id = int(match_id)
-    if engine not in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
+    if engine not in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT"}:
         return None
 
                                                                             
@@ -630,7 +639,7 @@ async def _active_matches(user_id: int, limit: int = 5) -> list[dict[str, Any]]:
                     """,
                     int(user_id), int(per_source_limit),
                 )
-            elif table in {"playint_matches", "playipl_matches", "wpl_matches"}:
+            elif table in {"playint_matches", "playipl_matches", "wpl_matches", "wbbl_matches", "bbl_matches", "ilt_matches"}:
                 rows = await fetch(
                     f"""
                     SELECT match_id,challenger_id,challenger_name,challenger_username,
@@ -1829,7 +1838,8 @@ def _completed_potm(engine: str, innings: list[dict[str, Any]]) -> dict[str, Any
     snapshots = list(innings)
     player_name = None
     module_name = {"PLAY": "engines.play_runtime", "PLAYINT": "engines.playint_runtime",
-                   "PLAYIPL": "engines.playipl_runtime", "PLAYWPL": "engines.playwpl_runtime"}.get(str(engine).upper())
+                   "PLAYIPL": "engines.playipl_runtime", "PLAYWPL": "engines.playwpl_runtime",
+                   "PLAYWBBL": "engines.playwbbl_runtime", "PLAYBBL": "engines.playbbl_runtime", "PLAYILT": "engines.playilt_runtime"}.get(str(engine).upper())
     if module_name and len(snapshots) >= 2:
         try:
             from importlib import import_module
@@ -2415,7 +2425,7 @@ async def _build_match_detail_impl(viewer: TelegramViewer, engine: str, match_id
                                                                                 
                                                                             
                                                           
-    if source_match is None and allow_shared and engine in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
+    if source_match is None and allow_shared and engine in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT"}:
         try:
             session = await _runtime_session(engine, match_id)
             if session is not None and engine == "MATCH":
@@ -2718,7 +2728,7 @@ async def _live_score_fallback_payload(
                 "note": "Live score is shown from the saved Super Over state. Optional commentary details are unavailable for this refresh.",
             }
 
-    if session is None and engine in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"}:
+    if session is None and engine in {"MATCH", "PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT"}:
         try:
             session = await _runtime_session(engine, int(match_id))
         except Exception:

@@ -212,6 +212,15 @@ def _inject(engine: str, session: Any) -> Any | None:
     elif engine == "PLAYWPL":
         from engines.playwpl_runtime import _PLAYWPL_SESSIONS
         _PLAYWPL_SESSIONS[mid] = session
+    elif engine == "PLAYWBBL":
+        from engines.playwbbl_runtime import _PLAYWBBL_SESSIONS
+        _PLAYWBBL_SESSIONS[mid] = session
+    elif engine == "PLAYBBL":
+        from engines.playbbl_runtime import _PLAYBBL_SESSIONS
+        _PLAYBBL_SESSIONS[mid] = session
+    elif engine == "PLAYILT":
+        from engines.playilt_runtime import _PLAYILT_SESSIONS
+        _PLAYILT_SESSIONS[mid] = session
     else:
         return None
     return session
@@ -242,6 +251,15 @@ async def restore_session(engine: str, match_id: int, *, allow_db: bool = True) 
         elif engine == "PLAYWPL":
             from engines.playwpl_runtime import get_playwpl_session
             live = get_playwpl_session(mid)
+        elif engine == "PLAYWBBL":
+            from engines.playwbbl_runtime import get_playwbbl_session
+            live = get_playwbbl_session(mid)
+        elif engine == "PLAYBBL":
+            from engines.playbbl_runtime import get_playbbl_session
+            live = get_playbbl_session(mid)
+        elif engine == "PLAYILT":
+            from engines.playilt_runtime import get_playilt_session
+            live = get_playilt_session(mid)
         else:
             return None
         if live is not None:
@@ -281,6 +299,21 @@ def _active_runtime_sessions() -> list[tuple[str, Any]]:
     try:
         from engines.playwpl_runtime import _PLAYWPL_SESSIONS
         out.extend(("PLAYWPL", s) for s in list(_PLAYWPL_SESSIONS.values()))
+    except Exception:
+        pass
+    try:
+        from engines.playwbbl_runtime import _PLAYWBBL_SESSIONS
+        out.extend(("PLAYWBBL", s) for s in list(_PLAYWBBL_SESSIONS.values()))
+    except Exception:
+        pass
+    try:
+        from engines.playbbl_runtime import _PLAYBBL_SESSIONS
+        out.extend(("PLAYBBL", s) for s in list(_PLAYBBL_SESSIONS.values()))
+    except Exception:
+        pass
+    try:
+        from engines.playilt_runtime import _PLAYILT_SESSIONS
+        out.extend(("PLAYILT", s) for s in list(_PLAYILT_SESSIONS.values()))
     except Exception:
         pass
     try:
@@ -343,6 +376,21 @@ async def post_callback_sync(engine: str, match_id: int) -> None:
         match = await get_match(int(match_id))
         from engines.playwpl_runtime import get_playwpl_session
         session = get_playwpl_session(int(match_id))
+    elif engine == "PLAYWBBL":
+        from database.playwbbl_repo import get_match
+        match = await get_match(int(match_id))
+        from engines.playwbbl_runtime import get_playwbbl_session
+        session = get_playwbbl_session(int(match_id))
+    elif engine == "PLAYBBL":
+        from database.playbbl_repo import get_match
+        match = await get_match(int(match_id))
+        from engines.playbbl_runtime import get_playbbl_session
+        session = get_playbbl_session(int(match_id))
+    elif engine == "PLAYILT":
+        from database.playilt_repo import get_match
+        match = await get_match(int(match_id))
+        from engines.playilt_runtime import get_playilt_session
+        session = get_playilt_session(int(match_id))
     else:
         return
 
@@ -437,6 +485,45 @@ async def _rebuild_team_engine(engine: str, match: dict) -> Any | None:
         c_squad = await loader(match["challenger_team_code"], challenger_ids)
         o_squad = await loader(match["opponent_team_code"], opponent_ids)
         names = team_name
+    elif engine == "PLAYWBBL":
+        from database.playwbbl_repo import get_teams_player_ids
+        from engines.playwbbl_runtime import create_playwbbl_session
+        engine_key = "WBBL"
+        from database.playwbbl_teams_repo import team_label
+        challenger_ids = match.get("challenger_xi") or []
+        opponent_ids = match.get("opponent_xi") or []
+        if isinstance(challenger_ids, str): challenger_ids = json.loads(challenger_ids)
+        if isinstance(opponent_ids, str): opponent_ids = json.loads(opponent_ids)
+        loader = get_teams_player_ids
+        c_squad = await loader(match["challenger_team_code"], challenger_ids)
+        o_squad = await loader(match["opponent_team_code"], opponent_ids)
+        names = team_name
+    elif engine == "PLAYBBL":
+        from database.playbbl_repo import get_teams_player_ids
+        from engines.playbbl_runtime import create_playbbl_session
+        engine_key = "BBL"
+        from database.playbbl_teams_repo import team_label
+        challenger_ids = match.get("challenger_xi") or []
+        opponent_ids = match.get("opponent_xi") or []
+        if isinstance(challenger_ids, str): challenger_ids = json.loads(challenger_ids)
+        if isinstance(opponent_ids, str): opponent_ids = json.loads(opponent_ids)
+        loader = get_teams_player_ids
+        c_squad = await loader(match["challenger_team_code"], challenger_ids)
+        o_squad = await loader(match["opponent_team_code"], opponent_ids)
+        names = team_name
+    elif engine == "PLAYILT":
+        from database.playilt_repo import get_teams_player_ids
+        from engines.playilt_runtime import create_playilt_session
+        engine_key = "ILT"
+        from database.playilt_teams_repo import team_label
+        challenger_ids = match.get("challenger_xi") or []
+        opponent_ids = match.get("opponent_xi") or []
+        if isinstance(challenger_ids, str): challenger_ids = json.loads(challenger_ids)
+        if isinstance(opponent_ids, str): opponent_ids = json.loads(opponent_ids)
+        loader = get_teams_player_ids
+        c_squad = await loader(match["challenger_team_code"], challenger_ids)
+        o_squad = await loader(match["opponent_team_code"], opponent_ids)
+        names = team_name
     else:
         from database.playipl_repo import get_teams_player_ids
         from engines.playipl_runtime import create_playipl_session
@@ -478,8 +565,32 @@ async def _rebuild_team_engine(engine: str, match: dict) -> Any | None:
             batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
             batting_squad=batting_squad, bowling_squad=bowling_squad,
         )
-    else:
+    elif engine == "PLAYWPL":
         session = create_playwpl_session(
+            match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
+            pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
+            batting_team_id=batting_id, bowling_team_id=bowling_id,
+            batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
+            batting_squad=batting_squad, bowling_squad=bowling_squad,
+        )
+    elif engine == "PLAYWBBL":
+        session = create_playwbbl_session(
+            match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
+            pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
+            batting_team_id=batting_id, bowling_team_id=bowling_id,
+            batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
+            batting_squad=batting_squad, bowling_squad=bowling_squad,
+        )
+    elif engine == "PLAYBBL":
+        session = create_playbbl_session(
+            match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
+            pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
+            batting_team_id=batting_id, bowling_team_id=bowling_id,
+            batting_team_display=names(batting_code), bowling_team_display=names(bowling_code),
+            batting_squad=batting_squad, bowling_squad=bowling_squad,
+        )
+    elif engine == "PLAYILT":
+        session = create_playilt_session(
             match_id=int(match["match_id"]), chat_id=int(match["chat_id"]), match=dict(match),
             pitch=str(match.get("pitch") or "green"), stadium="Recovery Stadium", weather="Recovery Weather",
             batting_team_id=batting_id, bowling_team_id=bowling_id,
@@ -510,7 +621,7 @@ async def restore_or_rebuild(engine: str, match: dict) -> Any | None:
         return None
     if engine == "PLAY":
         session = await _rebuild_play(match)
-    elif engine in {"PLAYINT", "PLAYIPL", "PLAYWPL"}:
+    elif engine in {"PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT"}:
         session = await _rebuild_team_engine(engine, match)
     else:
         session = None

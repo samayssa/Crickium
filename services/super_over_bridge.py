@@ -172,6 +172,12 @@ async def _load_origin_session(engine: str, match_id: int):
         from engines.playipl_runtime import get_playipl_session as get_session
     elif engine == "PLAYWPL":
         from engines.playwpl_runtime import get_playwpl_session as get_session
+    elif engine == "PLAYWBBL":
+        from engines.playwbbl_runtime import get_playwbbl_session as get_session
+    elif engine == "PLAYBBL":
+        from engines.playbbl_runtime import get_playbbl_session as get_session
+    elif engine == "PLAYILT":
+        from engines.playilt_runtime import get_playilt_session as get_session
     else:
         return None
     return get_session(int(match_id))
@@ -186,6 +192,12 @@ def _clear_origin_session(engine: str, match_id: int) -> None:
         from engines.playipl_runtime import clear_playipl_session as clear_session
     elif engine == "PLAYWPL":
         from engines.playwpl_runtime import clear_playwpl_session as clear_session
+    elif engine == "PLAYWBBL":
+        from engines.playwbbl_runtime import clear_playwbbl_session as clear_session
+    elif engine == "PLAYBBL":
+        from engines.playbbl_runtime import clear_playbbl_session as clear_session
+    elif engine == "PLAYILT":
+        from engines.playilt_runtime import clear_playilt_session as clear_session
     else:
         return
     clear_session(int(match_id))
@@ -200,6 +212,12 @@ def _helpers(engine: str):
         from handlers.playipl.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
     elif engine == "PLAYWPL":
         from handlers.playwpl.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
+    elif engine == "PLAYWBBL":
+        from handlers.playwbbl.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
+    elif engine == "PLAYBBL":
+        from handlers.playbbl.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
+    elif engine == "PLAYILT":
+        from handlers.playilt.live import _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
     else:
         raise ValueError(engine)
     return _record_player_squad_stats, _award_match_xp_and_stats, _match_result_text
@@ -214,6 +232,12 @@ def _repo_get(engine: str):
         from database.playipl_repo import get_match
     elif engine == "PLAYWPL":
         from database.playwpl_repo import get_match
+    elif engine == "PLAYWBBL":
+        from database.playwbbl_repo import get_match
+    elif engine == "PLAYBBL":
+        from database.playbbl_repo import get_match
+    elif engine == "PLAYILT":
+        from database.playilt_repo import get_match
     else:
         return None
     return get_match
@@ -228,6 +252,12 @@ def _repo_update_status(engine: str):
         from database.playipl_repo import update_status
     elif engine == "PLAYWPL":
         from database.playwpl_repo import update_status
+    elif engine == "PLAYWBBL":
+        from database.playwbbl_repo import update_status
+    elif engine == "PLAYBBL":
+        from database.playbbl_repo import update_status
+    elif engine == "PLAYILT":
+        from database.playilt_repo import update_status
     else:
         return None
     return update_status
@@ -399,8 +429,14 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
             from engines.playint_runtime import player_of_the_match
         elif origin_engine == "PLAYIPL":
             from engines.playipl_runtime import player_of_the_match
-        else:
+        elif origin_engine == "PLAYWPL":
             from engines.playwpl_runtime import player_of_the_match
+        elif origin_engine == "PLAYWBBL":
+            from engines.playwbbl_runtime import player_of_the_match
+        elif origin_engine == "PLAYBBL":
+            from engines.playbbl_runtime import player_of_the_match
+        elif origin_engine == "PLAYILT":
+            from engines.playilt_runtime import player_of_the_match
         potm_name = player_of_the_match(innings_1, innings_2)
         from services.match_rewards import build_result_caption
         await send_match_summary(
@@ -439,7 +475,7 @@ async def finalize_decider(decider_match: dict, so_history: list[dict], winner_i
                 origin_engine, origin_match, [innings_1, innings_2], termination="completed",
                 winner_id=winner_id, loser_id=loser_id, reason="decided by Super Over",
             )
-        report["game_name"] = {"PLAY": "Play", "PLAYINT": "PlayInt", "PLAYIPL": "PlayIPL", "PLAYWPL": "PlayWPL"}.get(origin_engine, origin_engine) + " + Super Over"
+        report["game_name"] = {"PLAY": "Play", "PLAYINT": "PlayInt", "PLAYIPL": "PlayIPL", "PLAYWPL": "PlayWPL", "PLAYWBBL": "PlayWBBL", "PLAYBBL": "PlayBBL", "PLAYILT": "PlayILT"}.get(origin_engine, origin_engine) + " + Super Over"
         rounds = list(state.get("super_over_rounds") or [])
         rounds.append({"round": len(rounds) + 1, "innings": so_history})
         report["super_over_rounds"] = rounds

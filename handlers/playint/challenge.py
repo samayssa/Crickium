@@ -1,4 +1,5 @@
 from __future__ import annotations
+from services.cross_engine_guard import chat_conflict, user_conflict
 import html
 from handlers.registry import register, register_callback
 from app import app
@@ -37,12 +38,20 @@ async def playint_command(message):
     active=await get_active_match_in_chat(chat_id)
     if active:
         await app.send_message(chat_id,'<b>⚠️ A PlayInt game is already going on in this group.</b>',parse_mode='HTML'); return
+    other_chat_game = await chat_conflict(chat_id, "", new_only=True)
+    if other_chat_game:
+        await app.send_message(chat_id, f"<b>⚠️ A {other_chat_game} game is already going on in this group. Finish it before starting a new game.</b>", parse_mode="HTML")
+        return
     active_wpl=await get_playwpl_match_in_chat(chat_id)
     if active_wpl:
         await app.send_message(chat_id,'<b>⚠️ A PlayWPL game is already going on in this group. Finish it before starting a PlayInt game.</b>',parse_mode='HTML'); return
     active_play=await get_play_match_in_chat(chat_id)
     if active_play:
         await app.send_message(chat_id,'<b>⚠️ A game is already going on in this group. Finish it before starting a PlayInt game.</b>',parse_mode='HTML'); return
+    other_user_game = await user_conflict(challenger_id, "", new_only=True)
+    if other_user_game:
+        await app.send_message(chat_id, f"<b>⚠️ You're already in a {other_user_game} game. Please finish it first.</b>", parse_mode="HTML")
+        return
     active_wpl_user=await get_playwpl_match_for_user(challenger_id)
     if active_wpl_user:
         await app.send_message(chat_id,"<b>⚠️ You're already in a PlayWPL game. Please finish it first.</b>",parse_mode='HTML'); return
@@ -73,6 +82,11 @@ async def playint_command(message):
     if opponent_id==challenger_id:
         await app.send_message(chat_id,"<b>⚠️ You can't challenge yourself!</b>",parse_mode='HTML'); return
     if not await require_started_user(chat_id, opponent_id, opponent_username, opponent_name):
+        return
+    other_opponent_game = await user_conflict(opponent_id, "", new_only=True)
+    if other_opponent_game:
+        om = mention_html(opponent_id, opponent_username, opponent_name)
+        await app.send_message(chat_id, f"<b>⚠️ {om} is already in a {other_opponent_game} game.</b>", parse_mode="HTML")
         return
     if await get_playwpl_match_for_user(opponent_id):
         await app.send_message(chat_id,"<b>⚠️ Opponent is already in a PlayWPL game.</b>",parse_mode='HTML'); return

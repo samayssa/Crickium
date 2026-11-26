@@ -42,7 +42,7 @@ def persist_keys(state: dict[str, Any] | None) -> dict[str, Any]:
 
 def mode_title(state: dict[str, Any] | None) -> str:
     origin = str((state or {}).get("origin_engine") or "PLAYSO")
-    return origin if origin in {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL"} else "PLAYSO"
+    return origin if origin in {"PLAY", "PLAYINT", "PLAYIPL", "PLAYWPL", "PLAYWBBL", "PLAYBBL", "PLAYILT"} else "PLAYSO"
 
 
 def _innings_score(state: dict[str, Any]) -> str:
@@ -253,14 +253,17 @@ async def active_external_match(chat_id: int, user_id: int) -> tuple[bool, str]:
     from database.playint_repo import get_active_match_in_chat as int_chat, get_active_match_for_user as int_user
     from database.playipl_repo import get_active_match_in_chat as ipl_chat, get_active_match_for_user as ipl_user
     from database.playwpl_repo import get_active_match_in_chat as wpl_chat, get_active_match_for_user as wpl_user
-    checks = [(play_chat, "PLAY"), (int_chat, "PLAYINT"), (ipl_chat, "PLAYIPL"), (wpl_chat, "PLAYWPL")]
+    from database.playwbbl_repo import get_active_match_in_chat as wbbl_chat, get_active_match_for_user as wbbl_user
+    from database.playbbl_repo import get_active_match_in_chat as bbl_chat, get_active_match_for_user as bbl_user
+    from database.playilt_repo import get_active_match_in_chat as ilt_chat, get_active_match_for_user as ilt_user
+    checks = [(play_chat, "PLAY"), (int_chat, "PLAYINT"), (ipl_chat, "PLAYIPL"), (wpl_chat, "PLAYWPL"), (wbbl_chat, "PLAYWBBL"), (bbl_chat, "PLAYBBL"), (ilt_chat, "PLAYILT")]
     for fn, name in checks:
         try:
             if await fn(chat_id):
                 return True, name
         except Exception:
             pass
-    for fn, name in [(play_user, "PLAY"), (int_user, "PLAYINT"), (ipl_user, "PLAYIPL"), (wpl_user, "PLAYWPL")]:
+    for fn, name in [(play_user, "PLAY"), (int_user, "PLAYINT"), (ipl_user, "PLAYIPL"), (wpl_user, "PLAYWPL"), (wbbl_user, "PLAYWBBL"), (bbl_user, "PLAYBBL"), (ilt_user, "PLAYILT")]:
         try:
             if await fn(user_id):
                 return True, name

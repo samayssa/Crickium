@@ -24,6 +24,12 @@ def register_callback(action):
                 engine = "PLAYIPL"
             elif action.startswith("playwpl_"):
                 engine = "PLAYWPL"
+            elif action.startswith("playwbbl_"):
+                engine = "PLAYWBBL"
+            elif action.startswith("playbbl_"):
+                engine = "PLAYBBL"
+            elif action.startswith("playilt_"):
+                engine = "PLAYILT"
             elif action.startswith("playint_"):
                 engine = "PLAYINT"
             elif action.startswith("playso_"):

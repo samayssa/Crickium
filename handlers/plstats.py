@@ -12,7 +12,7 @@ from database.special_players_repo import search_player_variants, split_player_e
 from database.showcase_players_repo import get_showcase_player_by_identity
 from database.squads_repo import get_team_squad
 from database.player_user_stats_repo import get_player_user_stats
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.rarity import get_rarity
 from services.card_provider import get_player_card_bytes
 from services.player_card import overall_rating
@@ -52,7 +52,7 @@ def _plstats_text(player: dict, stats: dict) -> str:
         name = f"{name} ({_escape(player.get('edition'))})"
     elif kind == "showcase" and player.get("showcase_name"):
         name = f"{name} [{_escape(player.get('showcase_name'))}]"
-    flag = flag_for(player.get("country"))
+    flag = flag_html(player.get("country"))
     bat_level = int(player.get("bat_level") or 0)
     bowl_level = int(player.get("bowl_level") or 0)
     rarity = _escape(get_rarity(overall_rating(bat_level, bowl_level)))

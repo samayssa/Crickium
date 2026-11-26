@@ -17,7 +17,7 @@ from database.query import execute, fetch, fetchrow, transaction
 from database.claims_repo import get_claim
 from database.squads_repo import get_team_squad
 from utils.style import batting_style_text, bowling_style_text
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.price_chart import get_price, format_price
 from buttons.claim_buttons import retain_release_keyboard
 from services.card_provider import get_player_card_bytes
@@ -106,7 +106,7 @@ def _player_card_text(
     Build the formatted claim card using Telegram HTML entities
     """
     name = _escape(player.get("name") or "Unknown")
-    flag = flag_for(player.get("country"))
+    flag = flag_html(player.get("country"))
     bat_hand = _escape(batting_style_text(player.get("batting_hand")))
     bowl_style = _escape(bowling_style_text(player.get("bowling_hand")))
     bat_level = int(player.get("bat_level") or 0)

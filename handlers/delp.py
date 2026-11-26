@@ -11,6 +11,9 @@ from database.players_repo import parse_player_line
 from database.playint_repo import get_engine_team_player, delete_engine_team_player
 from database.playint_teams_repo import normalize_team_keyword as normalize_t20i_team, team_name as t20i_team_name
 from database.playipl_teams_repo import normalize_team_keyword as normalize_ipl_team, team_name as ipl_team_name
+from database.playwbbl_teams_repo import normalize_team_keyword as normalize_wbbl_team, team_name as wbbl_team_name
+from database.playbbl_teams_repo import normalize_team_keyword as normalize_bbl_team, team_name as bbl_team_name
+from database.playilt_teams_repo import normalize_team_keyword as normalize_ilt_team, team_name as ilt_team_name
 from database.special_players_repo import (
     split_player_edition,
     get_delete_targets,
@@ -152,6 +155,15 @@ def _engine_team_arg(text: str):
     if raw.upper().startswith("IPL-"):
         code = normalize_ipl_team(raw)
         return ("IPL", code, ipl_team_name(code)) if code else None
+    if raw.upper().startswith("WBBL-"):
+        code = normalize_wbbl_team(raw)
+        return ("WBBL", code, wbbl_team_name(code)) if code else None
+    if raw.upper().startswith("BBL-"):
+        code = normalize_bbl_team(raw)
+        return ("BBL", code, bbl_team_name(code)) if code else None
+    if raw.upper().startswith("ILT-"):
+        code = normalize_ilt_team(raw)
+        return ("ILT", code, ilt_team_name(code)) if code else None
     return None
 
 
@@ -217,7 +229,7 @@ async def _del_engine_team(message, engine: str, team_code: str, full_name: str)
     return True
 
 
-_SECTION_RE = re.compile(r"^\s*(T20I|IPL)\s*-\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE)
+_SECTION_RE = re.compile(r"^\s*(T20I|IPL|WBBL|BBL|ILT)\s*-\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE)
 
 
 def _split_sections(raw_text: str) -> list[dict]:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from services.cross_engine_guard import chat_conflict, user_conflict
 import html
 from handlers.registry import register, register_callback
 from app import app
@@ -37,6 +38,10 @@ async def playwpl_command(message):
     active=await get_active_match_in_chat(chat_id)
     if active:
         await app.send_message(chat_id,'<b>⚠️ A PlayWPL game is already going on in this group.</b>',parse_mode='HTML'); return
+    other_chat_game = await chat_conflict(chat_id, "PLAYWPL", new_only=True)
+    if other_chat_game:
+        await app.send_message(chat_id, f"<b>⚠️ A {other_chat_game} game is already going on in this group. Finish it before starting a new game.</b>", parse_mode="HTML")
+        return
     active_play=await get_play_match_in_chat(chat_id)
     if active_play:
         await app.send_message(chat_id,'<b>⚠️ A game is already going on in this group. Finish it before starting a PlayWPL game.</b>',parse_mode='HTML'); return
@@ -46,6 +51,10 @@ async def playwpl_command(message):
     active=await get_active_match_for_user(challenger_id)
     if active:
         await app.send_message(chat_id,"<b>⚠️ You're already in a game. Please finish it first.</b>",parse_mode='HTML'); return
+    other_user_game = await user_conflict(challenger_id, "PLAYWPL", new_only=True)
+    if other_user_game:
+        await app.send_message(chat_id, f"<b>⚠️ You're already in a {other_user_game} game. Please finish it first.</b>", parse_mode="HTML")
+        return
     if await get_play_match_for_user(challenger_id):
         await app.send_message(chat_id,"<b>⚠️ You're already in another game. Please finish it first.</b>",parse_mode='HTML'); return
     if await get_playint_match_for_user(challenger_id):
@@ -76,6 +85,11 @@ async def playwpl_command(message):
     if await get_active_match_for_user(opponent_id):
         om=mention_html(opponent_id,opponent_username,opponent_name)
         await app.send_message(chat_id,f'<b>⚠️ {om} is already in another game.</b>',parse_mode='HTML'); return
+    other_opponent_game = await user_conflict(opponent_id, "PLAYWPL", new_only=True)
+    if other_opponent_game:
+        om = mention_html(opponent_id, opponent_username, opponent_name)
+        await app.send_message(chat_id, f"<b>⚠️ {om} is already in a {other_opponent_game} game.</b>", parse_mode="HTML")
+        return
     if await get_play_match_for_user(opponent_id):
         om=mention_html(opponent_id,opponent_username,opponent_name)
         await app.send_message(chat_id,f'<b>⚠️ {om} is already in another game.</b>',parse_mode='HTML'); return
@@ -117,6 +131,10 @@ async def playwpl_accept(callback_query):
         await app.answer_callback_query(callback_query['id'],'This challenge is no longer active.',show_alert=True); return
     if int(presser['id'])!=int(match['opponent_id']):
         await app.answer_callback_query(callback_query['id'],"This challenge isn't for you!",show_alert=True); return
+    other_presser_game = await user_conflict(int(presser["id"]), "PLAYWPL", new_only=True)
+    if other_presser_game:
+        await app.answer_callback_query(callback_query["id"], f"You're already in a {other_presser_game} game. Finish it first.", show_alert=True)
+        return
     if await get_play_match_for_user(int(presser['id'])):
         await app.answer_callback_query(callback_query['id'],"You're already in another game. Finish it first.",show_alert=True); return
     await update_status(mid,'accepted'); cancel_timer('challenge', mid); await app.answer_callback_query(callback_query['id'],'Challenge accepted!')

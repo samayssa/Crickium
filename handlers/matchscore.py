@@ -3,7 +3,7 @@ import time
 from app import app
 from handlers.registry import register
 from database.playso_repo import get_active_match_for_user as playso_active
-from engines import play_runtime, playint_runtime, playipl_runtime, playwpl_runtime
+from engines import play_runtime, playint_runtime, playipl_runtime, playwpl_runtime, playwbbl_runtime, playbbl_runtime, playilt_runtime
 from services.lineup_rich import send_lineup
 from services.match_guard import user_in_match
 from services.match_score_view import build_session_view, build_so_view
@@ -17,6 +17,9 @@ _ENGINES = (
     ("PLAYINT", "PLAYINT", playint_runtime._PLAYINT_SESSIONS),
     ("PLAYIPL", "PLAYIPL", playipl_runtime._PLAYIPL_SESSIONS),
     ("PLAYWPL", "PLAYWPL", playwpl_runtime._PLAYWPL_SESSIONS),
+    ("PLAYWBBL", "PLAYWBBL", playwbbl_runtime._PLAYWBBL_SESSIONS),
+    ("PLAYBBL", "PLAYBBL", playbbl_runtime._PLAYBBL_SESSIONS),
+    ("PLAYILT", "PLAYILT", playilt_runtime._PLAYILT_SESSIONS),
 )
 
 

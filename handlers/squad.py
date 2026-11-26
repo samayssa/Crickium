@@ -8,7 +8,7 @@ from handlers.registry import register
 from app import app
 from engines.lineup_engine import load_squad, load_current_xi
 from database.captain_repo import get_captain_id
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.PremiumEmoji import ovr_emoji_html
 from utils.user_identity import get_user_identity, inline_identity
 from services.card_identity import player_kind
@@ -76,7 +76,7 @@ async def squad_command(message):
             raw_name = f"{raw_name} [{player.get('showcase_name')}]"
         name = html.escape(raw_name)
         level = _overall(player)
-        flag = flag_for(player.get("country"))
+        flag = flag_html(player.get("country"))
         icon = _icon(player)
         cap = " 🧢" if captain_id and int(player.get("player_id") or 0) == captain_id else ""
         prefix = "╰" if i == total else "├"

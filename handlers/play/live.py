@@ -621,12 +621,8 @@ async def on_play_impact_confirm_batpos(callback_query):
         if uid == int(session.batting_team_id):
             from services.live_runtime_controls import move_batting_player_to_position
             move_batting_player_to_position(session, int(st["in_id"]), int(st["position"]))
-            st["stage"]="batrole"
-            await app.answer_callback_query(callback_query["id"], "Batting position confirmed!")
-            await app.edit_message_text(session.chat_id, session.live_message_id, _play_impact_text(session, uid), parse_mode="HTML", reply_markup=impact_batting_role_keyboard("play", session.match_id))
-            return
-
-        move_future_batting_player_to_position(session, uid, int(st["in_id"]), int(st["position"]))
+        else:
+            move_future_batting_player_to_position(session, uid, int(st["in_id"]), int(st["position"]))
     except Exception as exc:
         await app.answer_callback_query(callback_query["id"], str(exc), show_alert=True); return
 
@@ -850,7 +846,7 @@ async def _finish_over_and_prompt_next(session) -> None:
             session.innings_history.append(innings_1_snapshot)
 
             await _safe_send(session.chat_id, _innings_break_text(session, innings_1_snapshot), parse_mode="HTML")
-
+            await asyncio.sleep(1.5)
             target = innings_1_snapshot["runs"] + 1
             start_second_innings(session, target)
             start_new_partnership(session)

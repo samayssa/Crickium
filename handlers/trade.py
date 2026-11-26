@@ -13,6 +13,9 @@ from database.play_repo import get_active_match_for_user as get_play_active
 from database.playint_repo import get_active_match_for_user as get_playint_active
 from database.playipl_repo import get_active_match_for_user as get_playipl_active
 from database.playwpl_repo import get_active_match_for_user as get_playwpl_active
+from database.playwbbl_repo import get_active_match_for_user as get_playwbbl_active
+from database.playbbl_repo import get_active_match_for_user as get_playbbl_active
+from database.playilt_repo import get_active_match_for_user as get_playilt_active
 from utils.mentions import mention_html
 from services.card_identity import player_kind, card_identity_key, collection_icon, collection_label
 from buttons.social_trade_buttons import (
@@ -231,6 +234,9 @@ async def _active_match(user_id: int) -> bool:
         or await get_playint_active(int(user_id))
         or await get_playipl_active(int(user_id))
         or await get_playwpl_active(int(user_id))
+        or await get_playwbbl_active(int(user_id))
+        or await get_playbbl_active(int(user_id))
+        or await get_playilt_active(int(user_id))
     )
 
 

@@ -27,6 +27,9 @@ ENGINE_LABELS = {
     "PLAY": "PLAY",
     "PLAYIPL": "IPL",
     "PLAYWPL": "WPL",
+    "PLAYWBBL": "WBBL",
+    "PLAYBBL": "BBL",
+    "PLAYILT": "ILT",
     "PLAYINT": "INTERNATIONAL",
 }
 
@@ -89,6 +92,10 @@ def _engine_key_for_session(session: Any) -> str:
     explicit = str((getattr(session, "match", {}) or {}).get("engine_key") or "").upper()
     if explicit:
         return explicit
+    module = str(type(session).__module__).upper()
+    for key in ("PLAYWBBL", "PLAYBBL", "PLAYILT"):
+        if key in module:
+            return key
     name = type(session).__name__.upper()
     if "PLAYINT" in name:
         return "PLAYINT"

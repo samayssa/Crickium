@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from services import tournament_core as tc
 from utils.mentions import mention_html
-from utils.country_flags import flag_for
+from utils.PremiumEmoji import flag_html
 from utils.style import batting_style_text, bowling_style_text
 
 ROOM_LABEL = "🏛 Open Auction Room"
@@ -100,7 +100,7 @@ def role_short(role: Any) -> str:
 
 
 def player_heading(lot: Mapping[str, Any]) -> str:
-    flag = flag_for(lot.get("country")) if lot.get("country") else ""
+    flag = flag_html(lot.get("country")) if lot.get("country") else ""
     tag = " ✈️" if lot.get("overseas") else ""
     return f"{role_icon(lot.get('role'))} <b>{esc(lot.get('name'))}</b> {flag}{tag}".strip()
 
