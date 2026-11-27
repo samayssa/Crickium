@@ -134,6 +134,24 @@ def _strip_custom_emoji_markup(text: str | None) -> str | None:
     return re.sub(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", r"\1", str(text), flags=re.IGNORECASE | re.DOTALL)
 
 
+def _emoji_mode(text: str | None, parse_mode):
+    if not _contains_custom_emoji_markup(text):
+        return parse_mode
+    raw = _raw_parse_mode(parse_mode)
+    if raw is None or str(raw).lower() == "html":
+        return "HTML"
+    return parse_mode
+
+
+def _emoji_text(text: str | None, parse_mode) -> str | None:
+    if not _contains_custom_emoji_markup(text):
+        return text
+    raw = _raw_parse_mode(parse_mode)
+    if raw is None or str(raw).lower() == "html":
+        return text
+    return _strip_custom_emoji_markup(text)
+
+
 def _strip_html_markup(text: str | None) -> str | None:
     """Best-effort plain-text fallback for Telegram entity parsing failures."""
     if text is None:
@@ -309,6 +327,8 @@ def _normalize_button_style(style: Any) -> str | None:
 def _button_to_json(btn: Any) -> dict:
     if isinstance(btn, dict):
         result = {k: v for k, v in btn.items() if v is not None}
+        if isinstance(result.get("text"), str):
+            result["text"] = _strip_custom_emoji_markup(result["text"])
         if "style" in result:
             normalized = _normalize_button_style(result.get("style"))
             if normalized is None:
@@ -317,7 +337,7 @@ def _button_to_json(btn: Any) -> dict:
                 result["style"] = normalized
         return result
 
-    entry: dict[str, Any] = {"text": getattr(btn, "text", "Button")}
+    entry: dict[str, Any] = {"text": _strip_custom_emoji_markup(getattr(btn, "text", "Button"))}
     callback_data = getattr(btn, "callback_data", None)
     if callback_data:
         entry["callback_data"] = callback_data.decode() if isinstance(callback_data, bytes) else callback_data
@@ -530,6 +550,7 @@ class App:
 
     async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None, disable_web_page_preview=False):
         print(f"[app.py] send_message -> chat_id={chat_id} text={text!r}")
+        text, parse_mode = _emoji_text(text, parse_mode), _emoji_mode(text, parse_mode)
 
         markup_json = _reply_markup_to_json(reply_markup)
         preview_off = _link_preview_off() if disable_web_page_preview else None
@@ -684,6 +705,7 @@ class App:
 
     async def edit_message_text(self, chat_id, message_id, text, parse_mode=None, reply_markup=None):
         print(f"[app.py] edit_message_text -> chat_id={chat_id} message_id={message_id} text={text!r}")
+        text, parse_mode = _emoji_text(text, parse_mode), _emoji_mode(text, parse_mode)
 
         markup_json = _reply_markup_to_json(reply_markup)
         if _markup_has_style(markup_json) or _contains_custom_emoji_markup(text):
@@ -803,9 +825,10 @@ class App:
     async def edit_message_media(self, chat_id, message_id, photo, caption=None, parse_mode=None, reply_markup=None):
         """Edit an existing photo message in place, preserving its message id."""
         print(f"[app.py] edit_message_media -> chat_id={chat_id} message_id={message_id}")
+        caption, parse_mode = _emoji_text(caption, parse_mode), _emoji_mode(caption, parse_mode)
         markup_json = _reply_markup_to_json(reply_markup)
         raw_mode = _raw_parse_mode(parse_mode)
-        if _markup_has_style(markup_json) or isinstance(photo, (bytes, bytearray)) or hasattr(photo, "read"):
+        if _markup_has_style(markup_json) or _contains_custom_emoji_markup(caption) or isinstance(photo, (bytes, bytearray)) or hasattr(photo, "read"):
             form = aiohttp.FormData()
             form.add_field("chat_id", str(chat_id))
             form.add_field("message_id", str(message_id))
@@ -852,6 +875,7 @@ class App:
     async def _send_media_file(self, method: str, field_name: str, chat_id, media, caption=None, parse_mode=None):
         """Send animation/video from a file_id, URL, bytes, file object or path."""
         print(f"[app.py] {method} -> chat_id={chat_id} caption={caption!r}")
+        caption, parse_mode = _emoji_text(caption, parse_mode), _emoji_mode(caption, parse_mode)
 
         raw_mode = _raw_parse_mode(parse_mode)
         use_multipart = isinstance(media, (bytes, bytearray)) or hasattr(media, "read") or (isinstance(media, str) and Path(media).is_file())
@@ -917,6 +941,7 @@ class App:
 
     async def send_photo(self, chat_id, photo, caption=None, parse_mode=None, reply_markup=None):
         print(f"[app.py] send_photo -> chat_id={chat_id} caption={caption!r}")
+        caption, parse_mode = _emoji_text(caption, parse_mode), _emoji_mode(caption, parse_mode)
 
         markup_json = _reply_markup_to_json(reply_markup)
         if _markup_has_style(markup_json) or _contains_custom_emoji_markup(caption):
@@ -977,6 +1002,7 @@ class App:
 
     async def send_document(self, chat_id, document, filename=None, caption=None, parse_mode=None):
         print(f"[app.py] send_document -> chat_id={chat_id} filename={filename!r}")
+        caption, parse_mode = _emoji_text(caption, parse_mode), _emoji_mode(caption, parse_mode)
 
         if isinstance(document, (bytes, bytearray)):
             buffer = BytesIO(document)
@@ -998,6 +1024,7 @@ class App:
 
     async def edit_message_caption(self, chat_id, message_id, caption, parse_mode=None, reply_markup=None):
         print(f"[app.py] edit_message_caption -> chat_id={chat_id} message_id={message_id}")
+        caption, parse_mode = _emoji_text(caption, parse_mode), _emoji_mode(caption, parse_mode)
 
         markup_json = _reply_markup_to_json(reply_markup)
         if _markup_has_style(markup_json) or _contains_custom_emoji_markup(caption):
@@ -1073,6 +1100,7 @@ class App:
 
     async def answer_callback_query(self, callback_query_id, text=None, show_alert=False):
         print(f"[app.py] answer_callback_query -> id={callback_query_id} text={text!r}")
+        text = _strip_html_markup(text) if text and "<" in str(text) else text
         try:
             await self._client.answer_callback_query(
                 callback_query_id=callback_query_id,

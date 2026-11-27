@@ -93,6 +93,8 @@ async def get_updates(offset: int | None = None, timeout: int = 25, allowed_upda
 
 async def send_message(chat_id: int, text: str, parse_mode: str | None = None, reply_markup: dict | None = None) -> dict:
     params = {"chat_id": chat_id, "text": text}
+    if not parse_mode and "<tg-emoji" in str(text).lower():
+        parse_mode = "HTML"
     if parse_mode:
         params["parse_mode"] = parse_mode
     if reply_markup:
@@ -102,6 +104,8 @@ async def send_message(chat_id: int, text: str, parse_mode: str | None = None, r
 
 async def edit_message_text(chat_id: int, message_id: int, text: str, parse_mode: str | None = None, reply_markup: dict | None = None) -> dict:
     params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if not parse_mode and "<tg-emoji" in str(text).lower():
+        parse_mode = "HTML"
     if parse_mode:
         params["parse_mode"] = parse_mode
     if reply_markup:

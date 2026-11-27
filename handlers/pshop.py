@@ -133,35 +133,40 @@ def _page_keyboard(page: int, total: int, kind: str, value, level: int | None):
 
 
 def _render(players: list[dict], page: int, total: int, filter_text: str) -> str:
-    lines = ["<b>╭━━〔 🛒 PLAYER SHOP 〕━━╮</b>", ""]
+    pages = max(1, math.ceil(total / PAGE_SIZE))
+    lines = [f"<b>🛒 Player Shop</b> · <i>{_escape(filter_text)}</i> · <b>{page + 1}/{pages}</b>"]
     if not players:
-        lines += [f"<b>No players found for {html.escape(filter_text)}.</b>", "", "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"]
+        lines += ["", f"<b>No players found for {_escape(filter_text)}.</b>"]
         return "\n".join(lines)
-    for index, player in enumerate(players):
+    lines.append(f"<i>{total:,} cards · tap a card to expand</i>")
+    lines.append("")
+    for player in players:
         raw_name = str(player.get("name") or "Unknown")
         kind = player_kind(player)
         edition = player.get("edition") if kind == "special" else None
+        tag = None
         if edition:
-            edition_label = display_edition(str(edition)) or str(edition)
-            raw_name = f"{raw_name} ({edition_label})"
+            tag = display_edition(str(edition)) or str(edition)
         elif kind == "showcase" and player.get("showcase_name"):
-            raw_name = f"{raw_name} [{player.get('showcase_name')}]"
+            tag = str(player.get("showcase_name"))
         name = _escape(raw_name)
         flag = flag_html(player.get("country"))
         ovr = overall_rating(player.get("bat_level"), player.get("bowl_level"))
         rarity = _rarity_label(ovr)
         price, _ = get_price(ovr)
-        lines.extend([
+        bat = player.get("bat_level")
+        bowl = player.get("bowl_level")
+        family = {"special": "Special Edition", "showcase": "Legacy Showcase"}.get(kind, "Standard")
+        detail = [
             f"<b>👤 {name} {flag}</b>",
-            f"<b>⭐ OVR: {ovr}  |  💎 {html.escape(rarity)}</b>",
-            f"<b>💰 Price: 🪙 {price:,}</b>",
-            f"<b>      ╰➤ {_role_icon(str(player.get('role') or 'Player'))}</b>",
-        ])
-        if index != len(players) - 1:
-            lines.append("")
-            lines.append("<b>────────────────────</b>")
-            lines.append("")
-    lines += ["", "<b>╰━━━━━━━━━━━━━━━━━━━━╯</b>"]
+            f"<b>⭐ {ovr} · 💎 {_escape(rarity)} · 🪙 {price:,}</b>",
+            f"{_role_icon(str(player.get('role') or 'Player'))}",
+            f"🌍 Country: {_escape(player.get('country') or '-')}",
+            f"🏏 Batting: {_escape(player.get('batting_hand') or '-')} · Lv {_escape(bat if bat is not None else '-')}",
+            f"🎯 Bowling: {_escape(player.get('bowling_hand') or '-')} · Lv {_escape(bowl if bowl is not None else '-')}",
+            f"🗂 Type: {family}" + (f" · {_escape(tag)}" if tag else ""),
+        ]
+        lines.append("<blockquote expandable>" + "\n".join(detail) + "</blockquote>")
     return "\n".join(lines)
 
 
