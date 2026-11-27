@@ -132,7 +132,64 @@ def _page_keyboard(page: int, total: int, kind: str, value, level: int | None):
     }
 
 
+def _player_detail(player: dict) -> tuple[str, list[str]]:
+    """Build one shop player card: a collapsed summary line (name, OVR, flag)
+    and the price / level details that open when the card is tapped."""
+    raw_name = str(player.get("name") or "Unknown")
+    kind = player_kind(player)
+    edition = player.get("edition") if kind == "special" else None
+    tag = None
+    if edition:
+        tag = display_edition(str(edition)) or str(edition)
+    elif kind == "showcase" and player.get("showcase_name"):
+        tag = str(player.get("showcase_name"))
+    flag = flag_html(player.get("country"))
+    ovr = overall_rating(player.get("bat_level"), player.get("bowl_level"))
+    rarity = _rarity_label(ovr)
+    price, _ = get_price(ovr)
+    bat = player.get("bat_level")
+    bowl = player.get("bowl_level")
+    family = {"special": "Special Edition", "showcase": "Legacy Showcase"}.get(kind, "Standard")
+
+    summary = f"👤 <b>{_escape(raw_name)}</b>"
+    if flag:
+        summary += f" {flag}"
+    summary += f" · ⭐ <b>{ovr}</b>"
+    details = [
+        f"<p>🎽 <b>Role:</b> {_role_icon(str(player.get('role') or 'Player'))}</p>",
+        f"<p>🌍 <b>Country:</b> {_escape(player.get('country') or '-')}</p>",
+        f"<p>⭐ <b>Overall:</b> {ovr} · 💎 {_escape(rarity)}</p>",
+        f"<p>🏏 <b>Batting:</b> {_escape(player.get('batting_hand') or '-')} · Lv {_escape(bat if bat is not None else '-')}</p>",
+        f"<p>🎯 <b>Bowling:</b> {_escape(player.get('bowling_hand') or '-')} · Lv {_escape(bowl if bowl is not None else '-')}</p>",
+        f"<p>🪙 <b>Price:</b> {price:,}</p>",
+        f"<p>🗂 <b>Type:</b> {family}" + (f" · {_escape(tag)}" if tag else "") + "</p>",
+    ]
+    return summary, details
+
+
+def _rich_render(players: list[dict], page: int, total: int, filter_text: str) -> str:
+    """Rich Message (Bot API 10.1+) version of the shop page: real headings,
+    dividers and per-player <details> blocks that expand on tap."""
+    pages = max(1, math.ceil(total / PAGE_SIZE))
+    blocks = [
+        "<h2>🛒 Player Shop</h2>",
+        f"<p>🔎 <b>{_escape(filter_text)}</b> · 📄 Page <b>{page + 1}/{pages}</b> · 🎴 <b>{total:,}</b> cards</p>",
+        "<hr/>",
+    ]
+    if not players:
+        blocks.append(f"<p><b>❌ No players found for {_escape(filter_text)}.</b></p>")
+        return "\n".join(blocks)
+    for player in players:
+        summary, details = _player_detail(player)
+        blocks.append(
+            "<details><summary>" + summary + "</summary>" + "".join(details) + "</details>"
+        )
+    blocks.append("<footer>Tap a player's name to expand the full price and level details.</footer>")
+    return "\n".join(blocks)
+
+
 def _render(players: list[dict], page: int, total: int, filter_text: str) -> str:
+    """Plain-HTML fallback for clients/servers that refuse Rich Messages."""
     pages = max(1, math.ceil(total / PAGE_SIZE))
     lines = [f"<b>🛒 Player Shop</b> · <i>{_escape(filter_text)}</i> · <b>{page + 1}/{pages}</b>"]
     if not players:
@@ -141,32 +198,11 @@ def _render(players: list[dict], page: int, total: int, filter_text: str) -> str
     lines.append(f"<i>{total:,} cards · tap a card to expand</i>")
     lines.append("")
     for player in players:
-        raw_name = str(player.get("name") or "Unknown")
-        kind = player_kind(player)
-        edition = player.get("edition") if kind == "special" else None
-        tag = None
-        if edition:
-            tag = display_edition(str(edition)) or str(edition)
-        elif kind == "showcase" and player.get("showcase_name"):
-            tag = str(player.get("showcase_name"))
-        name = _escape(raw_name)
-        flag = flag_html(player.get("country"))
-        ovr = overall_rating(player.get("bat_level"), player.get("bowl_level"))
-        rarity = _rarity_label(ovr)
-        price, _ = get_price(ovr)
-        bat = player.get("bat_level")
-        bowl = player.get("bowl_level")
-        family = {"special": "Special Edition", "showcase": "Legacy Showcase"}.get(kind, "Standard")
-        detail = [
-            f"<b>👤 {name} {flag}</b>",
-            f"<b>⭐ {ovr} · 💎 {_escape(rarity)} · 🪙 {price:,}</b>",
-            f"{_role_icon(str(player.get('role') or 'Player'))}",
-            f"🌍 Country: {_escape(player.get('country') or '-')}",
-            f"🏏 Batting: {_escape(player.get('batting_hand') or '-')} · Lv {_escape(bat if bat is not None else '-')}",
-            f"🎯 Bowling: {_escape(player.get('bowling_hand') or '-')} · Lv {_escape(bowl if bowl is not None else '-')}",
-            f"🗂 Type: {family}" + (f" · {_escape(tag)}" if tag else ""),
-        ]
-        lines.append("<blockquote expandable>" + "\n".join(detail) + "</blockquote>")
+        summary, details = _player_detail(player)
+        plain_details = [line.removeprefix("<p>").removesuffix("</p>") for line in details]
+        lines.append(
+            "<blockquote expandable>" + "\n".join([summary] + plain_details) + "</blockquote>"
+        )
     return "\n".join(lines)
 
 
@@ -221,12 +257,22 @@ async def pshop_command(message):
 
     players, total = await _fetch_page(kind, value, level, 0)
     filter_text = str(level) if kind == "level" else (f"{value} {level}" if kind == "role" else str(value))
-    await app.send_message(
-        chat_id,
-        _render(players, 0, total, filter_text),
-        parse_mode="HTML",
-        reply_markup=_page_keyboard(0, total, kind, value, level),
-    )
+    keyboard = _page_keyboard(0, total, kind, value, level)
+    try:
+        await app.send_rich_message(
+            chat_id,
+            _rich_render(players, 0, total, filter_text),
+            message_thread_id=message.get("message_thread_id"),
+            reply_markup=keyboard,
+        )
+    except Exception as exc:
+        print(f"[pshop] rich message failed, using HTML fallback: {exc!r}")
+        await app.send_message(
+            chat_id,
+            _render(players, 0, total, filter_text),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
 
 
 @register_callback("pshop_page")
@@ -258,11 +304,21 @@ async def pshop_page(callback_query):
     if page >= pages:
         page = pages - 1
         players, total = await _fetch_page(kind, value or None, level, page)
+    keyboard = _page_keyboard(page, total, kind, value or None, level)
     await app.answer_callback_query(callback_query["id"], f"Page {page + 1}/{pages}")
-    await app.edit_message_text(
-        chat_id,
-        message_id,
-        _render(players, page, total, filter_text),
-        parse_mode="HTML",
-        reply_markup=_page_keyboard(page, total, kind, value or None, level),
-    )
+    try:
+        await app.edit_rich_message(
+            chat_id,
+            message_id,
+            _rich_render(players, page, total, filter_text),
+            reply_markup=keyboard,
+        )
+    except Exception as exc:
+        print(f"[pshop] rich page edit failed, using HTML fallback: {exc!r}")
+        await app.edit_message_text(
+            chat_id,
+            message_id,
+            _render(players, page, total, filter_text),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )

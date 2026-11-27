@@ -703,6 +703,26 @@ class App:
         )
         return _wrap_http_message(result)
 
+    async def edit_rich_message(self, chat_id, message_id, html, *, reply_markup=None):
+        """Edit an existing Rich Message in place (Bot API 10.1+).
+
+        Telegram takes the rich document through the ``rich_message``
+        parameter of editMessageText; there is no separate editRichMessage.
+        """
+        payload = {
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+            "rich_message": {"html": str(html)},
+        }
+        markup_json = _reply_markup_to_json(reply_markup)
+        if markup_json is not None:
+            payload["reply_markup"] = markup_json
+        result = await _resilient(
+            lambda: self._call_bot_api("editMessageText", json_payload=payload),
+            label="edit_rich_message",
+        )
+        return _wrap_http_message(result)
+
     async def edit_message_text(self, chat_id, message_id, text, parse_mode=None, reply_markup=None):
         print(f"[app.py] edit_message_text -> chat_id={chat_id} message_id={message_id} text={text!r}")
         text, parse_mode = _emoji_text(text, parse_mode), _emoji_mode(text, parse_mode)
